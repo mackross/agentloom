@@ -1,0 +1,115 @@
+# Threads Durability Notes
+
+This note documents durability behavior in `fsmagent/threads` so future changes keep restore/replay semantics stable.
+
+## Safe vs Inflight
+
+Thread states:
+
+- `idle`
+- `construct_llm_request`
+- `receiving_stream`
+- `stream_complete`
+
+For durability, only `idle` is treated as a fully safe boundary.
+Inflight means any of:
+
+- `construct_llm_request`
+- `receiving_stream`
+- `stream_complete`
+
+## Checkpoint Policies
+
+`CheckpointOptions.Policy`:
+
+- `skip` (default):
+  - if inflight, return last safe idle checkpoint
+  - if not inflight, snapshot current state
+- `wait`:
+  - block until state becomes safe (`idle`) or timeout
+- `unsafe`:
+  - snapshot current state even if inflight
+
+## Restore Semantics
+
+`RestoreCheckpoint`:
+
+- rejects `Unsafe=true` checkpoints unless `RestoreOptions.AllowUnsafe=true`
+
+`RestoreFromCheckpointAndWAL`:
+
+- replays WAL events over checkpoint
+- if `AllowUnsafe=false` and replay lands inflight, it trims trailing unsafe WAL tail by restoring only the longest replay prefix that ends in a safe state
+- this is intentional to avoid loading into a frozen inflight state when no executor-run resume support exists
+
+## WAL Invariants
+
+- `Seq` must be strictly contiguous increasing during replay (`prev + 1`)
+- WAL operations currently used:
+  - `queue_item`
+  - `begin_stream`
+  - `append_stream_item`
+  - `end_stream`
+- replay order is authoritative for derived thread state
+
+## DurableStore Contract
+
+Implementers of `DurableStore` are expected to:
+
+- perform synchronous durable writes before returning
+- panic on storage failure (fail-closed behavior)
+- make `ReplaceSnapshot` atomically replace base snapshot and clear prior WAL tail for that base
+- make `AppendWALDiff` append-only (no rewrite of existing WAL history)
+
+## Crash Window Expectations
+
+Behavior after abrupt termination depends on the last persisted point:
+
+- crash before inflight WAL completion:
+  - replay may end with an unsafe suffix
+  - default restore trims to last safe prefix
+- crash after safe boundary:
+  - restore is direct (no trim needed)
+- crash during snapshot replace:
+  - file store uses temp-file + rename to minimize partial snapshot risk
+
+## Coalescing and Persistence
+
+- WAL stores logical operations, not coalescing deltas
+- tape coalescing is re-derived during replay by current CB logic
+- current CB coalescing merges adjacent:
+  - `UserText`
+  - `AssistantText`
+
+## File Format and Wire Keys
+
+File layout in `threads/durability/filestore`:
+
+- fixed 16-byte header:
+  - magic `TDUR`
+  - file version
+  - flags (unsafe bit)
+  - snapshot JSON length
+  - checkpoint seq
+- snapshot JSON payload
+- WAL NDJSON payload
+
+JSON key choices:
+
+- snapshot: short but readable (`ver`, `state`, `items`, `ip`, `queue`, `stream`, item `kind`, `text`)
+- WAL: compact keys (`s`, `o`, `i`)
+
+Backward compatibility for file JSON schema is not guaranteed yet.
+
+## Test Guidance
+
+- Run normal coverage: `go test ./fsmagent/threads ./fsmagent/threads/durability`
+- Run full suite: `go test ./...`
+- Run strict roundtrip mode for thread tests: `THREAD_TEST_SERIALIZE_ROUNDTRIP=1 go test ./fsmagent/threads`
+
+When changing durability behavior, add/adjust tests for:
+
+- inflight checkpoint policy behavior
+- restore trimming behavior
+- WAL replay sequence constraints
+- file-store snapshot/append semantics
