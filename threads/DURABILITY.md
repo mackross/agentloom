@@ -1,6 +1,6 @@
 # Threads Durability Notes
 
-This note documents durability behavior in `fsmagent/threads` so future changes keep restore/replay semantics stable.
+This note documents durability behavior in `github.com/mackross/agentloom/threads` so future changes keep restore/replay semantics stable.
 
 ## Safe vs Inflight
 
@@ -76,7 +76,7 @@ Behavior after abrupt termination depends on the last persisted point:
 ## Coalescing and Persistence
 
 - WAL stores logical operations, not coalescing deltas
-- tape coalescing is re-derived during replay by current CB logic
+- item coalescing is re-derived during replay by current CB logic
 - current CB coalescing merges adjacent:
   - `UserText`
   - `AssistantText`
@@ -103,9 +103,9 @@ Backward compatibility for file JSON schema is not guaranteed yet.
 
 ## Test Guidance
 
-- Run normal coverage: `go test ./fsmagent/threads ./fsmagent/threads/durability`
+- Run normal coverage: `go test ./threads ./threads/durability`
 - Run full suite: `go test ./...`
-- Run strict roundtrip mode for thread tests: `THREAD_TEST_SERIALIZE_ROUNDTRIP=1 go test ./fsmagent/threads`
+- Run strict roundtrip mode for thread tests: `THREAD_TEST_SERIALIZE_ROUNDTRIP=1 go test ./threads`
 
 When changing durability behavior, add/adjust tests for:
 

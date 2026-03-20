@@ -19,7 +19,7 @@ Today `threads` exposes these concepts:
 - `ToolResolver`
   - resolves `(tool name, opaque handler load data)` into a handler function
 - `ToolsSnapshot`
-  - the control item queued onto the thread tape
+  - the control item queued onto the thread
   - contains:
     - `Snapshot ToolOfferSnapshot`
     - `Handlers []ToolHandlerBinding`
@@ -34,7 +34,7 @@ Today `threads` exposes these concepts:
 
 Important current behavior:
 
-- `Thread.SetToolProvider(...)` queues a `ToolsSnapshot` control item on the tape.
+- `Thread.SetToolProvider(...)` queues a `ToolsSnapshot` control item on the thread.
 - request construction reads only `ToolsSnapshot.Snapshot`.
 - durability persists the full `ToolsSnapshot`, including `Handlers`.
 - helper execution hydration is not fully wired yet, but the durable boundary is now in place.
@@ -75,7 +75,7 @@ After restart the same flow should work again because the `ToolsSnapshot` was pe
 
 ## The Nearest-Preceding-Snapshot Rule
 
-Tool calls are interpreted in the context of the nearest preceding `ToolsSnapshot` on the tape.
+Tool calls are interpreted in the context of the nearest preceding `ToolsSnapshot` in the thread history.
 
 This matters because catalogs can change over time.
 
@@ -88,7 +88,7 @@ Example:
 5. new `write_file` calls should resolve using catalog B's handler load data
 
 This rule avoids any need for `threads` to track a global "current catalog id".
-The tape already records the history we need.
+The thread history already records what we need.
 
 ## Proposed Helper Architecture
 
@@ -207,14 +207,14 @@ Example:
 4. old calls still resolve via the old preceding snapshot
 5. new calls resolve via the new preceding snapshot
 
-This is the core reason the handler load data lives on the tape.
+This is the core reason the handler load data lives in the thread history.
 
 ## Restart / Reload Flow
 
 On restart:
 
 1. durable store restores the thread snapshot and WAL
-2. restored tape still contains `ToolsSnapshot` items
+2. restored thread history still contains `ToolsSnapshot` items
 3. future tool execution scans left from the call to the nearest preceding `ToolsSnapshot`
 4. the matching `ToolHandlerBinding` provides `HandlerLoadData`
 5. the registry rehydrates the handler from that data
