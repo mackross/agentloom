@@ -166,9 +166,11 @@ This gives one coherent meaning to:
 
 Current status:
 
-- not implemented
+- partially implemented
 - today `SetExecutor` only stores the executor reference
-- attaching an executor to a restored inflight thread does not inspect state,
+- `AttachExecutorForRecovery(...)` can resume retained `construct_llm_request`
+  state when there are no outstanding started tool calls
+- attaching an executor to later inflight states still does not inspect state,
   choose policy, or resume anything
 - replacing an executor on a live thread does not cancel the prior request
 
