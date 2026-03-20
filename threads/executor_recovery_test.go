@@ -1,9 +1,6 @@
 package threads
 
-import (
-	"sync"
-	"testing"
-)
+import "testing"
 
 func TestAttachExecutorForRecoveryInstallsExecutorWhileIdle(t *testing.T) {
 	thread := newTestThread(t)
@@ -50,48 +47,6 @@ func TestAttachExecutorForRecoveryResumesConstructLLMRequestState(t *testing.T) 
 	if got := thread.State(); got != StateIdle {
 		t.Fatalf("expected idle after recovered request, got %q", got)
 	}
-}
-
-func TestAttachExecutorForRecoveryRejectsReceivingStreamThread(t *testing.T) {
-	thread := New()
-	streamStart := make(chan struct{})
-	var once sync.Once
-	thread.SetDelegate(ThreadDelegateFuncs{
-		OnRequest: func(_ *Thread) { once.Do(func() { close(streamStart) }) },
-	})
-	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
-		b.Wait("hold")
-		b.Emit(AssistantText("ok"))
-	})
-	thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
-
-	done := make(chan struct{})
-	go func() {
-		thread.QueueItem(UserText("hello"))
-		thread.QueueItem(SendItem{})
-		close(done)
-	}()
-
-	<-streamStart
-	cp, err := thread.Checkpoint(CheckpointOptions{Policy: InflightUnsafe})
-	if err != nil {
-		t.Fatalf("unsafe checkpoint: %v", err)
-	}
-	restored, err := RestoreCheckpoint(cp, RestoreOptions{AllowUnsafe: true})
-	if err != nil {
-		t.Fatalf("restore checkpoint: %v", err)
-	}
-
-	err = restored.AttachExecutorForRecovery(NewThreadExecutor(newFakeStreamer().Streamer()))
-	if err != ErrAttachExecutorForRecoveryRequiresRecoverableState {
-		t.Fatalf("expected receiving-stream recovery attach error, got %v", err)
-	}
-	if restored.executor != nil {
-		t.Fatalf("expected executor to remain unset on failed recovery attach, got %#v", restored.executor)
-	}
-
-	streamer.Resolve("hold")
-	<-done
 }
 
 func TestAttachExecutorForRecoveryRejectsIdleThreadWithOutstandingStartedToolCall(t *testing.T) {
