@@ -420,11 +420,11 @@ func (cb *controlBlock) Queued(items cbItems) *itemList[Item] {
 	return &itemList[Item]{head: head, tail: items.Tail()}
 }
 
-func (cb *controlBlock) pendingToolCalls(items cbItems) []pendingToolCall {
+func (cb *controlBlock) outstandingToolCalls(items cbItems) []OutstandingToolCall {
 	if cb.ip == nil {
 		return nil
 	}
-	bindings, pending, pendingByID := map[string]json.RawMessage{}, []pendingToolCall{}, map[string]int{}
+	bindings, pending, pendingByID := map[string]json.RawMessage{}, []OutstandingToolCall{}, map[string]int{}
 	for n := items.Head(); n != nil; n = n.Next {
 		switch v := n.Item.(type) {
 		case ToolsSnapshot:
@@ -434,9 +434,15 @@ func (cb *controlBlock) pendingToolCalls(items cbItems) []pendingToolCall {
 			}
 		case ToolCall:
 			load, ok := bindings[v.Name]
-			call := pendingToolCall{call: v, load: append(json.RawMessage(nil), load...), bound: ok}
+			call := OutstandingToolCall{
+				Call:            v,
+				State:           OutstandingToolCallRequested,
+				Bound:           ok,
+				HandlerLoadData: append(json.RawMessage(nil), load...),
+			}
 			if i, ok := pendingByID[v.CallID]; ok {
-				call.started = pending[i].started
+				call.State = pending[i].State
+				call.Continue = pending[i].Continue
 				pending[i] = call
 				break
 			}
@@ -444,11 +450,12 @@ func (cb *controlBlock) pendingToolCalls(items cbItems) []pendingToolCall {
 			pending = append(pending, call)
 		case ToolCallStarted:
 			if i, ok := pendingByID[v.CallID]; ok {
-				pending[i].started = true
+				pending[i].State = OutstandingToolCallStarted
+				pending[i].Continue = v.Continue
 			}
 		case ToolCallResultable:
 			if i, ok := pendingByID[v.ToolCallID()]; ok {
-				pending[i].call = ToolCall{}
+				pending[i].Call = ToolCall{}
 				delete(pendingByID, v.ToolCallID())
 			}
 		}
@@ -458,9 +465,24 @@ func (cb *controlBlock) pendingToolCalls(items cbItems) []pendingToolCall {
 	}
 	out := pending[:0]
 	for _, call := range pending {
-		if call.call.CallID != "" {
+		if call.Call.CallID != "" {
+			call.HandlerLoadData = append(json.RawMessage(nil), call.HandlerLoadData...)
 			out = append(out, call)
 		}
+	}
+	return out
+}
+
+func (cb *controlBlock) pendingToolCalls(items cbItems) []pendingToolCall {
+	outstanding := cb.outstandingToolCalls(items)
+	out := make([]pendingToolCall, 0, len(outstanding))
+	for _, call := range outstanding {
+		out = append(out, pendingToolCall{
+			call:    call.Call,
+			load:    append(json.RawMessage(nil), call.HandlerLoadData...),
+			started: call.State == OutstandingToolCallStarted,
+			bound:   call.Bound,
+		})
 	}
 	return out
 }
