@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	gschema "github.com/google/jsonschema-go/jsonschema"
+	openaiapi "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 
 	"github.com/mackross/agentloom/threads"
@@ -114,6 +115,14 @@ func TestResolveFunctionCallUsesOutputItemMetadata(t *testing.T) {
 	callID, name := resolveFunctionCall(functionCalls, "fc_1", "")
 	if callID != "call_1" || name != "calculator" {
 		t.Fatalf("unexpected resolved function call metadata: callID=%q name=%q", callID, name)
+	}
+}
+
+func TestResponsesStreamerReportsAssistantPrefixCapability(t *testing.T) {
+	streamer := NewResponsesStreamerWithClient(openaiapi.Client{}, "")
+
+	if got := streamer.Capabilities(); !got.AssistantPrefix {
+		t.Fatalf("expected assistant-prefix capability, got %#v", got)
 	}
 }
 

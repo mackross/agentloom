@@ -62,3 +62,15 @@ func TestAttachExecutorForRecoveryAllowsIdleThreadWithRequestedToolCall(t *testi
 
 	streamer.AssertCallCount(t)
 }
+
+func TestThreadExecutorReportsStreamerCapabilities(t *testing.T) {
+	streamer := newFakeStreamer()
+	streamer.capabilities = StreamerCapabilities{AssistantPrefix: false}
+
+	exec := NewThreadExecutor(streamer.Streamer())
+
+	got := exec.StreamerCapabilities()
+	if got.AssistantPrefix {
+		t.Fatalf("expected assistant-prefix capability to be false, got %#v", got)
+	}
+}

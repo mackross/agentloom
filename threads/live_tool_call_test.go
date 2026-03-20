@@ -96,6 +96,10 @@ type debugStreamer struct {
 	inner threads.LLMStreamer
 }
 
+func (s debugStreamer) Capabilities() threads.StreamerCapabilities {
+	return s.inner.Capabilities()
+}
+
 func (s debugStreamer) StreamReq(req threads.Req, emit func(threads.Item) error) error {
 	s.t.Logf("request instruction: %q", req.Instruction)
 	s.t.Logf("request items: %#v", req.Items)

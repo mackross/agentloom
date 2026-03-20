@@ -19,6 +19,23 @@ func TestMessagesStreamerContract(t *testing.T) {
 	streamertest.RunContractTests(t, anthropicContractHarness{})
 }
 
+func TestMessagesStreamerReportsAssistantPrefixCapability(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{model: string(anthropicapi.ModelClaudeSonnet4_6), want: false},
+		{model: string(anthropicapi.ModelClaudeSonnet4_5), want: true},
+	}
+
+	for _, tt := range tests {
+		streamer := NewMessagesStreamerWithClient(anthropicapi.Client{}, tt.model)
+		if got := streamer.Capabilities(); got.AssistantPrefix != tt.want {
+			t.Fatalf("assistant-prefix capability for %q = %#v, want %v", tt.model, got, tt.want)
+		}
+	}
+}
+
 type anthropicContractHarness struct{}
 
 func (anthropicContractHarness) Capabilities() streamertest.Capabilities {

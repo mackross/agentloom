@@ -20,6 +20,14 @@ func TestChatCompletionsStreamerContract(t *testing.T) {
 	streamertest.RunContractTests(t, fireworksContractHarness{})
 }
 
+func TestChatCompletionsStreamerReportsAssistantPrefixCapability(t *testing.T) {
+	streamer := NewChatCompletionsStreamerWithClient(openaiapi.Client{}, "")
+
+	if got := streamer.Capabilities(); !got.AssistantPrefix {
+		t.Fatalf("expected assistant-prefix capability, got %#v", got)
+	}
+}
+
 func TestChatCompletionsStreamerSetsContextLengthExceededBehaviorToError(t *testing.T) {
 	bodyCh := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

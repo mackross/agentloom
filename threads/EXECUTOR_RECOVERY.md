@@ -225,9 +225,10 @@ This is the capability that matters for "restore inflight and move to another mo
 
 Current status:
 
-- missing
-- `LLMStreamer` currently exposes only `StreamReq(...)`
-- there is no capability-reporting surface today
+- landed for streamer reporting
+  - `LLMStreamer` exposes `Capabilities()`
+  - current streamers report `AssistantPrefix`
+- attach-time recovery policy still does not use the capability surface yet
 
 ## Tool Recovery Model
 
@@ -640,7 +641,8 @@ This is why recovery belongs to the executor and not to durability.
 Current status:
 
 - still design work
-- there is no capability surface or attach-time recovery flow yet
+- streamer capability reporting exists now
+- there is still no attach-time recovery flow yet
 
 ## Examples
 
@@ -714,7 +716,6 @@ The implementation now likely needs these additions:
 - `Thread.ApplyRecoveryPolicy(...)`
 - rollback operations for retained thread history/control-block state
 - executor recovery policy
-- streamer capability reporting
 - live-request cancellation support so replacing an executor on an active thread
   really behaves like interruption
 - a late-result conflict policy for calls already canceled by recovery

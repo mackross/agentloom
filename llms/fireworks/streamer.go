@@ -58,6 +58,10 @@ func NewChatCompletionsStreamerWithClient(client openaiapi.Client, model string)
 	}
 }
 
+func (*ChatCompletionsStreamer) Capabilities() threads.StreamerCapabilities {
+	return threads.StreamerCapabilities{AssistantPrefix: true}
+}
+
 func newClientFromEnv() openaiapi.Client {
 	opts := []option.RequestOption{option.WithBaseURL(BaseURL)}
 	if apiKey := strings.TrimSpace(fireworksAPIKey()); apiKey != "" {

@@ -8,10 +8,11 @@ import (
 )
 
 type fakeStreamer struct {
-	runtime  fakeStreamerRuntime
-	replies  []streamReply
-	calls    int
-	requests []Req
+	capabilities StreamerCapabilities
+	runtime      fakeStreamerRuntime
+	replies      []streamReply
+	calls        int
+	requests     []Req
 
 	mu    sync.Mutex
 	waits map[string]*waitGate
@@ -67,7 +68,7 @@ func (b *streamBuilder) Wait(name string) {
 }
 
 func newFakeStreamer() *fakeStreamer {
-	f := &fakeStreamer{}
+	f := &fakeStreamer{capabilities: StreamerCapabilities{AssistantPrefix: true}}
 	f.runtime.owner = f
 	return f
 }
@@ -120,6 +121,10 @@ func (f *fakeStreamer) Resolve(name string) {
 
 func (r *fakeStreamerRuntime) StreamReq(req Req, emit func(Item) error) error {
 	return r.owner.streamReq(req, emit)
+}
+
+func (r *fakeStreamerRuntime) Capabilities() StreamerCapabilities {
+	return r.owner.capabilities
 }
 
 func (f *fakeStreamer) streamReq(req Req, emit func(Item) error) error {

@@ -62,6 +62,14 @@ func NewMessagesStreamerWithClient(client anthropicapi.Client, model string) *Me
 	}
 }
 
+func (s *MessagesStreamer) Capabilities() threads.StreamerCapabilities {
+	return threads.StreamerCapabilities{AssistantPrefix: supportsAssistantPrefix(string(s.model))}
+}
+
+func supportsAssistantPrefix(model string) bool {
+	return !strings.HasPrefix(model, "claude-sonnet-4-6") && !strings.HasPrefix(model, "claude-opus-4-6")
+}
+
 func (s *MessagesStreamer) StreamReq(req threads.Req, emit func(threads.Item) error) error {
 	messages, err := requestMessages(req)
 	if err != nil {
