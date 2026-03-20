@@ -13,8 +13,9 @@ type testThread struct {
 	t *testing.T
 	*Thread
 
-	executor stateObserver
-	delegate ThreadDelegate
+	executor         stateObserver
+	delegate         ThreadDelegate
+	recoveryAttached bool
 
 	roundTripEnabled bool
 	queueDepth       int
@@ -31,7 +32,18 @@ func newTestThread(t *testing.T) *testThread {
 
 func (x *testThread) SetExecutor(e stateObserver) {
 	x.executor = e
+	x.recoveryAttached = false
 	x.Thread.SetExecutor(e)
+}
+
+func (x *testThread) AttachExecutorForRecovery(e stateObserver) error {
+	err := x.Thread.AttachExecutorForRecovery(e)
+	if err != nil {
+		return err
+	}
+	x.executor = e
+	x.recoveryAttached = true
+	return nil
 }
 
 func (x *testThread) SetDelegate(d ThreadDelegate) {
@@ -70,7 +82,13 @@ func (x *testThread) maybeRoundTrip() {
 		x.t.Fatalf("restore snapshot: %v", err)
 	}
 	if x.executor != nil {
-		next.SetExecutor(x.executor)
+		if x.recoveryAttached {
+			if err := next.AttachExecutorForRecovery(x.executor); err != nil {
+				x.t.Fatalf("re-attach executor for recovery: %v", err)
+			}
+		} else {
+			next.SetExecutor(x.executor)
+		}
 	}
 	if x.delegate != nil {
 		next.SetDelegate(x.delegate)

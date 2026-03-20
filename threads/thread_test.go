@@ -666,6 +666,39 @@ func TestPendingToolCallsTreatResultWithoutStartAsCompleted(t *testing.T) {
 	}
 }
 
+func TestPendingToolCallsUseNearestSnapshotAndCloneLoadData(t *testing.T) {
+	thread := newTestThread(t)
+	thread.QueueItem(ToolsSnapshot{Handlers: []ToolHandlerBinding{
+		{Name: "calc", HandlerLoadData: []byte(`{"snapshot":"old"}`)},
+	}})
+	thread.QueueItem(ToolCall{CallID: "c1", Name: "missing", Payload: `{"a":1}`})
+	thread.QueueItem(ToolCall{CallID: "c2", Name: "calc", Payload: `{"a":2}`})
+	thread.QueueItem(ToolsSnapshot{Handlers: []ToolHandlerBinding{
+		{Name: "calc", HandlerLoadData: []byte(`{"snapshot":"new"}`)},
+	}})
+	thread.QueueItem(ToolCall{CallID: "c3", Name: "calc", Payload: `{"a":3}`})
+
+	got := thread.cb.pendingToolCalls(&thread.items)
+	if len(got) != 3 {
+		t.Fatalf("expected three pending tool calls, got %#v", got)
+	}
+	if got[0].call.CallID != "c1" || got[0].bound || got[0].started || len(got[0].load) != 0 {
+		t.Fatalf("unexpected unbound pending tool call: %#v", got[0])
+	}
+	if got[1].call.CallID != "c2" || !got[1].bound || string(got[1].load) != `{"snapshot":"old"}` {
+		t.Fatalf("unexpected old snapshot pending tool call: %#v", got[1])
+	}
+	if got[2].call.CallID != "c3" || !got[2].bound || string(got[2].load) != `{"snapshot":"new"}` {
+		t.Fatalf("unexpected new snapshot pending tool call: %#v", got[2])
+	}
+
+	got[1].load[0] = 'X'
+	again := thread.cb.pendingToolCalls(&thread.items)
+	if string(again[1].load) != `{"snapshot":"old"}` {
+		t.Fatalf("expected cloned load data, got %#v", again[1].load)
+	}
+}
+
 func TestInterleavedToolCallChunksCoalesceByCallID(t *testing.T) {
 	thread := newTestThread(t)
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
