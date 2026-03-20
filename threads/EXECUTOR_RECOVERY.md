@@ -11,7 +11,7 @@ not.
 
 The target design still stands:
 
-- durable restore should reconstruct the exact persisted tape and control-block state
+- durable restore should reconstruct the exact persisted thread history and control-block state
 - restore should not itself resume execution
 - executor attachment should become the public recovery hook
 
@@ -25,13 +25,13 @@ What has already landed since the first draft:
 - durable `ToolCallStarted`
 - control-block derivation of outstanding tool calls using the nearest preceding
   `ToolsSnapshot`
-- thread-owned synchronous tool resolution from the derived outstanding-call view
+- synchronous tool resolution on `Thread` from the derived outstanding-call view
 
 What is still missing:
 
 - `SetExecutor(...)` attach/recovery semantics
 - recovery policy selection and application
-- rollback operations for retained tape/state
+- rollback operations for retained thread history/state
 - durable per-call recovery metadata chosen by dispatch
 - streamer capability reporting such as `AssistantPrefix`
 - live cancellation when replacing an executor on an active thread
@@ -52,7 +52,7 @@ Important current mismatch with the target design:
 Today the relevant pieces are:
 
 - `Thread`
-  - owns the append-only item tape
+  - owns the append-only thread history
   - owns the derived `controlBlock`
   - owns durability state such as checkpoint and WAL
   - owns the current synchronous tool-resolution loop
@@ -63,7 +63,7 @@ Today the relevant pieces are:
     - `construct_llm_request`
     - `receiving_stream`
     - `stream_complete`
-  - derives outstanding tool calls from the tape
+  - derives outstanding tool calls from thread history
 - `ThreadExecutor`
   - watches control-block state transitions
   - when the thread enters `construct_llm_request`, it builds a request and streams it
@@ -75,9 +75,9 @@ Today the relevant pieces are:
 - `ToolDispatch`
   - reports whether execution has started durably
   - reports whether follow-up continuation is auto or manual
-  - returns tape items to append
+  - returns thread items to append
 - `ToolsSnapshot`
-  - durable control item on the tape
+  - durable control item in thread history
   - contains model-facing `ToolOfferSnapshot`
   - contains per-tool opaque handler load data
 
@@ -92,7 +92,7 @@ calls, but restore still does not answer:
 
 ## Design Goals
 
-- durable restore should preserve exact thread state and tape history
+- durable restore should preserve exact thread state and history
 - restore should not perform execution by itself
 - `SetExecutor(...)` should become the public recovery hook
 - switching executors mid-request should be semantically equivalent to canceling
@@ -111,7 +111,7 @@ calls, but restore still does not answer:
 - this note does not define the final rich `tool` package API
 - this note does not require async tool execution yet
 - this note does not require exact wire-level provider stream resumption; it only
-  defines how the tape is recovered and what the next request may look like
+  defines how restored thread state is recovered and what the next request may look like
 
 ## Why Recovery Belongs On The Executor
 
@@ -121,10 +121,10 @@ depends on executor capabilities.
 Example:
 
 - a thread is restored in `receiving_stream`
-- the tape already contains partial assistant text
+- the thread history already contains partial assistant text
 - a new executor is attached using a different model provider
 
-Whether that restored tape can continue without rollback depends on whether the
+Whether that restored thread history can continue without rollback depends on whether the
 new provider can accept assistant-prefixed transcript. That is a model/executor
 question, not a durability question.
 
@@ -147,7 +147,7 @@ Desired semantics:
 
 - `SetExecutor(nil)`
   - detach the current executor
-  - do not mutate the tape
+  - do not mutate thread history
 - `SetExecutor(x)` when the thread is `idle`
   - install `x`
   - do nothing else
@@ -155,8 +155,8 @@ Desired semantics:
   - treat the current execution as interrupted
   - if there is an existing live executor, cancel its active request/tool work
   - install `x`
-  - ask `x` to choose a recovery policy for the current tape and control-block state
-  - apply that policy through a thread-owned recovery API
+  - ask `x` to choose a recovery policy for the current thread history and control-block state
+  - apply that policy through a recovery API on `Thread`
 
 This gives one coherent meaning to:
 
@@ -207,7 +207,7 @@ Current status:
 
 - not implemented
 - there is no recovery policy type
-- there is no thread-owned rollback or cancellation-result API
+- there is no rollback or cancellation-result API on `Thread`
 
 ## Streamer Capability Boundary
 
@@ -237,7 +237,7 @@ Tool recovery must reason about what has happened durably, not just what is
 The thread can already distinguish these states for each tool call:
 
 1. `requested`
-   - `ToolCall` exists on the tape
+   - `ToolCall` exists in thread history
    - no `ToolCallStarted`
    - no result
    - the tool has definitely not begun execution
@@ -263,7 +263,7 @@ preserve:
 
 ### `ToolCallStarted`
 
-`ToolCallStarted` is now a durable tape item.
+`ToolCallStarted` is now a durable thread item.
 
 Current behavior:
 
@@ -273,7 +273,7 @@ Current behavior:
   "not started"
 
 The older wording that "the executor" writes this marker is now stale. In the
-current codebase the marker is written by the thread-owned tool-resolution path,
+current codebase the marker is written by the synchronous tool-resolution path on `Thread`,
 not by `ThreadExecutor` directly. The underlying semantic rule is still the same.
 
 ## Dispatch-Owned Recovery Metadata
@@ -338,7 +338,7 @@ That is acceptable, but it means recovery semantics become:
 If dispatch owns recovery metadata, then it must decide that metadata before
 side effects begin.
 
-Otherwise a crash could still leave the tape in the ambiguous state:
+Otherwise a crash could still leave thread history in the ambiguous state:
 
 - no `ToolCallStarted`
 - no persisted safety classification
@@ -409,14 +409,14 @@ This part is already implemented.
 Recovery policy should have two axes:
 
 1. rollback boundary
-2. handling of outstanding tool calls on the retained tape
+2. handling of outstanding tool calls in the retained thread history
 
 ### Rollback Boundary
 
 The useful boundaries are:
 
 - `Exact`
-  - keep the restored tape and current control-block state as-is
+  - keep the restored thread history and current control-block state as-is
 - `LastAssistantResponse`
   - roll back any trailing partial assistant response state
   - useful when the new streamer cannot continue from assistant-prefixed history
@@ -461,7 +461,7 @@ Current status:
 Recovery sometimes needs to tell the LLM that a tool call could not be completed
 normally.
 
-This should still be represented by normal tape items, not by out-of-band executor
+This should still be represented by normal thread items, not by out-of-band executor
 state.
 
 ### Unknown Prior Execution
@@ -549,7 +549,7 @@ Important semantic rule:
 
 That would produce contradictory durable history:
 
-- the tape would first say "this call was canceled/unknown during recovery"
+- the thread history would first say "this call was canceled/unknown during recovery"
 - then later say "this call completed normally"
 
 The final policy is still open, but it must be explicit. Plausible options are:
@@ -575,7 +575,7 @@ When `SetExecutor(x)` attaches a non-nil executor to a non-idle thread:
 4. inspect the executor's recovery policy
 5. inspect streamer capabilities
 6. choose a rollback boundary if needed
-7. after rollback, re-read outstanding tool calls from the retained tape
+7. after rollback, re-read outstanding tool calls from the retained thread history
 8. call `Thread.ApplyRecoveryPolicy(...)`
 9. during policy application:
    - classify requested calls before starting them
@@ -594,7 +594,7 @@ These are target recovery semantics, not current behavior.
 ### `idle`
 
 - attaching an executor does not need recovery
-- if the tape contains no outstanding tool calls, nothing happens
+- if thread history contains no outstanding tool calls, nothing happens
 - if a future state model allows `idle` with outstanding tool calls, the attached
   executor may still need to apply tool-call recovery policy
 
@@ -602,7 +602,7 @@ These are target recovery semantics, not current behavior.
 
 - the next action is usually to build and send a request
 - if policy rolls back further, the send may be dropped
-- if policy keeps exact state, the attached executor can send using the retained tape
+- if policy keeps exact state, the attached executor can send using the retained thread history
 
 ### `receiving_stream`
 
@@ -649,7 +649,7 @@ recovery policy selection are implemented.
 
 ### Example 1: Safe Calculator Tool
 
-Tape contains:
+Thread history contains:
 
 - `ToolCall(calc, ...)`
 - `ToolCallStarted(calc, ...)`
@@ -695,7 +695,7 @@ That means:
 
 ### Example 4: Move To A Model Without Assistant Prefix Support
 
-Thread is restored in `receiving_stream` with partial assistant text on tape.
+Thread is restored in `receiving_stream` with partial assistant text in thread history.
 
 If the new executor's streamer does not support assistant-prefixed continuation:
 
@@ -712,7 +712,7 @@ The implementation now likely needs these additions:
 - a recovery-facing outstanding-call view that includes any fields attach-time
   recovery needs beyond the current internal `pendingToolCalls(...)` shape
 - `Thread.ApplyRecoveryPolicy(...)`
-- rollback operations for retained tape/control-block state
+- rollback operations for retained thread history/control-block state
 - executor recovery policy
 - streamer capability reporting
 - live-request cancellation support so replacing an executor on an active thread
@@ -744,7 +744,7 @@ Recommended order from the current codebase:
 4. next:
    - define executor recovery policy and streamer capability surface
 5. next:
-   - add thread-owned rollback and recovery-policy application
+   - add rollback and recovery-policy application on `Thread`
    - ensure dispatch classification happens before side effects
 6. next:
    - move unsafe recovery decisions out of restore defaults and into executor attach

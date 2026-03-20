@@ -1,41 +1,41 @@
 # Threads (CPU Thread Metaphor)
 
-This package models a conversational "thread" as an append-only per-thread log of blocks,
-plus a derived runtime state that acts like a CPU thread control block.
+This package models a thread as an append-only per-thread history of items, plus
+a derived runtime state that acts like a CPU thread control block.
 
 ## Core Model
 
 - A **Thread** is the container for:
-  - `items`: an append-only linked list of blocks (the "instruction stream")
+  - `items`: an append-only linked list of items (the "instruction stream")
   - `cb`: a private control block (the "thread control block")
   - (later) an executor attachment
 
-- A **Block** is one conversational unit in the log. Examples:
-  - user message blocks
-  - assistant message blocks
-  - tool-call request blocks
-  - tool-result blocks
-  - fork blocks and merge blocks
+- An **Item** is one unit in the thread history. Examples:
+  - user message items
+  - assistant message items
+  - tool-call request items
+  - tool-result items
+  - future fork and merge items
 
 - The **Control Block** (TCB) is derived state for the thread. It is responsible for:
   - tracking where execution is in the log
   - tracking whether the thread is runnable or blocked
   - retaining active request metadata (e.g. the exact tool definitions snapshot sent)
   - gating advancement when there are blocking forks or blocking tool executions
-  - managing queued unsent blocks and throttling policy (declarative data)
+  - managing queued unsent items and throttling policy (declarative data)
 
-The control block must be rebuildable by replaying the thread's block log.
+The control block must be rebuildable by replaying the thread history.
 
 ## Instruction Pointer (IP)
 
 The control block maintains an **Instruction Pointer (IP)** into the thread's items.
 
-- IP is the current "program counter" for this conversation.
+- IP is the current "program counter" for this thread.
 - Advancing the thread means moving IP forward and updating control-block state.
 
-## Queued Blocks
+## Queued Items
 
-The thread may have blocks that are appended but not yet incorporated into the active
+The thread may have items that are appended but not yet incorporated into the active
 request/processing flow. Conceptually these are "queued instructions" that the executor
 has not yet executed/sent.
 
@@ -50,7 +50,7 @@ The **Thread Executor** runs:
 - tool call execution (sync and async)
 
 The executor notifies its delegate as the control block moves (state transitions,
-blocks appended, tool completions, etc.). It is typical for an agent to be the executor's
+items appended, tool completions, etc.). It is typical for an agent to be the executor's
 delegate.
 
 The executor must use the tool definitions snapshot that was active for the request
@@ -58,10 +58,10 @@ that produced a given tool call.
 
 ## Forking
 
-Forks are separate threads with their own block logs and their own control blocks.
+Forks are separate threads with their own item histories and their own control blocks.
 
-Fork creation can be represented in the parent thread's log via a fork block.
-Merging can be represented via merge blocks.
+Fork creation can be represented in the parent thread history via a fork item.
+Merging can be represented via merge items.
 
 ### Fork Types
 
