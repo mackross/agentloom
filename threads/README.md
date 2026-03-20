@@ -30,6 +30,8 @@ implemented feature overview.
     content unless they are tool calls or tool results
 - Streaming execution through `ThreadExecutor` and `LLMStreamer`
   - queueing `SendItem{}` moves the thread into request construction
+  - `LLMStreamer.Capabilities()` reports provider request-shape support such as
+    assistant-prefixed continuation
   - streamed items are appended back onto the thread in order
   - `ToolCallChunk` values are accumulated by call id until a final `ToolCall`
     arrives

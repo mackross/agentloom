@@ -6,7 +6,12 @@ type Req struct {
 	Tools       ToolOfferSnapshot
 }
 
+type StreamerCapabilities struct {
+	AssistantPrefix bool
+}
+
 type LLMStreamer interface {
+	Capabilities() StreamerCapabilities
 	StreamReq(req Req, emit func(Item) error) error
 }
 
@@ -17,6 +22,13 @@ type ThreadExecutor struct {
 
 func NewThreadExecutor(streamer LLMStreamer) *ThreadExecutor {
 	return &ThreadExecutor{streamer: streamer, requestBuilder: DefaultRequestBuilder}
+}
+
+func (x *ThreadExecutor) StreamerCapabilities() StreamerCapabilities {
+	if x == nil || x.streamer == nil {
+		return StreamerCapabilities{}
+	}
+	return x.streamer.Capabilities()
 }
 
 func (x *ThreadExecutor) OnControlBlockStateChange(t *Thread, _, to State) error {

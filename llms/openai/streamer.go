@@ -40,6 +40,10 @@ func NewResponsesStreamerWithClient(client openaiapi.Client, model string) *Resp
 	return &ResponsesStreamer{client: client, model: model}
 }
 
+func (*ResponsesStreamer) Capabilities() threads.StreamerCapabilities {
+	return threads.StreamerCapabilities{AssistantPrefix: true}
+}
+
 func (s *ResponsesStreamer) StreamReq(req threads.Req, emit func(threads.Item) error) error {
 	inputItems, err := requestInputItems(req)
 	if err != nil {

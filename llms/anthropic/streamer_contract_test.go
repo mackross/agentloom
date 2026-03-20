@@ -19,6 +19,14 @@ func TestMessagesStreamerContract(t *testing.T) {
 	streamertest.RunContractTests(t, anthropicContractHarness{})
 }
 
+func TestMessagesStreamerReportsAssistantPrefixCapability(t *testing.T) {
+	streamer := NewMessagesStreamerWithClient(anthropicapi.Client{}, "test-model")
+
+	if got := streamer.Capabilities(); !got.AssistantPrefix {
+		t.Fatalf("expected assistant-prefix capability, got %#v", got)
+	}
+}
+
 type anthropicContractHarness struct{}
 
 func (anthropicContractHarness) Capabilities() streamertest.Capabilities {

@@ -365,6 +365,10 @@ func (b *streamBuilder) Emit(v threads.Item) {
 	b.reply.steps = append(b.reply.steps, streamStep{emit: v})
 }
 
+func (f *fakeStreamer) Capabilities() threads.StreamerCapabilities {
+	return threads.StreamerCapabilities{AssistantPrefix: true}
+}
+
 func (f *fakeStreamer) StreamReq(req threads.Req, emit func(threads.Item) error) error {
 	f.calls++
 	f.requests = append(f.requests, cloneReq(req))

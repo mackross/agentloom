@@ -62,6 +62,10 @@ func NewMessagesStreamerWithClient(client anthropicapi.Client, model string) *Me
 	}
 }
 
+func (*MessagesStreamer) Capabilities() threads.StreamerCapabilities {
+	return threads.StreamerCapabilities{AssistantPrefix: true}
+}
+
 func (s *MessagesStreamer) StreamReq(req threads.Req, emit func(threads.Item) error) error {
 	messages, err := requestMessages(req)
 	if err != nil {
