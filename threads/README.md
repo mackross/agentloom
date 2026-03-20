@@ -1,7 +1,7 @@
 # threads
 
-`threads` models a conversation as an append-only tape of items plus a small
-control block that derives runtime state from that tape.
+`threads` models a conversation as an append-only item history plus a small
+control block that derives runtime state from it.
 
 This document is intentionally about the package as it exists today. The notes
 in [`SPEC.md`](./SPEC.md) still include forward-looking ideas; this file is the
@@ -22,22 +22,22 @@ implemented feature overview.
   - `construct_llm_request`
   - `receiving_stream`
   - `stream_complete`
-- Request construction from the current tape:
+- Request construction from the current thread items:
   - the last `AssistantInstruction` becomes `Req.Instruction`
   - the last `ToolsSnapshot` becomes `Req.Tools`
   - adjacent `UserText` and `AssistantText` items coalesce
-  - control items stay on the tape but do not become model-visible message
+  - control items stay in the thread history but do not become model-visible message
     content unless they are tool calls or tool results
 - Streaming execution through `ThreadExecutor` and `LLMStreamer`
   - queueing `SendItem{}` moves the thread into request construction
-  - streamed items are appended back onto the tape in order
+  - streamed items are appended back onto the thread in order
   - `ToolCallChunk` values are accumulated by call id until a final `ToolCall`
     arrives
 - Tool execution with durable hydration boundaries:
   - `ToolProvider` supplies a `ToolsSnapshot`
   - `ToolResolver` turns `(tool name, handler load data)` into a handler
   - tool calls resolve against the nearest preceding `ToolsSnapshot`
-  - tool results are appended to the same tape and automatically followed by a
+  - tool results are appended to the same thread history and automatically followed by a
     new `SendItem{}`
 - Delegate hooks for thread lifecycle events:
   - request start
@@ -77,7 +77,7 @@ follow-up request.
 
 ## Current Boundaries
 
-- `threads` owns the thread tape, control-block transitions, request
+- `threads` owns the thread item history, control-block transitions, request
   construction, durability, and the minimal tool-routing boundary.
 - `threads/tool` owns higher-level tool helpers such as catalogs and typed JSON
   handlers.
