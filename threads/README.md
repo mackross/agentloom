@@ -50,6 +50,7 @@ implemented feature overview.
   - append-only WAL diffs
   - checkpoint policies for safe, waiting, or unsafe capture
   - restore from checkpoint alone or checkpoint plus WAL
+  - attach-time resume from retained `construct_llm_request` state
   - a file-backed durable store in [`durability`](./durability)
 - Tool helper packages:
   - [`simpletool`](./simpletool) for small provider/resolver adapters
@@ -90,8 +91,10 @@ follow-up request.
 
 - Fork/join/merge behavior described in [`SPEC.md`](./SPEC.md) is still design
   work, not current package behavior.
-- Unsafe inflight restore exists, but full executor-resume recovery is still an
-  active design area documented in [`EXECUTOR_RECOVERY.md`](./EXECUTOR_RECOVERY.md).
+- Unsafe inflight restore exists, and retained `construct_llm_request` state can
+  resume when an executor is attached for recovery, but broader executor-resume
+  recovery is still an active design area documented in
+  [`EXECUTOR_RECOVERY.md`](./EXECUTOR_RECOVERY.md).
 
 ## Further Reading
 

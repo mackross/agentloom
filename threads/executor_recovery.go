@@ -2,12 +2,13 @@ package threads
 
 import "errors"
 
-var ErrAttachExecutorForRecoveryRequiresIdle = errors.New("threads attach executor for recovery requires idle thread")
+var ErrAttachExecutorForRecoveryRequiresRecoverableState = errors.New("threads attach executor for recovery requires idle or construct_llm_request thread")
 var ErrAttachExecutorForRecoveryRequiresCleanExactState = errors.New("threads attach executor for recovery requires no outstanding started tool calls")
 
 func (t *Thread) AttachExecutorForRecovery(e stateObserver) error {
-	if t.State() != StateIdle {
-		return ErrAttachExecutorForRecoveryRequiresIdle
+	state := t.State()
+	if state != StateIdle && state != StateConstructLLMRequest {
+		return ErrAttachExecutorForRecoveryRequiresRecoverableState
 	}
 	for _, p := range t.cb.pendingToolCalls(&t.items) {
 		if p.started {
@@ -15,5 +16,8 @@ func (t *Thread) AttachExecutorForRecovery(e stateObserver) error {
 		}
 	}
 	t.SetExecutor(e)
+	if state == StateConstructLLMRequest {
+		return t.OnCBStateChange(StateIdle, StateConstructLLMRequest)
+	}
 	return nil
 }
