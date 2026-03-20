@@ -1,6 +1,6 @@
 # threads
 
-`threads` models a thread as an append-only history of items plus a small
+`threads` models a conversation thread as an append-only history of items plus a small
 control block that derives runtime state from that history.
 
 This document is intentionally about the package as it exists today. The notes
