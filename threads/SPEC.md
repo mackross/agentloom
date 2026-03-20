@@ -1,6 +1,6 @@
 # Threads (CPU Thread Metaphor)
 
-This package models a thread as an append-only per-thread history of items, plus
+This package models a conversational thread as an append-only per-thread history of items, plus
 a derived runtime state that acts like a CPU thread control block.
 
 ## Core Model
