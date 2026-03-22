@@ -67,6 +67,41 @@ func TestAttachExecutorForRecoveryResendsConstructLLMRequestAfterCheckpointResto
 	}
 }
 
+func TestAttachExecutorForRecoveryCallsOnThreadRequestOnceForRecoveredRequest(t *testing.T) {
+	thread := New()
+	thread.QueueItem(UserText("hello"))
+	thread.QueueItem(SendItem{})
+
+	cp, err := thread.Checkpoint(CheckpointOptions{Policy: InflightUnsafe})
+	if err != nil {
+		t.Fatalf("checkpoint construct_llm_request: %v", err)
+	}
+	restored, err := RestoreCheckpoint(cp, RestoreOptions{AllowUnsafe: true})
+	if err != nil {
+		t.Fatalf("restore checkpoint: %v", err)
+	}
+
+	requestCalls := 0
+	restored.SetDelegate(ThreadDelegateFuncs{
+		OnRequest: func(_ *Thread) {
+			requestCalls++
+		},
+	})
+
+	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
+		b.Emit(AssistantText("ok"))
+	})
+
+	if err := restored.AttachExecutorForRecovery(NewThreadExecutor(streamer.Streamer())); err != nil {
+		t.Fatalf("attach executor for recovery: %v", err)
+	}
+
+	if requestCalls != 1 {
+		t.Fatalf("expected OnThreadRequest to be called once during recovery attach, got %d", requestCalls)
+	}
+	streamer.AssertCallCount(t)
+}
+
 func TestAttachExecutorForRecoveryRejectsIdleThreadWithOutstandingStartedToolCall(t *testing.T) {
 	thread := newTestThread(t)
 	thread.QueueItem(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
