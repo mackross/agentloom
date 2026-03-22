@@ -166,7 +166,6 @@ func (t *Thread) resumeConstructLLMRequest() error {
 			return err
 		}
 	}
-	t.captureSafeIfIdle()
 	return nil
 }
 
