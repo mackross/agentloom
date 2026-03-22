@@ -21,3 +21,18 @@ func (t *Thread) AttachExecutorForRecovery(e stateObserver) error {
 	}
 	return nil
 }
+
+func (t *Thread) resumeConstructLLMRequest() error {
+	if t.State() != StateConstructLLMRequest {
+		return nil
+	}
+	if t.delegate != nil {
+		t.delegate.OnThreadRequest(t)
+	}
+	if t.executor != nil {
+		if err := t.executor.OnControlBlockStateChange(t, StateConstructLLMRequest, StateConstructLLMRequest); err != nil {
+			return err
+		}
+	}
+	return nil
+}
