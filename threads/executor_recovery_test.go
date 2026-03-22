@@ -18,13 +18,25 @@ func TestAttachExecutorForRecoveryInstallsExecutorWhileIdle(t *testing.T) {
 	streamer.AssertCallCount(t)
 }
 
-func TestAttachExecutorForRecoveryResumesConstructLLMRequestState(t *testing.T) {
-	thread := newTestThread(t)
+func TestAttachExecutorForRecoveryResendsConstructLLMRequestAfterCheckpointRestore(t *testing.T) {
+	thread := New()
 	thread.QueueItem(AssistantInstruction("tone"))
 	thread.QueueItem(UserText("hello"))
 	thread.QueueItem(SendItem{})
 	if got := thread.State(); got != StateConstructLLMRequest {
-		t.Fatalf("expected construct_llm_request before recovery attach, got %q", got)
+		t.Fatalf("expected construct_llm_request before checkpoint, got %q", got)
+	}
+
+	cp, err := thread.Checkpoint(CheckpointOptions{Policy: InflightUnsafe})
+	if err != nil {
+		t.Fatalf("checkpoint construct_llm_request: %v", err)
+	}
+	restored, err := RestoreCheckpoint(cp, RestoreOptions{AllowUnsafe: true})
+	if err != nil {
+		t.Fatalf("restore checkpoint: %v", err)
+	}
+	if got := restored.State(); got != StateConstructLLMRequest {
+		t.Fatalf("expected restored construct_llm_request, got %q", got)
 	}
 
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
@@ -38,13 +50,19 @@ func TestAttachExecutorForRecoveryResumesConstructLLMRequestState(t *testing.T) 
 		})
 		b.Emit(AssistantText("ok"))
 	})
+	if got := streamer.CallCount(); got != 0 {
+		t.Fatalf("expected no streamer calls before recovery attach, got %d", got)
+	}
 
-	if err := thread.AttachExecutorForRecovery(NewThreadExecutor(streamer.Streamer())); err != nil {
+	if err := restored.AttachExecutorForRecovery(NewThreadExecutor(streamer.Streamer())); err != nil {
 		t.Fatalf("attach executor for recovery: %v", err)
 	}
 
+	if got := streamer.CallCount(); got != 1 {
+		t.Fatalf("expected recovery attach to resend exactly one request, got %d", got)
+	}
 	streamer.AssertCallCount(t)
-	if got := thread.State(); got != StateIdle {
+	if got := restored.State(); got != StateIdle {
 		t.Fatalf("expected idle after recovered request, got %q", got)
 	}
 }

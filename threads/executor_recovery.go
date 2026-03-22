@@ -17,7 +17,7 @@ func (t *Thread) AttachExecutorForRecovery(e stateObserver) error {
 	}
 	t.SetExecutor(e)
 	if state == StateConstructLLMRequest {
-		return t.OnCBStateChange(StateIdle, StateConstructLLMRequest)
+		return t.OnCBStateChange(StateConstructLLMRequest, StateConstructLLMRequest)
 	}
 	return nil
 }
