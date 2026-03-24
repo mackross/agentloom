@@ -230,6 +230,8 @@ Current status:
 - landed for streamer reporting
   - `LLMStreamer` exposes `Capabilities()`
   - current streamers report `AssistantPrefix`
+- landed for recovery-view surfacing
+  - `Thread.RecoveryView()` exposes exact-recovery capability requirements
 - attach-time recovery policy still does not use the capability surface yet
 
 ## Tool Recovery Model
@@ -388,12 +390,17 @@ What this already gives us:
 
 What is still missing from this derived view for recovery:
 
-- durable per-call recovery metadata for started calls
-- continuation mode in the derived view
-- an explicit recovery-facing API if attach-time recovery should live outside
-  `thread.go`
+- policy application on top of the derived view
 
-The exact API shape can still change. The important capability now exists.
+Current status:
+
+- `Thread.RecoveryView()` exposes:
+  - outstanding tool calls
+  - handler load data binding
+  - started state
+  - continuation mode
+  - durable recovery metadata
+  - exact-recovery streamer capability requirements
 
 ### Binding Resolution Rule
 
