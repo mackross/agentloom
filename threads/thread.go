@@ -125,10 +125,10 @@ func (t *Thread) appendStreamItem(v Item) error {
 
 func (t *Thread) endStreaming() error {
 	t.mutationSeq++
+	t.appendWAL(walOpEndStream, nil)
 	if err := t.cb.endStreaming(); err != nil {
 		return err
 	}
-	t.appendWAL(walOpEndStream, nil)
 	return nil
 }
 
@@ -173,7 +173,11 @@ func (t *Thread) resolvePendingToolCalls() (bool, error) {
 			return resolved, err
 		}
 		if dispatch.Started {
-			t.queueToolResolutionItem(hasPendingSend, ToolCallStarted{CallID: p.call.CallID, Continue: dispatch.Continue})
+			t.queueToolResolutionItem(hasPendingSend, ToolCallStarted{
+				CallID:   p.call.CallID,
+				Continue: dispatch.Continue,
+				Recovery: dispatch.Recovery,
+			})
 		}
 		for _, out := range dispatch.Items {
 			if out == nil {

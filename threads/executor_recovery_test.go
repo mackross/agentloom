@@ -1,6 +1,51 @@
 package threads
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"testing"
+)
+
+type toolResolverFunc func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error)
+
+func (f toolResolverFunc) ResolveTool(ctx context.Context, call ToolCall, load json.RawMessage) (ToolDispatch, error) {
+	return f(ctx, call, load)
+}
+
+func runPendingToolDispatch(t *testing.T, dispatch ToolDispatch) (*Thread, Checkpoint) {
+	t.Helper()
+
+	thread := New()
+	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("calc", "calculate")})
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error) {
+		return dispatch, nil
+	}))
+
+	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
+	if err != nil {
+		t.Fatalf("base checkpoint: %v", err)
+	}
+
+	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
+		b.Emit(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
+	})
+	thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
+	thread.QueueItem(UserText("hello"))
+	thread.QueueItem(SendItem{})
+	streamer.AssertCallCount(t)
+
+	return thread, base
+}
+
+func requirePendingToolCall(t *testing.T, thread *Thread) pendingToolCall {
+	t.Helper()
+
+	pending := thread.cb.pendingToolCalls(&thread.items)
+	if len(pending) != 1 {
+		t.Fatalf("expected one pending tool call, got %#v", pending)
+	}
+	return pending[0]
+}
 
 func TestAttachExecutorForRecoveryInstallsExecutorWhileIdle(t *testing.T) {
 	thread := newTestThread(t)
@@ -131,6 +176,73 @@ func TestAttachExecutorForRecoveryAllowsIdleThreadWithRequestedToolCall(t *testi
 	thread.QueueItem(SendItem{})
 
 	streamer.AssertCallCount(t)
+}
+
+func TestStartedToolCallPreservesRecoveryMetadataAcrossSnapshotAndRestore(t *testing.T) {
+	thread, base := runPendingToolDispatch(t, ToolDispatch{
+		Started:  true,
+		Recovery: ToolRecoveryUnsafe,
+	})
+
+	pending := requirePendingToolCall(t, thread)
+	if !pending.started || pending.recovery != ToolRecoveryUnsafe {
+		t.Fatalf("unexpected started pending tool call: %#v", pending)
+	}
+
+	snap, err := thread.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot thread: %v", err)
+	}
+	roundTripped, err := RestoreThreadSnapshot(snap)
+	if err != nil {
+		t.Fatalf("restore snapshot: %v", err)
+	}
+	roundTripPending := requirePendingToolCall(t, roundTripped)
+	if !roundTripPending.started || roundTripPending.recovery != ToolRecoveryUnsafe {
+		t.Fatalf("unexpected round-tripped pending tool call: %#v", roundTripPending)
+	}
+
+	restored, err := RestoreFromCheckpointAndWAL(base, thread.WALAfter(base.Seq), RestoreOptions{})
+	if err != nil {
+		t.Fatalf("restore from checkpoint + wal: %v", err)
+	}
+	restoredPending := requirePendingToolCall(t, restored)
+	if !restoredPending.started || restoredPending.recovery != ToolRecoveryUnsafe {
+		t.Fatalf("unexpected restored pending tool call: %#v", restoredPending)
+	}
+}
+
+func TestRequestedToolCallHasNoDurableRecoveryClassification(t *testing.T) {
+	thread, base := runPendingToolDispatch(t, ToolDispatch{
+		Recovery: ToolRecoveryUnsafe,
+	})
+
+	pending := requirePendingToolCall(t, thread)
+	if pending.started || pending.recovery != "" {
+		t.Fatalf("unexpected requested pending tool call: %#v", pending)
+	}
+
+	snap, err := thread.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot thread: %v", err)
+	}
+	roundTripped, err := RestoreThreadSnapshot(snap)
+	if err != nil {
+		t.Fatalf("restore snapshot: %v", err)
+	}
+	roundTripPending := requirePendingToolCall(t, roundTripped)
+	if roundTripPending.started || roundTripPending.recovery != "" {
+		t.Fatalf("unexpected round-tripped requested tool call: %#v", roundTripPending)
+	}
+
+	restored, err := RestoreFromCheckpointAndWAL(base, thread.WALAfter(base.Seq), RestoreOptions{})
+	if err != nil {
+		t.Fatalf("restore from checkpoint + wal: %v", err)
+	}
+	restoredPending := requirePendingToolCall(t, restored)
+	if restoredPending.started || restoredPending.recovery != "" {
+		t.Fatalf("unexpected restored requested tool call: %#v", restoredPending)
+	}
 }
 
 func TestThreadExecutorReportsStreamerCapabilities(t *testing.T) {
