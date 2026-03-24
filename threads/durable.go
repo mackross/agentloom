@@ -80,15 +80,16 @@ type ThreadSnapshot struct {
 }
 
 type SnapshotItem struct {
-	Type   string         `json:"kind"`
-	Text   string         `json:"text,omitempty"`
-	ID     string         `json:"id,omitempty"`
-	Name   string         `json:"name,omitempty"`
-	Mode   string         `json:"mode,omitempty"`
-	Args   string         `json:"args,omitempty"`
-	Output string         `json:"output,omitempty"`
-	Data   string         `json:"data,omitempty"`
-	Tools  *ToolsSnapshot `json:"tools,omitempty"`
+	Type     string         `json:"kind"`
+	Text     string         `json:"text,omitempty"`
+	ID       string         `json:"id,omitempty"`
+	Name     string         `json:"name,omitempty"`
+	Mode     string         `json:"mode,omitempty"`
+	Recovery string         `json:"recovery,omitempty"`
+	Args     string         `json:"args,omitempty"`
+	Output   string         `json:"output,omitempty"`
+	Data     string         `json:"data,omitempty"`
+	Tools    *ToolsSnapshot `json:"tools,omitempty"`
 }
 
 func (t *Thread) Snapshot() (ThreadSnapshot, error) {
@@ -300,7 +301,12 @@ func itemToSnapshotItem(v Item) (SnapshotItem, error) {
 	case ToolCall:
 		return SnapshotItem{Type: "tool_call", ID: x.CallID, Name: x.Name, Args: x.Payload}, nil
 	case ToolCallStarted:
-		return SnapshotItem{Type: "tool_call_started", ID: x.CallID, Mode: string(x.Continue)}, nil
+		return SnapshotItem{
+			Type:     "tool_call_started",
+			ID:       x.CallID,
+			Mode:     string(x.Continue),
+			Recovery: string(x.Recovery),
+		}, nil
 	case ToolCallResultable:
 		data, err := encodeToolData(x.ToolData())
 		if err != nil {
@@ -335,7 +341,11 @@ func snapshotItemToItem(raw SnapshotItem) (Item, error) {
 	case "tool_call":
 		return ToolCall{CallID: raw.ID, Name: raw.Name, Payload: raw.Args}, nil
 	case "tool_call_started":
-		return ToolCallStarted{CallID: raw.ID, Continue: ToolContinue(raw.Mode)}, nil
+		return ToolCallStarted{
+			CallID:   raw.ID,
+			Continue: ToolContinue(raw.Mode),
+			Recovery: ToolRecovery(raw.Recovery),
+		}, nil
 	case "tool_result":
 		data, err := decodeToolData(raw.Data)
 		if err != nil {

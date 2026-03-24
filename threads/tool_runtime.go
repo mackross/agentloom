@@ -22,10 +22,22 @@ const (
 	ToolContinueManual ToolContinue = "manual"
 )
 
+type ToolRecovery string
+
+const (
+	// ToolRecoverySafe marks a started tool dispatch as safe to recover/replay.
+	ToolRecoverySafe ToolRecovery = "safe"
+	// ToolRecoveryUnsafe marks a started tool dispatch as unsafe to recover/replay.
+	ToolRecoveryUnsafe ToolRecovery = "unsafe"
+)
+
 type ToolDispatch struct {
 	Started bool
 	// Continue defaults to ToolContinueAuto when left unset.
 	Continue ToolContinue
+	// Recovery is only persisted when Started is true and a ToolCallStarted item
+	// is durably recorded on the tape.
+	Recovery ToolRecovery
 	Items    []Item
 }
 

@@ -45,6 +45,8 @@ type ToolCallStarted struct {
 	CallID string
 	// Continue defaults to ToolContinueAuto when left unset.
 	Continue ToolContinue
+	// Recovery is the durable recovery classification copied from ToolDispatch.
+	Recovery ToolRecovery
 }
 
 // ToolCallResult must have exactly one ToolCall before it in the thread with a

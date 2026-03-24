@@ -28,10 +28,11 @@ type cbTransition struct {
 }
 
 type pendingToolCall struct {
-	call    ToolCall
-	load    json.RawMessage
-	started bool
-	bound   bool
+	call     ToolCall
+	load     json.RawMessage
+	started  bool
+	bound    bool
+	recovery ToolRecovery
 }
 
 type cbStateHandler interface {
@@ -437,6 +438,7 @@ func (cb *controlBlock) pendingToolCalls(items cbItems) []pendingToolCall {
 			call := pendingToolCall{call: v, load: append(json.RawMessage(nil), load...), bound: ok}
 			if i, ok := pendingByID[v.CallID]; ok {
 				call.started = pending[i].started
+				call.recovery = pending[i].recovery
 				pending[i] = call
 				break
 			}
@@ -445,6 +447,7 @@ func (cb *controlBlock) pendingToolCalls(items cbItems) []pendingToolCall {
 		case ToolCallStarted:
 			if i, ok := pendingByID[v.CallID]; ok {
 				pending[i].started = true
+				pending[i].recovery = v.Recovery
 			}
 		case ToolCallResultable:
 			if i, ok := pendingByID[v.ToolCallID()]; ok {
