@@ -47,6 +47,15 @@ func requirePendingToolCall(t *testing.T, thread *Thread) pendingToolCall {
 	return pending[0]
 }
 
+func walThroughOp(events []WALEvent, op string) []WALEvent {
+	for i, ev := range events {
+		if ev.Op == op {
+			return append([]WALEvent(nil), events[:i+1]...)
+		}
+	}
+	return append([]WALEvent(nil), events...)
+}
+
 func TestAttachExecutorForRecoveryInstallsExecutorWhileIdle(t *testing.T) {
 	thread := newTestThread(t)
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
@@ -242,6 +251,27 @@ func TestRequestedToolCallHasNoDurableRecoveryClassification(t *testing.T) {
 	restoredPending := requirePendingToolCall(t, restored)
 	if restoredPending.started || restoredPending.recovery != "" {
 		t.Fatalf("unexpected restored requested tool call: %#v", restoredPending)
+	}
+}
+
+func TestRestoreAfterEndStreamCrashKeepsToolCallRequestedUntilStartedItemPersists(t *testing.T) {
+	thread, base := runPendingToolDispatch(t, ToolDispatch{
+		Started:  true,
+		Recovery: ToolRecoveryUnsafe,
+	})
+
+	wal := walThroughOp(thread.WALAfter(base.Seq), walOpEndStream)
+	restored, err := RestoreFromCheckpointAndWAL(base, wal, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("restore from checkpoint + wal: %v", err)
+	}
+	if got := restored.State(); got != StateIdle {
+		t.Fatalf("expected idle after end_stream prefix restore, got %q", got)
+	}
+
+	pending := requirePendingToolCall(t, restored)
+	if pending.started || pending.recovery != "" {
+		t.Fatalf("unexpected pending tool call after end_stream-only restore: %#v", pending)
 	}
 }
 

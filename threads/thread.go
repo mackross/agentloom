@@ -125,6 +125,10 @@ func (t *Thread) appendStreamItem(v Item) error {
 
 func (t *Thread) endStreaming() error {
 	t.mutationSeq++
+	// Persist end_stream before the state-change callback can queue follow-on
+	// items. If we crash in that callback, replaying this WAL prefix cleanly
+	// restores the requested-tool boundary; later tool-resolution items only
+	// appear if their own WAL entries were durably appended.
 	t.appendWAL(walOpEndStream, nil)
 	if err := t.cb.endStreaming(); err != nil {
 		return err
