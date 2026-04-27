@@ -26,6 +26,8 @@ func TestMessagesStreamerReportsAssistantPrefixCapability(t *testing.T) {
 	}{
 		{model: string(anthropicapi.ModelClaudeSonnet4_6), want: false},
 		{model: string(anthropicapi.ModelClaudeSonnet4_5), want: true},
+		{model: "claude-haiku-4-7", want: false},
+		{model: "claude-sonnet-4-10", want: false},
 	}
 
 	for _, tt := range tests {

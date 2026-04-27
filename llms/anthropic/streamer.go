@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	anthropicapi "github.com/anthropics/anthropic-sdk-go"
@@ -67,7 +68,19 @@ func (s *MessagesStreamer) Capabilities() threads.StreamerCapabilities {
 }
 
 func supportsAssistantPrefix(model string) bool {
-	return !strings.HasPrefix(model, "claude-sonnet-4-6") && !strings.HasPrefix(model, "claude-opus-4-6")
+	if strings.HasPrefix(model, "claude-sonnet-4-6") || strings.HasPrefix(model, "claude-opus-4-6") {
+		return false
+	}
+	familyPrefix := "claude-"
+	if !strings.HasPrefix(model, familyPrefix) {
+		return true
+	}
+	parts := strings.Split(strings.TrimPrefix(model, familyPrefix), "-")
+	if len(parts) < 3 || parts[1] != "4" {
+		return true
+	}
+	minor, err := strconv.Atoi(parts[2])
+	return err != nil || minor < 7
 }
 
 func (s *MessagesStreamer) StreamReq(req threads.Req, emit func(threads.Item) error) error {
