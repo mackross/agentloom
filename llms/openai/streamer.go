@@ -45,6 +45,10 @@ func (*ResponsesStreamer) Capabilities() threads.StreamerCapabilities {
 }
 
 func (s *ResponsesStreamer) StreamReq(req threads.Req, emit func(threads.Item) error) error {
+	return s.StreamReqContext(context.Background(), req, emit)
+}
+
+func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Req, emit func(threads.Item) error) error {
 	inputItems, err := requestInputItems(req)
 	if err != nil {
 		return err
@@ -75,7 +79,7 @@ func (s *ResponsesStreamer) StreamReq(req threads.Req, emit func(threads.Item) e
 		params.ParallelToolCalls = openaiapi.Bool(*req.Tools.Parallel)
 	}
 
-	stream := s.client.Responses.NewStreaming(context.Background(), params)
+	stream := s.client.Responses.NewStreaming(ctx, params)
 	defer stream.Close()
 	functionCalls := map[string]functionCallMeta{}
 

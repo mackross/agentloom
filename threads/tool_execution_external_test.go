@@ -73,7 +73,7 @@ func TestToolProviderAndResolverExecuteToolCallsEndToEnd(t *testing.T) {
 			order = append(order, item.Type)
 		}
 	}
-	if want := []string{"tool_call", "tool_call_started", "tool_result"}; !reflect.DeepEqual(order, want) {
+	if want := []string{"tool_call", "tool_call_resolving", "tool_call_started", "tool_result"}; !reflect.DeepEqual(order, want) {
 		t.Fatalf("unexpected tool lifecycle order: %#v", order)
 	}
 	streamer.AssertCallCount(t)

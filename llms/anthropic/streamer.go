@@ -84,6 +84,10 @@ func supportsAssistantPrefix(model string) bool {
 }
 
 func (s *MessagesStreamer) StreamReq(req threads.Req, emit func(threads.Item) error) error {
+	return s.StreamReqContext(context.Background(), req, emit)
+}
+
+func (s *MessagesStreamer) StreamReqContext(ctx context.Context, req threads.Req, emit func(threads.Item) error) error {
 	messages, err := requestMessages(req)
 	if err != nil {
 		return err
@@ -115,7 +119,7 @@ func (s *MessagesStreamer) StreamReq(req threads.Req, emit func(threads.Item) er
 		params.ToolChoice = *choice
 	}
 
-	stream := s.client.Messages.NewStreaming(context.Background(), params)
+	stream := s.client.Messages.NewStreaming(ctx, params)
 	defer stream.Close()
 
 	acc := anthropicapi.Message{}

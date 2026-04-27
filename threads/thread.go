@@ -5,6 +5,13 @@ import (
 	"fmt"
 )
 
+// Thread is a single-owner conversation state machine. Its mutation methods are
+// synchronous and are not goroutine-safe.
+//
+// If a Thread is owned by an EventLoop, all access that can observe or mutate
+// the thread must run through EventLoop.Do. Async tool calling requires
+// EventLoop ownership because tool completions can arrive from other goroutines
+// and must be serialized back onto the thread.
 type Thread struct {
 	cb       controlBlock
 	items    itemList[Item]
@@ -13,12 +20,20 @@ type Thread struct {
 	store    DurableStore
 	tools    ToolProvider
 	resolver ToolResolver
+	loop     *EventLoop
 
 	mutationSeq  uint32
 	lastSafeSeq  uint32
 	lastSafeSnap ThreadSnapshot
 	wal          []WALEvent
 	replayingWAL bool
+}
+
+func (t *Thread) setEventLoop(loop *EventLoop) {
+	if loop != nil && t.loop != nil {
+		panic("threads event loop already owns thread")
+	}
+	t.loop = loop
 }
 
 func New() *Thread {
@@ -166,12 +181,14 @@ func (t *Thread) resolvePendingToolCalls() (bool, error) {
 	autoSend := false
 	hasPendingSend := t.cb.hasPendingSend(&t.items)
 	for _, p := range t.cb.pendingToolCalls(&t.items) {
-		if p.call.CallID == "" || p.started {
+		if p.call.CallID == "" || p.resolving || p.started {
 			continue
 		}
 		if !p.bound {
 			return false, fmt.Errorf("threads missing tool handler binding for %q", p.call.Name)
 		}
+		t.queueToolResolutionItem(hasPendingSend, ToolCallResolving{CallID: p.call.CallID})
+		resolved = true
 		dispatch, err := t.resolver.ResolveTool(context.Background(), p.call, p.load)
 		if err != nil {
 			return resolved, err

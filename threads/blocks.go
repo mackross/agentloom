@@ -38,6 +38,13 @@ type ToolCallChunk struct {
 	PayloadDelta string
 }
 
+// ToolCallResolving is added when runtime resolution for a ToolCall begins.
+// If recovery sees this marker without a result or ToolCallStarted, it must
+// treat the call as ambiguous rather than definitely not started.
+type ToolCallResolving struct {
+	CallID string
+}
+
 // ToolCallStarted should be added to the thread when a ToolCall handler is
 // running but has not returned a result. This will be used to enable better
 // recovery from errors/crashes.
@@ -82,6 +89,8 @@ func (ToolCallChunk) Emit() bool                  { return false }
 func (ToolCallChunk) MergesWith() []any           { return nil } // TODO: investigate why this is nil and UserText isnt? can we just get rid of this method?
 func (ToolCall) Emit() bool                       { return false }
 func (ToolCall) MergesWith() []any                { return nil }
+func (ToolCallResolving) Emit() bool              { return false }
+func (ToolCallResolving) MergesWith() []any       { return nil }
 func (ToolCallStarted) Emit() bool                { return false }
 func (ToolCallStarted) MergesWith() []any         { return nil }
 func (ToolCallResult) Emit() bool                 { return false }

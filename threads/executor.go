@@ -1,5 +1,11 @@
 package threads
 
+import (
+	"context"
+	"errors"
+	"sync"
+)
+
 type Req struct {
 	Instruction string
 	Items       []Item
@@ -15,9 +21,16 @@ type LLMStreamer interface {
 	StreamReq(req Req, emit func(Item) error) error
 }
 
+type ContextLLMStreamer interface {
+	Capabilities() StreamerCapabilities
+	StreamReqContext(ctx context.Context, req Req, emit func(Item) error) error
+}
+
 type ThreadExecutor struct {
 	streamer       LLMStreamer
 	requestBuilder RequestBuilder
+	mu             sync.Mutex
+	cancelStream   context.CancelFunc
 }
 
 func NewThreadExecutor(streamer LLMStreamer) *ThreadExecutor {
@@ -43,11 +56,49 @@ func (x *ThreadExecutor) OnControlBlockStateChange(t *Thread, _, to State) error
 	if err := t.beginStreaming(); err != nil {
 		return err
 	}
-	err := x.streamer.StreamReq(in, func(v Item) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	x.mu.Lock()
+	x.cancelStream = cancel
+	x.mu.Unlock()
+	defer func() {
+		x.mu.Lock()
+		if x.cancelStream == cancel {
+			x.cancelStream = nil
+		}
+		x.mu.Unlock()
+		cancel()
+	}()
+
+	err := x.streamReq(ctx, in, func(v Item) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return t.appendStreamItem(v)
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
 	return t.endStreaming()
+}
+
+func (x *ThreadExecutor) CancelCurrentStream() bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.cancelStream == nil {
+		return false
+	}
+	x.cancelStream()
+	return true
+}
+
+func (x *ThreadExecutor) streamReq(ctx context.Context, req Req, emit func(Item) error) error {
+	if s, ok := x.streamer.(ContextLLMStreamer); ok {
+		return s.StreamReqContext(ctx, req, emit)
+	}
+	return x.streamer.StreamReq(req, func(v Item) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return emit(v)
+	})
 }

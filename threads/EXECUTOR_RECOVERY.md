@@ -240,20 +240,29 @@ The thread can already distinguish these states for each tool call:
 
 1. `requested`
    - `ToolCall` exists in thread history
+   - no `ToolCallResolving`
    - no `ToolCallStarted`
    - no result
-   - the tool has definitely not begun execution
+   - the resolver has definitely not been entered
 
-2. `started`
+2. `resolving`
+   - `ToolCallResolving` exists
+   - no `ToolCallStarted`
+   - no result
+   - runtime entered resolver code, but no final dispatch metadata/result is durable
+
+3. `started`
    - `ToolCallStarted` exists
    - no result
    - the tool may have executed partially or fully
 
-3. `completed`
+4. `completed`
    - some `ToolCallResultable` exists
    - no longer inflight
 
-The important crash-recovery distinction is between `requested` and `started`.
+The important crash-recovery distinction is between `requested`, `resolving`, and
+`started`. Requested can be retried as not-entered; resolving must fail closed or
+use explicit policy; started can use persisted dispatch metadata.
 
 There is one more piece of durable state now that recovery will likely need to
 preserve:
@@ -271,8 +280,8 @@ Current behavior:
 
 - it is appended only when a `ToolDispatch` reports `Started: true`
 - that means the runtime found a concrete dispatch path before the marker was written
-- if the process dies before dispatch resolution, the tool is still definitively
-  "not started"
+- before resolver code runs, `ToolCallResolving` is appended so a resolver crash is
+  durable but ambiguous rather than confused with a call that was never entered
 
 The older wording that "the executor" writes this marker is now stale. In the
 current codebase the marker is written by the synchronous tool-resolution path on `Thread`,
@@ -318,11 +327,12 @@ Likely home:
 
 Current status:
 
-- missing
-- `ToolDispatch` currently has no recovery metadata fields
-- `ToolCallStarted` currently persists only:
+- landed for started calls
+- `ToolDispatch.Recovery` is durably copied onto `ToolCallStarted`
+- `ToolCallStarted` persists:
   - call id
   - continuation mode
+  - recovery classification
 
 ### Consequence For Requested Calls
 
@@ -332,7 +342,9 @@ therefore no durable dispatch-owned recovery metadata yet.
 That is acceptable, but it means recovery semantics become:
 
 - `requested` calls are allowed to rerun dispatch selection/classification because
-  the runtime knows they did not start
+  the runtime knows resolver code was not entered
+- `resolving` calls are ambiguous because resolver code was entered but no final
+  dispatch metadata was durably produced
 - `started` calls must rely on the metadata already persisted on `ToolCallStarted`
 
 ### Contract Requirement
@@ -340,8 +352,9 @@ That is acceptable, but it means recovery semantics become:
 If dispatch owns recovery metadata, then it must decide that metadata before
 side effects begin.
 
-Otherwise a crash could still leave thread history in the ambiguous state:
+Otherwise a crash can still leave thread history in the ambiguous state:
 
+- `ToolCallResolving`
 - no `ToolCallStarted`
 - no persisted safety classification
 - side effects may already have happened
@@ -355,8 +368,8 @@ So one of these must become true:
   - durably append `ToolCallStarted`
   - execute
 
-Without that sequencing guarantee, moving safety onto `ToolDispatch` does not
-fully solve crash recovery.
+Without that sequencing guarantee, `ToolCallResolving` lets recovery fail closed,
+but it cannot recover with precise safe/unsafe metadata.
 
 ## Outstanding Tool Call Derivation
 

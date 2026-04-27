@@ -300,6 +300,8 @@ func itemToSnapshotItem(v Item) (SnapshotItem, error) {
 		return SnapshotItem{Type: "tool_call_chunk", ID: x.CallID, Name: x.Name, Args: x.PayloadDelta}, nil
 	case ToolCall:
 		return SnapshotItem{Type: "tool_call", ID: x.CallID, Name: x.Name, Args: x.Payload}, nil
+	case ToolCallResolving:
+		return SnapshotItem{Type: "tool_call_resolving", ID: x.CallID}, nil
 	case ToolCallStarted:
 		return SnapshotItem{
 			Type:     "tool_call_started",
@@ -340,6 +342,8 @@ func snapshotItemToItem(raw SnapshotItem) (Item, error) {
 		return ToolCallChunk{CallID: raw.ID, Name: raw.Name, PayloadDelta: raw.Args}, nil
 	case "tool_call":
 		return ToolCall{CallID: raw.ID, Name: raw.Name, Payload: raw.Args}, nil
+	case "tool_call_resolving":
+		return ToolCallResolving{CallID: raw.ID}, nil
 	case "tool_call_started":
 		return ToolCallStarted{
 			CallID:   raw.ID,

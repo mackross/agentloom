@@ -78,6 +78,10 @@ func fireworksAPIKey() string {
 }
 
 func (s *ChatCompletionsStreamer) StreamReq(req threads.Req, emit func(threads.Item) error) error {
+	return s.StreamReqContext(context.Background(), req, emit)
+}
+
+func (s *ChatCompletionsStreamer) StreamReqContext(ctx context.Context, req threads.Req, emit func(threads.Item) error) error {
 	messages, err := requestMessages(req)
 	if err != nil {
 		return err
@@ -112,7 +116,7 @@ func (s *ChatCompletionsStreamer) StreamReq(req threads.Req, emit func(threads.I
 		opts = append(opts, option.WithJSONSet("context_length_exceeded_behavior", behavior))
 	}
 
-	stream := s.client.Chat.Completions.NewStreaming(context.Background(), params, opts...)
+	stream := s.client.Chat.Completions.NewStreaming(ctx, params, opts...)
 	defer stream.Close()
 
 	toolsInFlight := map[toolKey]*toolState{}

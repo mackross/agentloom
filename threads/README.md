@@ -14,6 +14,7 @@ implemented feature overview.
   - `AssistantText`
   - `AssistantInstruction`
   - `ToolCall`
+  - `ToolCallResolving`
   - `ToolCallResult`
   - `ToolsSnapshot`
   - `SendItem`
@@ -59,6 +60,7 @@ implemented feature overview.
   - OpenAI Responses streamer
   - Anthropic Messages streamer
   - interactive chat example in [`examples/chat`](./examples/chat)
+  - event-loop chat example in [`examples/chat_event_loop`](./examples/chat_event_loop)
 
 ## Minimal Flow
 
@@ -102,3 +104,4 @@ follow-up request.
 - [`DURABILITY.md`](./DURABILITY.md)
 - [`TOOL_HYDRATION.md`](./TOOL_HYDRATION.md)
 - [`examples/chat/main.go`](./examples/chat/main.go)
+- [`examples/chat_event_loop/main.go`](./examples/chat_event_loop/main.go)
