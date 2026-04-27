@@ -50,6 +50,7 @@ func (t *Thread) resumeReceivingStream(e stateObserver, opts RecoveryOptions) er
 	if r, ok := e.(interface{ StreamerCapabilities() StreamerCapabilities }); ok {
 		caps = r.StreamerCapabilities()
 	}
+	rolledBack := false
 	send, toolStart, toolPrev := (*item[Item])(nil), (*item[Item])(nil), (*item[Item])(nil)
 	for prev, n := (*item[Item])(nil), t.items.Head(); n != nil; prev, n = n, n.Next {
 		if _, ok := n.Item.(SendItem); ok {
@@ -69,6 +70,7 @@ func (t *Thread) resumeReceivingStream(e stateObserver, opts RecoveryOptions) er
 	if toolStart == nil {
 		if !caps.AssistantPrefix {
 			t.dropStreamTail(send)
+			rolledBack = true
 		}
 	} else {
 		switch opts.ToolChunkPolicy {
@@ -76,18 +78,38 @@ func (t *Thread) resumeReceivingStream(e stateObserver, opts RecoveryOptions) er
 			return ErrAttachExecutorForRecoveryRequiresCleanExactState
 		case ToolChunkRecoveryRollbackAndRetry:
 			t.dropStreamTail(send)
+			rolledBack = true
 		case ToolChunkRecoveryKeepAssistantPrefix:
 			if !caps.AssistantPrefix || toolPrev == send {
 				return ErrAttachExecutorForRecoveryRequiresCleanExactState
 			}
 			t.dropStreamTail(toolPrev)
+			rolledBack = true
 		default:
 			return ErrAttachExecutorForRecoveryRequiresCleanExactState
 		}
 	}
-	t.SetExecutor(e)
 	t.cb.setState(StateConstructLLMRequest)
+	if rolledBack {
+		if err := t.replaceDurableSnapshot(); err != nil {
+			return err
+		}
+	}
+	t.SetExecutor(e)
 	return t.resumeConstructLLMRequest()
+}
+
+func (t *Thread) replaceDurableSnapshot() error {
+	if t.store == nil {
+		return nil
+	}
+	cp, err := t.Checkpoint(CheckpointOptions{Policy: InflightUnsafe})
+	if err != nil {
+		return err
+	}
+	t.store.ReplaceSnapshot(cp)
+	t.wal = nil
+	return nil
 }
 
 func (t *Thread) dropStreamTail(keep *item[Item]) {

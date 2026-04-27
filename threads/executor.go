@@ -31,6 +31,7 @@ type ThreadExecutor struct {
 	requestBuilder RequestBuilder
 	mu             sync.Mutex
 	cancelStream   context.CancelFunc
+	cancelToken    *struct{}
 }
 
 func NewThreadExecutor(streamer LLMStreamer) *ThreadExecutor {
@@ -57,13 +58,16 @@ func (x *ThreadExecutor) OnControlBlockStateChange(t *Thread, _, to State) error
 		return err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	token := &struct{}{}
 	x.mu.Lock()
 	x.cancelStream = cancel
+	x.cancelToken = token
 	x.mu.Unlock()
 	defer func() {
 		x.mu.Lock()
-		if x.cancelStream == cancel {
+		if x.cancelToken == token {
 			x.cancelStream = nil
+			x.cancelToken = nil
 		}
 		x.mu.Unlock()
 		cancel()
