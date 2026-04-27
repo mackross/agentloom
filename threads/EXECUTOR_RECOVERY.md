@@ -32,8 +32,6 @@ What is still missing:
 - `SetExecutor(...)` attach/recovery semantics
 - recovery policy selection and application
 - rollback operations for retained thread history/state
-- durable per-call recovery metadata chosen by dispatch
-- streamer capability reporting such as `AssistantPrefix`
 - live cancellation when replacing an executor on an active thread
 - recovery behavior for started-but-unfinished tools
 - a late-result policy for tool work that finishes after recovery has already
@@ -45,7 +43,8 @@ Important current mismatch with the target design:
 - `RestoreFromCheckpointAndWAL(...)` still trims an unsafe inflight tail by default
 - outstanding started tool calls are detectable but are not retried, canceled, or
   converted into recovery results
-- `ToolDispatch` currently returns no durable recovery metadata for the started call
+- durable `ToolDispatch` recovery metadata is recorded, but no attach-time policy
+  consumes it yet
 
 ## Current Model
 
@@ -594,6 +593,60 @@ The key design point is that the decision is made on attach, not on restore.
 
 These are target recovery semantics, not current behavior.
 
+| Restored state | Outstanding tool state | Streamer capability | Target recovery behavior |
+| --- | --- | --- | --- |
+| `idle` | none | any | Attach executor only; no recovery work. |
+| `idle` | requested but not started | any | Apply requested-tool policy; the call is known not to have run. |
+| `idle` | started without result | any | Apply started-tool policy using durable recovery metadata. |
+| `construct_llm_request` | none | any | Rebuild and resend the retained request. This is partially implemented by `AttachExecutorForRecovery`. |
+| `construct_llm_request` | requested but not started | any | Apply requested-tool policy first if the retained history exposes such calls, then continue request flow. |
+| `construct_llm_request` | started without result | any | Do not blindly resend; apply started-tool policy or reject exact recovery. Current implementation rejects this. |
+| `receiving_stream` | none, and no partial tool-call chunks | `AssistantPrefix=true` | Keep retained assistant output and continue from the assistant-prefixed transcript. |
+| `receiving_stream` | none, and no partial tool-call chunks | `AssistantPrefix=false` | Roll back to the interrupted send boundary, drop retained stream output, and retry the request. |
+| `receiving_stream` | partial/requested tool call with no `ToolCallStarted` marker | `AssistantPrefix=false` | Roll back to the interrupted send boundary, drop retained stream output, and retry because no tool side effect started. |
+| `receiving_stream` | partial/requested tool call | `AssistantPrefix=true` | Exact continuation is ambiguous; roll back or apply a policy that can explicitly handle partial tool-call state. |
+| `receiving_stream` | started without result | any | Apply started-tool policy after choosing any required stream rollback boundary. |
+| `stream_complete` | none | any | Settle locally to `idle`; provider continuation is usually unnecessary. |
+| `stream_complete` | requested but not started | any | Settle stream, then apply requested-tool policy. |
+| `stream_complete` | started without result | any | Settle stream, then apply started-tool policy. |
+
+The important exact-resume case is narrow:
+
+- state is `receiving_stream`
+- retained history has assistant output that can be used as a prefix
+- there are no outstanding tool calls
+- there are no partial `ToolCallChunk` items in the retained stream tail
+- the attached streamer's `AssistantPrefix` capability is true
+
+When all of those hold, recovery can continue from the current transcript without
+rolling back. If any of them do not hold, recovery must either roll back to a safe
+boundary or apply an explicit tool/stream policy before execution resumes.
+
+The main rollback-and-retry case is also narrow:
+
+- state is `receiving_stream`
+- the attached streamer's `AssistantPrefix` capability is false
+- the WAL contains no `ToolCallStarted` marker for retained stream output
+- retained assistant/tool-call stream output can be discarded back to the interrupted
+  `SendItem` boundary
+
+When those hold, recovery should drop the received chunks and restart the original
+request rather than fail.
+
+Current implementation exposes the tool-call stream-material choice as
+`RecoveryOptions.ToolChunkPolicy`:
+
+- `ToolChunkRecoveryFail`
+  - default for retained `ToolCallChunk` or `ToolCall` stream material
+  - leaves retained history unchanged and returns an error
+- `ToolChunkRecoveryRollbackAndRetry`
+  - drops the interrupted stream tail back to the `SendItem`
+  - retries the original request
+- `ToolChunkRecoveryKeepAssistantPrefix`
+  - requires `AssistantPrefix=true`
+  - keeps assistant text before the first retained tool-call item
+  - drops the retained tool-call tail and continues from the assistant prefix
+
 ### `idle`
 
 - attaching an executor does not need recovery
@@ -611,7 +664,7 @@ These are target recovery semantics, not current behavior.
 
 - exact recovery is only possible if the streamer can support the retained transcript
 - if `AssistantPrefix` is false, exact recovery must roll back to
-  `LastAssistantResponse` or `LastIdle`
+  the interrupted send boundary when no streamed tool call has started, then retry
 - after rollback, tool recovery policy still applies
 
 ### `stream_complete`
@@ -711,8 +764,6 @@ If the new executor's streamer does not support assistant-prefixed continuation:
 
 The implementation now likely needs these additions:
 
-- recovery metadata on `ToolDispatch`
-- durable persistence of that recovery metadata on `ToolCallStarted`
 - a recovery-facing outstanding-call view that includes any fields attach-time
   recovery needs beyond the current internal `pendingToolCalls(...)` shape
 - `Thread.ApplyRecoveryPolicy(...)`
@@ -731,6 +782,9 @@ Notable items that are no longer "new concepts":
 - durable `ToolsSnapshot` handler load data
 - control-block derivation of outstanding tool calls and started status
 - persisted tool-dispatch continuation mode
+- recovery metadata on `ToolDispatch`
+- durable persistence of recovery metadata on `ToolCallStarted`
+- streamer capability reporting such as `AssistantPrefix`
 
 ## Implementation Order
 
@@ -741,11 +795,12 @@ Recommended order from the current codebase:
 2. done:
    - persist `ToolCallStarted`
    - persist dispatch continuation mode
-3. next:
+3. done:
    - add dispatch-owned recovery metadata
    - persist that metadata on `ToolCallStarted`
 4. next:
-   - define executor recovery policy and streamer capability surface
+   - define executor recovery policy
+   - define exact-resume eligibility using streamer capabilities
 5. next:
    - add rollback and recovery-policy application on `Thread`
    - ensure dispatch classification happens before side effects
