@@ -9,6 +9,7 @@ const (
 	StateConstructLLMRequest State = "construct_llm_request"
 	StateReceivingStream     State = "receiving_stream"
 	StateStreamComplete      State = "stream_complete"
+	StateAwaitingToolResults State = "awaiting_tool_results"
 )
 
 type controlBlock struct {
@@ -19,6 +20,7 @@ type controlBlock struct {
 	streamInsertionPoint *item[Item]
 	streamToolCalls      map[string]*item[Item]
 	queueStartItem       *item[Item]
+	awaitToolResults     bool
 }
 
 type cbTransition struct {
@@ -73,6 +75,8 @@ func (s State) New(cb *controlBlock) cbStateHandler {
 		return receivingStreamState(stateRef)
 	case StateStreamComplete:
 		return streamCompleteState(stateRef)
+	case StateAwaitingToolResults:
+		return awaitingToolResultsState(stateRef)
 	default:
 		return idleState(stateRef)
 	}
@@ -233,10 +237,65 @@ func (s receivingStreamState) EndStreaming() cbTransition {
 	cb.streamInsertionPoint = nil
 	cb.streamToolCalls = nil
 	cb.setState(StateStreamComplete)
-	if cb.canEnterIdle() {
+	if cb.awaitToolResults {
+		cb.setState(StateAwaitingToolResults)
+	} else if cb.canEnterIdle() {
 		cb.setState(StateIdle)
 	}
 	return cbTransition{From: from, To: cb.state, Changed: from != cb.state}
+}
+
+type awaitingToolResultsState cbState
+
+func (s awaitingToolResultsState) QueueItem(items cbItems, v Item) cbTransition {
+	cb := s.controlBlock
+	if _, ok := v.(ToolCallResultable); ok && cb.queueToolResultBeforeBlockedSend(items, v) {
+		return cbTransition{From: cb.state, To: cb.state, Changed: false}
+	}
+	return queueItemTransition(cb, items, v)
+}
+
+func (s awaitingToolResultsState) CanAdvance(items cbItems) bool {
+	cb := s.controlBlock
+	next := cb.nextItemAfterIP(items)
+	if next == nil {
+		return false
+	}
+	_, isSend := next.Item.(SendItem)
+	return !isSend || !cb.hasPendingToolCallsThrough(next, items)
+}
+
+func (s awaitingToolResultsState) AdvanceNext(items cbItems) cbTransition {
+	cb := s.controlBlock
+	from := cb.state
+	if !s.CanAdvance(items) {
+		return noChangeTransition(cb)
+	}
+	if cb.tryCoalesceAhead(items) {
+		cb.syncQueueStartToIP()
+		return cbTransition{From: from, To: cb.state, Changed: false}
+	}
+	cb.ip = cb.nextItemAfterIP(items)
+	if _, ok := cb.ip.Item.(SendItem); ok {
+		cb.awaitToolResults = false
+		cb.setState(StateConstructLLMRequest)
+	}
+	cb.syncQueueStartToIP()
+	if cb.state == StateAwaitingToolResults && cb.nextItemAfterIP(items) == nil && len(cb.pendingToolCalls(items)) == 0 {
+		cb.awaitToolResults = false
+		cb.setState(StateIdle)
+	}
+	return cbTransition{From: from, To: cb.state, Changed: from != cb.state}
+}
+
+func (s awaitingToolResultsState) BeginStreaming() cbTransition {
+	return noChangeTransition(s.controlBlock)
+}
+func (s awaitingToolResultsState) AppendStreamItem(_ cbItems, _ Item) cbTransition {
+	return noChangeTransition(s.controlBlock)
+}
+func (s awaitingToolResultsState) EndStreaming() cbTransition {
+	return noChangeTransition(s.controlBlock)
 }
 
 type streamCompleteState cbState
@@ -393,6 +452,42 @@ func (cb *controlBlock) queueItemBeforeFirstPendingSend(items cbItems, v Item) b
 		prev = n
 	}
 	return false
+}
+
+func (cb *controlBlock) queueToolResultBeforeBlockedSend(items cbItems, v Item) bool {
+	prev := cb.ip
+	for n := cb.nextItemAfterIP(items); n != nil; n = n.Next {
+		if _, ok := n.Item.(SendItem); ok {
+			if !cb.hasPendingToolCallsThrough(n, items) {
+				return false
+			}
+			inserted := items.InsertAfter(prev, v)
+			if cb.queueStartItem == n {
+				cb.queueStartItem = inserted
+			}
+			return true
+		}
+		prev = n
+	}
+	return false
+}
+
+func (cb *controlBlock) hasPendingToolCallsThrough(end *item[Item], items cbItems) bool {
+	pending := map[string]bool{}
+	for n := items.Head(); n != nil; n = n.Next {
+		switch v := n.Item.(type) {
+		case ToolCall:
+			if v.CallID != "" {
+				pending[v.CallID] = true
+			}
+		case ToolCallResultable:
+			delete(pending, v.ToolCallID())
+		}
+		if n == end {
+			break
+		}
+	}
+	return len(pending) > 0
 }
 
 func (cb *controlBlock) canAdvance(items cbItems) bool {

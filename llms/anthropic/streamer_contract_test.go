@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -32,9 +33,36 @@ func TestMessagesStreamerReportsAssistantPrefixCapability(t *testing.T) {
 
 	for _, tt := range tests {
 		streamer := NewMessagesStreamerWithClient(anthropicapi.Client{}, tt.model)
-		if got := streamer.Capabilities(); got.AssistantPrefix != tt.want {
+		if got := streamer.Capabilities(); got.AssistantPrefix != tt.want || got.ToolResultSendPolicy != threads.ToolResultSendRequiresComplete {
 			t.Fatalf("assistant-prefix capability for %q = %#v, want %v", tt.model, got, tt.want)
 		}
+	}
+}
+
+func TestMessagesStreamerOrdersToolResultsBeforeUserText(t *testing.T) {
+	got, err := anthropicContractHarness{}.Stream(t, threads.Req{Items: []threads.Item{
+		threads.ToolCall{CallID: "c1", Name: "alpha", Payload: `{"a":1}`},
+		threads.AssistantText("between"),
+		threads.ToolCall{CallID: "c2", Name: "beta", Payload: `{"b":2}`},
+		threads.AssistantText("after"),
+		threads.UserText("continue after tools"),
+		threads.ToolCallResult{CallID: "c2", Output: "2"},
+		threads.ToolCallResult{CallID: "c1", Output: "1"},
+	}}, nil, func(threads.Item) error { return nil })
+	if err != nil {
+		t.Fatalf("stream req: %v", err)
+	}
+	want := []streamertest.ObservedInputItem{
+		{Kind: "tool_call", CallID: "c1", Name: "alpha", Payload: `{"a":1}`},
+		{Kind: "assistant_text", Text: "between"},
+		{Kind: "tool_call", CallID: "c2", Name: "beta", Payload: `{"b":2}`},
+		{Kind: "assistant_text", Text: "after"},
+		{Kind: "tool_result", CallID: "c1", Output: "1"},
+		{Kind: "tool_result", CallID: "c2", Output: "2"},
+		{Kind: "user_text", Text: "continue after tools"},
+	}
+	if !reflect.DeepEqual(got.Items, want) {
+		t.Fatalf("unexpected ordered items:\ngot:  %#v\nwant: %#v", got.Items, want)
 	}
 }
 

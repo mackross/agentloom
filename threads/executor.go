@@ -13,8 +13,16 @@ type Req struct {
 }
 
 type StreamerCapabilities struct {
-	AssistantPrefix bool
+	AssistantPrefix      bool
+	ToolResultSendPolicy ToolResultSendPolicy
 }
+
+type ToolResultSendPolicy string
+
+const (
+	ToolResultSendPermissive       ToolResultSendPolicy = ""
+	ToolResultSendRequiresComplete ToolResultSendPolicy = "requires_complete"
+)
 
 type LLMStreamer interface {
 	Capabilities() StreamerCapabilities
@@ -49,6 +57,7 @@ func (x *ThreadExecutor) OnControlBlockStateChange(t *Thread, _, to State) error
 	if to != StateConstructLLMRequest || x.streamer == nil {
 		return nil
 	}
+	t.policy = x.StreamerCapabilities().ToolResultSendPolicy
 	b := x.requestBuilder
 	if b == nil {
 		b = DefaultRequestBuilder

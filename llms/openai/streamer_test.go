@@ -121,7 +121,7 @@ func TestResolveFunctionCallUsesOutputItemMetadata(t *testing.T) {
 func TestResponsesStreamerReportsAssistantPrefixCapability(t *testing.T) {
 	streamer := NewResponsesStreamerWithClient(openaiapi.Client{}, "")
 
-	if got := streamer.Capabilities(); !got.AssistantPrefix {
+	if got := streamer.Capabilities(); !got.AssistantPrefix || got.ToolResultSendPolicy != threads.ToolResultSendRequiresComplete {
 		t.Fatalf("expected assistant-prefix capability, got %#v", got)
 	}
 }

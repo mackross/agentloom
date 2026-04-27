@@ -20,6 +20,7 @@ const DefaultModel = "gpt-4.1-mini"
 type ResponsesStreamer struct {
 	client            openaiapi.Client
 	model             string
+	Reasoning         shared.ReasoningParam
 	OnOutputTextDelta func(string)
 }
 
@@ -41,7 +42,7 @@ func NewResponsesStreamerWithClient(client openaiapi.Client, model string) *Resp
 }
 
 func (*ResponsesStreamer) Capabilities() threads.StreamerCapabilities {
-	return threads.StreamerCapabilities{AssistantPrefix: true}
+	return threads.StreamerCapabilities{AssistantPrefix: true, ToolResultSendPolicy: threads.ToolResultSendRequiresComplete}
 }
 
 func (s *ResponsesStreamer) StreamReq(req threads.Req, emit func(threads.Item) error) error {
@@ -55,8 +56,9 @@ func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Re
 	}
 
 	params := responses.ResponseNewParams{
-		Model: s.model,
-		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: inputItems},
+		Model:     s.model,
+		Input:     responses.ResponseNewParamsInputUnion{OfInputItemList: inputItems},
+		Reasoning: s.Reasoning,
 	}
 	if req.Instruction != "" {
 		params.Instructions = openaiapi.String(req.Instruction)

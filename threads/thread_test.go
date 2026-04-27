@@ -726,6 +726,164 @@ func TestInterleavedToolCallChunksCoalesceByCallID(t *testing.T) {
 	}
 }
 
+func TestToolResultSendPolicyGating(t *testing.T) {
+	tests := []struct {
+		name        string
+		policy      ToolResultSendPolicy
+		calls       []ToolCall
+		results     []Item
+		wantSend    bool
+		wantState   State
+		wantItems   []Item
+		resultFirst bool
+	}{
+		{
+			name:      "strict waits for missing single result",
+			policy:    ToolResultSendRequiresComplete,
+			calls:     []ToolCall{{CallID: "c1", Name: "calc", Payload: `{"a":1}`}},
+			wantState: StateAwaitingToolResults,
+		},
+		{
+			name:      "strict sends after single result",
+			policy:    ToolResultSendRequiresComplete,
+			calls:     []ToolCall{{CallID: "c1", Name: "calc", Payload: `{"a":1}`}},
+			results:   []Item{ToolCallResult{CallID: "c1", Output: "1"}},
+			wantSend:  true,
+			wantState: StateIdle,
+			wantItems: []Item{UserText("hello"), ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`}, ToolCallResult{CallID: "c1", Output: "1"}},
+		},
+		{
+			name:   "strict waits for all parallel results",
+			policy: ToolResultSendRequiresComplete,
+			calls: []ToolCall{
+				{CallID: "c1", Name: "alpha", Payload: `{"a":1}`},
+				{CallID: "c2", Name: "beta", Payload: `{"b":2}`},
+			},
+			results:   []Item{ToolCallResult{CallID: "c1", Output: "1"}},
+			wantState: StateAwaitingToolResults,
+		},
+		{
+			name: "permissive allows partial send",
+			calls: []ToolCall{
+				{CallID: "c1", Name: "alpha", Payload: `{"a":1}`},
+				{CallID: "c2", Name: "beta", Payload: `{"b":2}`},
+			},
+			results:     []Item{ToolCallResult{CallID: "c1", Output: "1"}},
+			wantSend:    true,
+			wantState:   StateIdle,
+			resultFirst: true,
+			wantItems:   []Item{UserText("hello"), ToolCall{CallID: "c1", Name: "alpha", Payload: `{"a":1}`}, ToolCall{CallID: "c2", Name: "beta", Payload: `{"b":2}`}, ToolCallResult{CallID: "c1", Output: "1"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			thread := newTestThread(t)
+			streamer := newFakeStreamer()
+			streamer.capabilities.ToolResultSendPolicy = tt.policy
+			streamer.Reply(func(b *streamBuilder) {
+				for _, call := range tt.calls {
+					b.Emit(call)
+				}
+			})
+			if tt.wantSend {
+				streamer.Reply(func(b *streamBuilder) {
+					b.AssertRequest(func(req Req) {
+						if !reflect.DeepEqual(req.Items, tt.wantItems) {
+							t.Fatalf("unexpected follow-up request items: %#v", req.Items)
+						}
+					})
+				})
+			}
+
+			thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
+			thread.QueueItem(UserText("hello"))
+			thread.QueueItem(SendItem{})
+			if tt.resultFirst {
+				for _, result := range tt.results {
+					thread.QueueItem(result)
+				}
+				thread.QueueItem(SendItem{})
+			} else {
+				thread.QueueItem(SendItem{})
+				for _, result := range tt.results {
+					thread.QueueItem(result)
+				}
+			}
+
+			if got := thread.State(); got != tt.wantState {
+				t.Fatalf("state = %q, want %q", got, tt.wantState)
+			}
+			if got, want := streamer.CallCount(), 1; tt.wantSend {
+				want = 2
+				if got != want {
+					t.Fatalf("stream calls = %d, want %d", got, want)
+				}
+			} else if got != want {
+				t.Fatalf("stream calls = %d, want %d", got, want)
+			}
+		})
+	}
+}
+
+func TestStrictToolResultPolicyMovesResultsBeforeHeldSendBoundary(t *testing.T) {
+	thread := newTestThread(t)
+	streamer := newFakeStreamer()
+	streamer.capabilities.ToolResultSendPolicy = ToolResultSendRequiresComplete
+	streamer.Reply(func(b *streamBuilder) {
+		b.Emit(ToolCall{CallID: "c1", Name: "alpha", Payload: `{"a":1}`})
+		b.Emit(ToolCall{CallID: "c2", Name: "beta", Payload: `{"b":2}`})
+	}).Reply(func(b *streamBuilder) {
+		b.AssertRequest(func(req Req) {
+			want := []Item{
+				UserText("hello"),
+				ToolCall{CallID: "c1", Name: "alpha", Payload: `{"a":1}`},
+				ToolCall{CallID: "c2", Name: "beta", Payload: `{"b":2}`},
+				ToolCallResult{CallID: "c1", Output: "1"},
+				ToolCallResult{CallID: "c2", Output: "2"},
+			}
+			if !reflect.DeepEqual(req.Items, want) {
+				t.Fatalf("unexpected follow-up request items: %#v", req.Items)
+			}
+		})
+	})
+	thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
+
+	thread.QueueItem(UserText("hello"))
+	thread.QueueItem(SendItem{})
+	thread.QueueItem(SendItem{})
+	thread.QueueItem(UserText("future"))
+	thread.QueueItem(ToolCallResult{CallID: "c1", Output: "1"})
+	if got := streamer.CallCount(); got != 1 {
+		t.Fatalf("stream calls after partial result = %d, want 1", got)
+	}
+	thread.QueueItem(ToolCallResult{CallID: "c2", Output: "2"})
+
+	streamer.AssertCallCount(t)
+}
+
+func TestAwaitingToolResultsIsNotIdle(t *testing.T) {
+	thread := newTestThread(t)
+	idleCalls := 0
+	thread.SetDelegate(ThreadDelegateFuncs{OnIdle: func(*Thread) { idleCalls++ }})
+	streamer := newFakeStreamer()
+	streamer.capabilities.ToolResultSendPolicy = ToolResultSendRequiresComplete
+	streamer.Reply(func(b *streamBuilder) {
+		b.Emit(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
+	})
+	thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
+
+	thread.QueueItem(UserText("hello"))
+	thread.QueueItem(SendItem{})
+
+	if got := thread.State(); got != StateAwaitingToolResults {
+		t.Fatalf("state = %q, want %q", got, StateAwaitingToolResults)
+	}
+	if idleCalls != 0 {
+		t.Fatalf("OnThreadIdle called %d times", idleCalls)
+	}
+}
+
 func TestDelegateReceivesRawToolCallChunkAndFinalItems(t *testing.T) {
 	thread := newTestThread(t)
 	seen := []Item{}

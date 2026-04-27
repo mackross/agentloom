@@ -23,7 +23,7 @@ func TestChatCompletionsStreamerContract(t *testing.T) {
 func TestChatCompletionsStreamerReportsAssistantPrefixCapability(t *testing.T) {
 	streamer := NewChatCompletionsStreamerWithClient(openaiapi.Client{}, "")
 
-	if got := streamer.Capabilities(); !got.AssistantPrefix {
+	if got := streamer.Capabilities(); !got.AssistantPrefix || got.ToolResultSendPolicy != threads.ToolResultSendPermissive {
 		t.Fatalf("expected assistant-prefix capability, got %#v", got)
 	}
 }

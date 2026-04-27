@@ -156,3 +156,27 @@ func TestCheckpointUnsafeRestoreRequiresExplicitOptIn(t *testing.T) {
 	streamer.Resolve("hold")
 	<-done
 }
+
+func TestCheckpointSkipPreservesAwaitingToolResults(t *testing.T) {
+	thread := New()
+	streamer := newFakeStreamer()
+	streamer.capabilities.ToolResultSendPolicy = ToolResultSendRequiresComplete
+	streamer.Reply(func(b *streamBuilder) {
+		b.Emit(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
+	})
+	thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
+	thread.QueueItem(UserText("hello"))
+	thread.QueueItem(SendItem{})
+
+	cp, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
+	if err != nil {
+		t.Fatalf("checkpoint awaiting: %v", err)
+	}
+	restored, err := RestoreCheckpoint(cp, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("restore awaiting checkpoint: %v", err)
+	}
+	if got := restored.State(); got != StateAwaitingToolResults {
+		t.Fatalf("restored state = %q, want %q", got, StateAwaitingToolResults)
+	}
+}

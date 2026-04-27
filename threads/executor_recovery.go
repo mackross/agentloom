@@ -2,7 +2,7 @@ package threads
 
 import "errors"
 
-var ErrAttachExecutorForRecoveryRequiresRecoverableState = errors.New("threads attach executor for recovery requires idle, construct_llm_request, or receiving_stream thread")
+var ErrAttachExecutorForRecoveryRequiresRecoverableState = errors.New("threads attach executor for recovery requires idle, awaiting_tool_results, construct_llm_request, or receiving_stream thread")
 var ErrAttachExecutorForRecoveryRequiresCleanExactState = errors.New("threads attach executor for recovery requires no outstanding resolving or started tool calls")
 
 type ToolChunkRecoveryPolicy string
@@ -23,7 +23,7 @@ func (t *Thread) AttachExecutorForRecovery(e stateObserver) error {
 
 func (t *Thread) AttachExecutorForRecoveryWithOptions(e stateObserver, opts RecoveryOptions) error {
 	state := t.State()
-	if state != StateIdle && state != StateConstructLLMRequest && state != StateReceivingStream {
+	if state != StateIdle && state != StateAwaitingToolResults && state != StateConstructLLMRequest && state != StateReceivingStream {
 		return ErrAttachExecutorForRecoveryRequiresRecoverableState
 	}
 	for _, p := range t.cb.pendingToolCalls(&t.items) {
@@ -35,7 +35,7 @@ func (t *Thread) AttachExecutorForRecoveryWithOptions(e stateObserver, opts Reco
 		return t.resumeReceivingStream(e, opts)
 	}
 	t.SetExecutor(e)
-	if state == StateIdle {
+	if state == StateIdle || state == StateAwaitingToolResults {
 		_, err := t.resolvePendingToolCalls()
 		return err
 	}

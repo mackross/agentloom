@@ -10,6 +10,7 @@ import (
 
 	openaiapi "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/mackross/agentloom/threads"
 	"github.com/mackross/agentloom/threads/streamertest"
@@ -17,6 +18,46 @@ import (
 
 func TestResponsesStreamerContract(t *testing.T) {
 	streamertest.RunContractTests(t, openAIContractHarness{})
+}
+
+func TestResponsesStreamerSendsReasoningEffort(t *testing.T) {
+	bodyCh := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		bodyCh <- append([]byte(nil), body...)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := openaiapi.NewClient(
+		option.WithAPIKey("test"),
+		option.WithBaseURL(server.URL),
+		option.WithHTTPClient(server.Client()),
+		option.WithMaxRetries(0),
+	)
+	streamer := NewResponsesStreamerWithClient(client, "test-model")
+	streamer.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffortHigh}
+	if err := streamer.StreamReq(threads.Req{Items: []threads.Item{threads.UserText("hello")}}, func(threads.Item) error { return nil }); err != nil {
+		t.Fatalf("stream request: %v", err)
+	}
+
+	select {
+	case body := <-bodyCh:
+		var raw map[string]any
+		if err := json.Unmarshal(body, &raw); err != nil {
+			t.Fatalf("unmarshal request body: %v", err)
+		}
+		reasoning, ok := raw["reasoning"].(map[string]any)
+		if !ok || reasoning["effort"] != "high" {
+			t.Fatalf("unexpected reasoning body: %#v", raw["reasoning"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for outbound request")
+	}
 }
 
 type openAIContractHarness struct{}

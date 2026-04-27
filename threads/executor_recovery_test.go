@@ -704,6 +704,43 @@ func TestAttachExecutorForRecoveryAllowsIdleThreadWithRequestedToolCall(t *testi
 	streamer.AssertCallCount(t)
 }
 
+func TestAttachExecutorForRecoveryAcceptsAwaitingToolResults(t *testing.T) {
+	thread := New()
+	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("calc", "calculate")})
+	streamer := newFakeStreamer()
+	streamer.capabilities.ToolResultSendPolicy = ToolResultSendRequiresComplete
+	streamer.Reply(func(b *streamBuilder) {
+		b.Emit(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
+	})
+	thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
+	thread.QueueItem(UserText("hello"))
+	thread.QueueItem(SendItem{})
+	snap, err := thread.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot awaiting: %v", err)
+	}
+	restored, err := RestoreThreadSnapshot(snap)
+	if err != nil {
+		t.Fatalf("restore awaiting: %v", err)
+	}
+	restored.SetToolResolver(toolResolverFunc(func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error) {
+		return ToolDispatch{Items: []Item{ToolCallResult{CallID: "c1", Output: "1"}}}, nil
+	}))
+	followup := newFakeStreamer().Reply(func(b *streamBuilder) {
+		b.AssertRequest(func(req Req) {
+			want := []Item{UserText("hello"), ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`}, ToolCallResult{CallID: "c1", Output: "1"}}
+			if !reflect.DeepEqual(req.Items, want) {
+				t.Fatalf("unexpected recovered request items: %#v", req.Items)
+			}
+		})
+	})
+	followup.capabilities.ToolResultSendPolicy = ToolResultSendRequiresComplete
+	if err := restored.AttachExecutorForRecovery(NewThreadExecutor(followup.Streamer())); err != nil {
+		t.Fatalf("attach executor for recovery: %v", err)
+	}
+	followup.AssertCallCount(t)
+}
+
 func TestStartedToolCallPreservesRecoveryMetadataAcrossSnapshotAndRestore(t *testing.T) {
 	thread, base := runPendingToolDispatch(t, ToolDispatch{
 		Started:  true,
@@ -799,7 +836,7 @@ func TestThreadExecutorReportsStreamerCapabilities(t *testing.T) {
 	exec := NewThreadExecutor(streamer.Streamer())
 
 	got := exec.StreamerCapabilities()
-	if got.AssistantPrefix {
+	if got.AssistantPrefix || got.ToolResultSendPolicy != "" {
 		t.Fatalf("expected assistant-prefix capability to be false, got %#v", got)
 	}
 }

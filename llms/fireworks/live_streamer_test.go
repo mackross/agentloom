@@ -97,10 +97,10 @@ func TestLivePartialToolResultWithInterveningUserText(t *testing.T) {
 		t.Logf("partial follow-up received item: %T", item)
 		return nil
 	})
-	if err == nil {
-		t.Fatalf("partial follow-up unexpectedly succeeded with one result for two outstanding tool calls")
+	if err != nil {
+		t.Fatalf("partial follow-up with intervening user text failed: %v", err)
 	}
-	t.Logf("partial follow-up rejected as expected: %v", err)
+	t.Logf("partial follow-up accepted as expected")
 
 	completeButInterveningReq := threads.Req{
 		Items: []threads.Item{
@@ -116,10 +116,10 @@ func TestLivePartialToolResultWithInterveningUserText(t *testing.T) {
 		t.Logf("complete-but-intervening follow-up received item: %T", item)
 		return nil
 	})
-	if err == nil {
-		t.Fatalf("complete follow-up unexpectedly succeeded when user text came before tool results")
+	if err != nil {
+		t.Fatalf("complete follow-up with intervening user text failed: %v", err)
 	}
-	t.Logf("complete follow-up with intervening user text rejected as expected: %v", err)
+	t.Logf("complete follow-up with intervening user text accepted as expected")
 
 	var completeItems []threads.Item
 	completeReq := threads.Req{

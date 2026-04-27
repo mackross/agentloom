@@ -146,6 +146,30 @@ func TestRestoreFromCheckpointAndWALReplaysToolSnapshotControlItem(t *testing.T)
 	}
 }
 
+func TestRestoreFromCheckpointAndWALReplaysAwaitingToolResults(t *testing.T) {
+	thread := New()
+	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
+	if err != nil {
+		t.Fatalf("base checkpoint: %v", err)
+	}
+	streamer := newFakeStreamer()
+	streamer.capabilities.ToolResultSendPolicy = ToolResultSendRequiresComplete
+	streamer.Reply(func(b *streamBuilder) {
+		b.Emit(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
+	})
+	thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
+	thread.QueueItem(UserText("hello"))
+	thread.QueueItem(SendItem{})
+
+	restored, err := RestoreFromCheckpointAndWAL(base, thread.WALAfter(base.Seq), RestoreOptions{})
+	if err != nil {
+		t.Fatalf("restore from checkpoint + wal: %v", err)
+	}
+	if got := restored.State(); got != StateAwaitingToolResults {
+		t.Fatalf("restored state = %q, want %q", got, StateAwaitingToolResults)
+	}
+}
+
 func TestRestoreFromCheckpointAndWALReplaysToolsSnapshotHandlerLoadData(t *testing.T) {
 	thread := New()
 	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})

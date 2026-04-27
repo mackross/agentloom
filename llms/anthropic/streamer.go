@@ -64,7 +64,7 @@ func NewMessagesStreamerWithClient(client anthropicapi.Client, model string) *Me
 }
 
 func (s *MessagesStreamer) Capabilities() threads.StreamerCapabilities {
-	return threads.StreamerCapabilities{AssistantPrefix: supportsAssistantPrefix(string(s.model))}
+	return threads.StreamerCapabilities{AssistantPrefix: supportsAssistantPrefix(string(s.model)), ToolResultSendPolicy: threads.ToolResultSendRequiresComplete}
 }
 
 func supportsAssistantPrefix(model string) bool {
@@ -212,11 +212,44 @@ func requestMessages(req threads.Req) ([]anthropicapi.MessageParam, error) {
 		}
 		grouped = append(grouped, observedMessage{role: role, blocks: []anthropicapi.ContentBlockParamUnion{block}})
 	}
+	outstanding := []string{}
+	results := map[string]anthropicapi.ContentBlockParamUnion{}
+	deferredUser := []anthropicapi.ContentBlockParamUnion{}
+	flushUser := func(force bool) {
+		if len(outstanding) == 0 {
+			for _, b := range deferredUser {
+				appendBlock(messageRoleUser, b)
+			}
+			deferredUser = nil
+			return
+		}
+		blocks := make([]anthropicapi.ContentBlockParamUnion, 0, len(outstanding)+len(deferredUser))
+		for _, id := range outstanding {
+			b, ok := results[id]
+			if !ok && !force {
+				return
+			}
+			if ok {
+				blocks = append(blocks, b)
+			}
+		}
+		blocks = append(blocks, deferredUser...)
+		for _, b := range blocks {
+			appendBlock(messageRoleUser, b)
+		}
+		outstanding, deferredUser = nil, nil
+		results = map[string]anthropicapi.ContentBlockParamUnion{}
+	}
 
 	for _, item := range req.Items {
 		switch v := item.(type) {
 		case threads.UserText:
-			appendBlock(messageRoleUser, anthropicapi.NewTextBlock(string(v)))
+			b := anthropicapi.NewTextBlock(string(v))
+			if len(outstanding) > 0 {
+				deferredUser = append(deferredUser, b)
+				continue
+			}
+			appendBlock(messageRoleUser, b)
 		case threads.AssistantText:
 			appendBlock(messageRoleAssistant, anthropicapi.NewTextBlock(string(v)))
 		case threads.ToolCall:
@@ -225,12 +258,20 @@ func requestMessages(req threads.Req) ([]anthropicapi.MessageParam, error) {
 				return nil, fmt.Errorf("anthropic tool call %q payload: %w", v.Name, err)
 			}
 			appendBlock(messageRoleAssistant, anthropicapi.NewToolUseBlock(v.CallID, input, v.Name))
+			outstanding = append(outstanding, v.CallID)
 		case threads.ToolCallResultable:
-			appendBlock(messageRoleUser, anthropicapi.NewToolResultBlock(v.ToolCallID(), v.ToolOutput(), toolDataIsError(v.ToolData())))
+			b := anthropicapi.NewToolResultBlock(v.ToolCallID(), v.ToolOutput(), toolDataIsError(v.ToolData()))
+			if len(outstanding) > 0 {
+				results[v.ToolCallID()] = b
+				flushUser(false)
+				continue
+			}
+			appendBlock(messageRoleUser, b)
 		default:
 			return nil, fmt.Errorf("anthropic request item not supported: %T", item)
 		}
 	}
+	flushUser(true)
 
 	out := make([]anthropicapi.MessageParam, 0, len(grouped))
 	for _, msg := range grouped {

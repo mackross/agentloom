@@ -65,9 +65,10 @@ const (
 )
 
 type WALEvent struct {
-	Seq  uint32       `json:"s"`
-	Op   string       `json:"o"`
-	Item SnapshotItem `json:"i,omitempty"`
+	Seq   uint32       `json:"s"`
+	Op    string       `json:"o"`
+	Item  SnapshotItem `json:"i,omitempty"`
+	State State        `json:"state,omitempty"`
 }
 
 type ThreadSnapshot struct {
@@ -148,7 +149,7 @@ func RestoreThreadSnapshot(snapshot ThreadSnapshot) (*Thread, error) {
 		return nil, fmt.Errorf("stream insertion index: %w", err)
 	}
 	t.cb.setState(snapshot.State)
-	t.captureSafeIfIdle()
+	t.captureSafeIfRestorable()
 
 	return t, nil
 }
@@ -370,7 +371,7 @@ func snapshotItemToItem(raw SnapshotItem) (Item, error) {
 
 func isKnownState(v State) bool {
 	switch v {
-	case StateIdle, StateConstructLLMRequest, StateReceivingStream, StateStreamComplete:
+	case StateIdle, StateAwaitingToolResults, StateConstructLLMRequest, StateReceivingStream, StateStreamComplete:
 		return true
 	default:
 		return false
@@ -448,6 +449,9 @@ func (t *Thread) appendWAL(op string, item Item) {
 		return
 	}
 	ev := WALEvent{Seq: t.mutationSeq, Op: op}
+	if op == walOpEndStream && t.cb.awaitToolResults {
+		ev.State = StateAwaitingToolResults
+	}
 	if op == walOpQueueItem || op == walOpQueueItemBeforeSend || op == walOpAppendStreamItem {
 		raw, err := itemToSnapshotItem(item)
 		if err != nil {
@@ -504,6 +508,7 @@ func (t *Thread) applyWALEvent(ev WALEvent) error {
 		}
 		return t.appendStreamItem(v)
 	case walOpEndStream:
+		t.cb.awaitToolResults = ev.State == StateAwaitingToolResults
 		return t.endStreaming()
 	default:
 		return fmt.Errorf("unsupported wal op: %q", ev.Op)
@@ -529,8 +534,10 @@ func (t *Thread) waitUntilSafe(timeout time.Duration) error {
 	return nil
 }
 
-func (t *Thread) captureSafeIfIdle() {
-	if t.State() != StateIdle {
+func (t *Thread) captureSafeIfIdle() { t.captureSafeIfRestorable() }
+
+func (t *Thread) captureSafeIfRestorable() {
+	if t.State() != StateIdle && t.State() != StateAwaitingToolResults {
 		return
 	}
 	t.captureSafeSnapshot()

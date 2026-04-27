@@ -127,10 +127,10 @@ func TestLivePartialToolResultWithInterveningUserText(t *testing.T) {
 		t.Logf("complete-but-intervening follow-up received item: %T", item)
 		return nil
 	})
-	if err == nil {
-		t.Fatalf("complete follow-up unexpectedly succeeded when user text came before tool results")
+	if err != nil {
+		t.Fatalf("complete follow-up with normalizable intervening user text failed: %v", err)
 	}
-	t.Logf("complete follow-up with intervening user text rejected as expected: %v", err)
+	t.Logf("complete follow-up with normalizable intervening user text accepted as expected")
 
 	var completeItems []threads.Item
 	completeReq := threads.Req{
@@ -154,6 +154,46 @@ func TestLivePartialToolResultWithInterveningUserText(t *testing.T) {
 	t.Logf("complete follow-up with both tool results before user text got %d items", len(completeItems))
 	for i, item := range completeItems {
 		t.Logf("  item[%d]: %T", i, item)
+	}
+}
+
+func TestLiveHistoricalToolResultsBeforeLaterUserText(t *testing.T) {
+	if os.Getenv("RUN_LIVE_API_TESTS") != "1" {
+		t.Skip("set RUN_LIVE_API_TESTS=1 to run live API tests")
+	}
+	if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" {
+		t.Skip("ANTHROPIC_API_KEY is not set")
+	}
+
+	model := strings.TrimSpace(os.Getenv("ANTHROPIC_MODEL"))
+	if model == "" {
+		model = string(DefaultModel)
+	}
+
+	streamer := NewMessagesStreamer(model)
+	err := streamer.StreamReq(threads.Req{
+		Instruction: "Reply with only the word ok.",
+		Items: []threads.Item{
+			threads.UserText("Use this prior transcript as context."),
+			threads.ToolCall{CallID: "toolu_hist_1", Name: "lookup", Payload: `{"query":"alpha"}`},
+			threads.UserText("This user text appeared after the historical tool use."),
+			threads.ToolCallResult{CallID: "toolu_hist_1", Output: `{"answer":"alpha"}`},
+			threads.AssistantText("Recorded."),
+			threads.UserText("Now continue."),
+		},
+		Tools: threads.ToolOfferSnapshot{Offered: []threads.ToolSpec{{
+			Name:        "lookup",
+			Description: "Lookup a value.",
+			Payload: threads.ToolPayloadJSONSchema(gschema.Schema{Type: "object", Properties: map[string]*gschema.Schema{
+				"query": {Type: "string"},
+			}, Required: []string{"query"}}),
+		}}},
+	}, func(item threads.Item) error {
+		t.Logf("historical follow-up received item: %T", item)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("historical transcript with normalizable tool result ordering failed: %v", err)
 	}
 }
 

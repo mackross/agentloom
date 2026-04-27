@@ -21,6 +21,7 @@ type Thread struct {
 	tools    ToolProvider
 	resolver ToolResolver
 	loop     *EventLoop
+	policy   ToolResultSendPolicy
 
 	mutationSeq  uint32
 	lastSafeSeq  uint32
@@ -140,6 +141,9 @@ func (t *Thread) appendStreamItem(v Item) error {
 
 func (t *Thread) endStreaming() error {
 	t.mutationSeq++
+	if !t.replayingWAL {
+		t.cb.awaitToolResults = t.policy == ToolResultSendRequiresComplete && len(t.cb.pendingToolCalls(&t.items)) > 0
+	}
 	// Persist end_stream before the state-change callback can queue follow-on
 	// items. If we crash in that callback, replaying this WAL prefix cleanly
 	// restores the requested-tool boundary; later tool-resolution items only
@@ -160,16 +164,16 @@ func (t *Thread) OnCBStateChange(from, to State) error {
 			return err
 		}
 	}
-	if to == StateIdle {
+	if to == StateIdle || to == StateAwaitingToolResults {
 		resolved, err := t.resolvePendingToolCalls()
 		if err != nil {
 			return err
 		}
-		if !resolved && t.delegate != nil {
+		if to == StateIdle && !resolved && t.delegate != nil {
 			t.delegate.OnThreadIdle(t)
 		}
 	}
-	t.captureSafeIfIdle()
+	t.captureSafeIfRestorable()
 	return nil
 }
 
