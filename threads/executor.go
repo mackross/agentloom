@@ -53,16 +53,32 @@ func (x *ThreadExecutor) StreamerCapabilities() StreamerCapabilities {
 	return x.streamer.Capabilities()
 }
 
+func (x *ThreadExecutor) RequestTokenEstimator() RequestTokenEstimator {
+	if x == nil || x.streamer == nil {
+		return nil
+	}
+	if estimator, ok := x.streamer.(RequestTokenEstimator); ok {
+		return estimator
+	}
+	return nil
+}
+
+func (x *ThreadExecutor) TextTokenEstimator() TextTokenEstimator {
+	if x == nil || x.streamer == nil {
+		return nil
+	}
+	if estimator, ok := x.streamer.(TextTokenEstimator); ok {
+		return estimator
+	}
+	return nil
+}
+
 func (x *ThreadExecutor) OnControlBlockStateChange(t *Thread, _, to State) error {
 	if to != StateConstructLLMRequest || x.streamer == nil {
 		return nil
 	}
 	t.policy = x.StreamerCapabilities().ToolResultSendPolicy
-	b := x.requestBuilder
-	if b == nil {
-		b = DefaultRequestBuilder
-	}
-	in := b.Build(t.items.SliceThrough(t.cb.IP()))
+	in := t.requestSnapshotWithBuilder(x.requestBuilder)
 	if err := t.beginStreaming(); err != nil {
 		return err
 	}

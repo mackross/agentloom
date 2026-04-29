@@ -126,6 +126,14 @@ func TestResponsesStreamerReportsAssistantPrefixCapability(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamerServiceTierIsSettable(t *testing.T) {
+	streamer := NewResponsesStreamerWithClient(openaiapi.Client{}, "")
+	streamer.ServiceTier = responses.ResponseNewParamsServiceTierPriority
+	if got := streamer.ServiceTier; got != "priority" {
+		t.Fatalf("service tier = %q, want priority", got)
+	}
+}
+
 func valueOrEmpty(v *string) string {
 	if v == nil {
 		return ""

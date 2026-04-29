@@ -1,9 +1,13 @@
 package threads
 
-import "reflect"
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"reflect"
+	"testing"
 
-import gschema "github.com/google/jsonschema-go/jsonschema"
+	gschema "github.com/google/jsonschema-go/jsonschema"
+)
 
 func TestRestoreFromCheckpointAndWALPreservesCoalescedUserItems(t *testing.T) {
 	thread := New()
@@ -91,6 +95,142 @@ func TestRestoreFromCheckpointAndWALTrimsUnsafeTailByDefault(t *testing.T) {
 	items := restored.items.Slice()
 	if len(items) != 1 || items[0] != UserText("hello") {
 		t.Fatalf("unexpected restored items after trim: %#v", items)
+	}
+}
+
+func TestRestoreFromCheckpointAndWALTrimsPendingStartedToolTailByDefault(t *testing.T) {
+	thread := New()
+	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("edit", "edit files")})
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error) {
+		return ToolDispatch{
+			Started:  true,
+			Recovery: ToolRecoveryUnsafe,
+			Items:    []Item{ToolCallResult{CallID: "c1", Output: "edited"}},
+		}, nil
+	}))
+
+	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
+	if err != nil {
+		t.Fatalf("base checkpoint: %v", err)
+	}
+
+	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
+		b.Emit(ToolCall{CallID: "c1", Name: "edit", Payload: `{}`})
+	})
+	thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
+	thread.QueueItem(UserText("hello"))
+	thread.QueueItem(SendItem{})
+	fullWAL := thread.WALAfter(base.Seq)
+
+	var prefix []WALEvent
+	for _, ev := range fullWAL {
+		prefix = append(prefix, ev)
+		if ev.Item.Type == "tool_call_started" {
+			break
+		}
+	}
+	if len(prefix) == len(fullWAL) {
+		t.Fatalf("expected a WAL prefix ending at tool_call_started")
+	}
+
+	restored, err := RestoreFromCheckpointAndWAL(base, prefix, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("restore from checkpoint + wal: %v", err)
+	}
+	if got := restored.State(); got != StateIdle {
+		t.Fatalf("expected idle after trim, got %q", got)
+	}
+	if got := toolLifecycleTypes(restored, "c1"); !reflect.DeepEqual(got, []string{"tool_call"}) {
+		t.Fatalf("unexpected restored tool lifecycle after trim: %#v", got)
+	}
+}
+
+func TestRestoreFromCheckpointAndWALAllowsCompletedStartedTool(t *testing.T) {
+	thread := New()
+	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("edit", "edit files")})
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error) {
+		return ToolDispatch{
+			Started:  true,
+			Recovery: ToolRecoveryUnsafe,
+			Items:    []Item{ToolCallResult{CallID: "c1", Output: "edited"}},
+		}, nil
+	}))
+
+	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
+	if err != nil {
+		t.Fatalf("base checkpoint: %v", err)
+	}
+
+	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
+		b.Emit(ToolCall{CallID: "c1", Name: "edit", Payload: `{}`})
+	})
+	thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
+	thread.QueueItem(UserText("hello"))
+	thread.QueueItem(SendItem{})
+
+	restored, err := RestoreFromCheckpointAndWAL(base, thread.WALAfter(base.Seq), RestoreOptions{})
+	if err != nil {
+		t.Fatalf("restore from checkpoint + wal: %v", err)
+	}
+	before := snapshotThread(thread)
+	after := snapshotThread(restored)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("snapshot mismatch\nbefore=%#v\nafter=%#v", before, after)
+	}
+}
+
+func TestRestoreFromCheckpointAndWALAllowsUnsafeStartedToolWhenRequested(t *testing.T) {
+	base := Checkpoint{Seq: 0, Snapshot: ThreadSnapshot{Version: serializedThreadVersion, State: StateIdle, IPIndex: -1, QueueStartIndex: -1, StreamInsIndex: -1}}
+	wal := []WALEvent{
+		{Seq: 1, Op: walOpQueueItem, Item: SnapshotItem{Type: "tool_call", ID: "c1", Name: "edit", Args: `{}`}},
+		{Seq: 2, Op: walOpQueueItem, Item: SnapshotItem{Type: "tool_call_resolving", ID: "c1"}},
+		{Seq: 3, Op: walOpQueueItem, Item: SnapshotItem{Type: "tool_call_started", ID: "c1", Recovery: string(ToolRecoveryUnsafe)}},
+	}
+
+	restored, err := RestoreFromCheckpointAndWAL(base, wal, RestoreOptions{AllowUnsafe: true})
+	if err != nil {
+		t.Fatalf("restore from checkpoint + wal: %v", err)
+	}
+	if got := toolLifecycleTypes(restored, "c1"); !reflect.DeepEqual(got, []string{"tool_call", "tool_call_resolving", "tool_call_started"}) {
+		t.Fatalf("unexpected restored tool lifecycle: %#v", got)
+	}
+}
+
+func TestRestoreFromCheckpointAndWALReplaysLateAutoSend(t *testing.T) {
+	thread := New()
+	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("calc", "calculate")})
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error) {
+		return ToolDispatch{
+			Started:  true,
+			Recovery: ToolRecoveryUnsafe,
+			Items:    []Item{ToolCallResult{CallID: "c1", Output: "edited"}},
+		}, nil
+	}))
+
+	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
+	if err != nil {
+		t.Fatalf("base checkpoint: %v", err)
+	}
+
+	streamer := newFakeStreamer().
+		Reply(func(b *streamBuilder) {
+			b.Emit(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
+		}).
+		Reply(func(b *streamBuilder) {})
+	thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
+	thread.QueueItem(UserText("hello"))
+	thread.QueueItem(SendItem{})
+
+	wal := thread.WALAfter(base.Seq)
+	restored, err := RestoreFromCheckpointAndWAL(base, wal, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("restore from checkpoint + wal: %v", err)
+	}
+
+	before := snapshotThread(thread)
+	after := snapshotThread(restored)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("snapshot mismatch\nbefore=%#v\nafter=%#v", before, after)
 	}
 }
 

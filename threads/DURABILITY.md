@@ -39,8 +39,9 @@ Inflight means any of:
 `RestoreFromCheckpointAndWAL`:
 
 - replays WAL events over checkpoint
-- if `AllowUnsafe=false` and replay lands inflight, it trims trailing unsafe WAL tail by restoring only the longest replay prefix that ends in a safe state
-- this is intentional to avoid loading into a frozen inflight state when no executor-run resume support exists
+- if `AllowUnsafe=false` and replay lands in a state that needs recovery, it trims trailing unsafe WAL tail by restoring only the longest replay prefix that does not need recovery
+- recovery-required state includes inflight stream/request state and tool calls whose resolver had begun but whose terminal tool result was not durably recorded
+- this is intentional to avoid loading into a frozen inflight state or into a pending side-effecting tool resolution without explicit recovery handling
 
 ## WAL Invariants
 
@@ -70,6 +71,9 @@ Behavior after abrupt termination depends on the last persisted point:
   - default restore trims to last safe prefix
 - crash after safe boundary:
   - restore is direct (no trim needed)
+- crash after a tool-resolution marker but before its tool result:
+  - default restore trims back to the latest prefix without an unresolved resolving/started tool marker
+  - use unsafe restore plus `AttachExecutorForRecoveryWithOptions` when a caller wants to handle those ambiguous tool calls explicitly
 - crash during snapshot replace:
   - file store uses temp-file + rename to minimize partial snapshot risk
 

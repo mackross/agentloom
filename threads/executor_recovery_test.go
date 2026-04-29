@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -765,7 +766,7 @@ func TestStartedToolCallPreservesRecoveryMetadataAcrossSnapshotAndRestore(t *tes
 		t.Fatalf("unexpected round-tripped pending tool call: %#v", roundTripPending)
 	}
 
-	restored, err := RestoreFromCheckpointAndWAL(base, thread.WALAfter(base.Seq), RestoreOptions{})
+	restored, err := RestoreFromCheckpointAndWAL(base, thread.WALAfter(base.Seq), RestoreOptions{AllowUnsafe: true})
 	if err != nil {
 		t.Fatalf("restore from checkpoint + wal: %v", err)
 	}
@@ -826,6 +827,116 @@ func TestRestoreAfterEndStreamCrashKeepsToolCallRequestedUntilStartedItemPersist
 	pending := requirePendingToolCall(t, restored)
 	if pending.started || pending.recovery != "" {
 		t.Fatalf("unexpected pending tool call after end_stream-only restore: %#v", pending)
+	}
+}
+
+func TestToolRecoveryStatusTextForCanceledCalls(t *testing.T) {
+	tests := []struct {
+		name       string
+		pending    pendingToolCall
+		policy     ToolCallRecoveryPolicy
+		wantOutput string
+	}{
+		{
+			name: "requested call not run",
+			pending: pendingToolCall{call: ToolCall{
+				CallID: "c1",
+				Name:   "calc",
+			}},
+			policy: ToolCallRecoveryCancelAll,
+			wantOutput: "Tool call status: not completed after recovery.\n\n" +
+				"The runtime recovered from an interruption before this tool was run, so no action was taken for this tool call. " +
+				"If the result is still needed, you may request the tool again; otherwise continue without it.",
+		},
+		{
+			name: "resolving call outcome unknown",
+			pending: pendingToolCall{call: ToolCall{
+				CallID: "c1",
+				Name:   "calc",
+			}, resolving: true},
+			policy: ToolCallRecoveryCancelUnsafe,
+			wantOutput: "Tool call status: completion unknown after recovery.\n\n" +
+				"The runtime was interrupted while handling this tool call and cannot confirm whether the action completed. " +
+				"Do not assume it succeeded; if the result matters, verify the relevant state or ask the user before trying again.",
+		},
+		{
+			name: "unsafe started call not retried",
+			pending: pendingToolCall{call: ToolCall{
+				CallID: "c1",
+				Name:   "write_file",
+			}, started: true, recovery: ToolRecoveryUnsafe},
+			policy: ToolCallRecoveryCancelUnsafe,
+			wantOutput: "Tool call status: not retried after recovery.\n\n" +
+				"The runtime cannot confirm whether the previous attempt completed, and retrying may duplicate an external action. " +
+				"Before requesting this tool again, verify the external state or ask the user for confirmation.",
+		},
+		{
+			name: "safe started call canceled by policy",
+			pending: pendingToolCall{call: ToolCall{
+				CallID: "c1",
+				Name:   "calc",
+			}, started: true, recovery: ToolRecoverySafe},
+			policy: ToolCallRecoveryCancelAll,
+			wantOutput: "Tool call status: not retried after recovery.\n\n" +
+				"The previous attempt did not produce a result before the interruption. " +
+				"If the result is still needed, you may request the tool again; otherwise continue without it.",
+		},
+		{
+			name: "started call with unknown replay safety",
+			pending: pendingToolCall{call: ToolCall{
+				CallID: "c1",
+				Name:   "send_email",
+			}, started: true},
+			policy: ToolCallRecoveryCancelUnsafe,
+			wantOutput: "Tool call status: not completed after recovery.\n\n" +
+				"The runtime could not determine the outcome of this tool call after an interruption, so it did not run the tool again automatically. " +
+				"If this action matters, verify the current state or ask the user before retrying.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := recoveryToolCallStatusResult(tt.pending, tt.policy)
+			if got.CallID != tt.pending.call.CallID {
+				t.Fatalf("expected result call id %q, got %q", tt.pending.call.CallID, got.CallID)
+			}
+			if got.Output != tt.wantOutput {
+				t.Fatalf("unexpected recovery status output:\n%s", got.Output)
+			}
+			if got.Data == nil {
+				t.Fatalf("expected recovery status metadata")
+			}
+			if got.Data["recovery"] != true {
+				t.Fatalf("expected recovery metadata flag, got %#v", got.Data)
+			}
+			if got.Data["tool_call_status"] != got.Output {
+				t.Fatalf("expected metadata to include model-facing status text, got %#v", got.Data)
+			}
+		})
+	}
+}
+
+func TestToolRecoveryStatusTextStartsWithStablePrefixAndAvoidsInternalDetails(t *testing.T) {
+	cases := []pendingToolCall{
+		{call: ToolCall{CallID: "c1", Name: "calc"}},
+		{call: ToolCall{CallID: "c2", Name: "calc"}, resolving: true},
+		{call: ToolCall{CallID: "c3", Name: "write_file"}, started: true, recovery: ToolRecoveryUnsafe},
+		{call: ToolCall{CallID: "c4", Name: "calc"}, started: true, recovery: ToolRecoverySafe},
+		{call: ToolCall{CallID: "c5", Name: "send_email"}, started: true},
+	}
+	for _, p := range cases {
+		out := recoveryToolCallStatusResult(p, ToolCallRecoveryCancelAll).Output
+		if !strings.HasPrefix(out, "Tool call status:") {
+			t.Fatalf("expected stable prefix, got %q", out)
+		}
+		for _, internal := range []string{"durable", "resolver", "dispatch", "WAL", "marker", "classification"} {
+			if strings.Contains(strings.ToLower(out), strings.ToLower(internal)) {
+				t.Fatalf("recovery status text leaked internal detail %q: %s", internal, out)
+			}
+		}
+		if !strings.Contains(out, "If") && !strings.Contains(out, "Before") && !strings.Contains(out, "Do not") {
+			t.Fatalf("expected next-step guidance in status text: %s", out)
+		}
 	}
 }
 

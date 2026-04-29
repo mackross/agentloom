@@ -67,6 +67,9 @@ func (t *Thread) SetDurableStore(store DurableStore) {
 	if store == nil {
 		return
 	}
+	if t.requiresRecovery() {
+		return
+	}
 	cp, err := t.Checkpoint(CheckpointOptions{Policy: InflightSkip})
 	if err != nil {
 		panic("threads durable store checkpoint failed: " + err.Error())
@@ -106,7 +109,7 @@ func (t *Thread) advanceWhilePossible() error {
 func (t *Thread) QueueItem(v Item) {
 	t.mutationSeq++
 	lateAutoSend := false
-	if r, ok := v.(ToolCallResultable); ok && !t.resolvingTools {
+	if r, ok := v.(ToolCallResultable); ok && !t.resolvingTools && !t.replayingWAL {
 		for _, p := range t.cb.pendingToolCalls(&t.items) {
 			lateAutoSend = lateAutoSend || p.call.CallID == r.ToolCallID() && p.started && p.continueMode != ToolContinueManual && !t.cb.hasPendingSend(&t.items)
 		}

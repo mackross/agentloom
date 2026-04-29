@@ -32,6 +32,12 @@ func main() {
 
 	streamer, currentModel := newStreamerForModel(model)
 	executor := threads.NewThreadExecutor(streamer)
+	canceler := &streamCanceler{executor: executor}
+	ui.SetCancel(func() {
+		if canceler.Cancel() {
+			ui.PrintCanceled()
+		}
+	})
 	delegate := threads.ThreadDelegateFuncs{
 		OnRequest: func(_ *threads.Thread) {
 			ui.AssistantStart()
@@ -68,7 +74,7 @@ func main() {
 
 	fmt.Printf("model: %s\n", currentModel)
 	fmt.Println("type your message and press enter")
-	fmt.Println("commands: /instruction <text>, /model <name>, /exit, /quit")
+	fmt.Println("commands: /instruction <text>, /model <name>, Esc to cancel stream, /exit, /quit")
 	fmt.Println("tool: javascript(code) runs arbitrary JavaScript in a fresh goja sandbox")
 	fmt.Println("note: you can type the next message while the assistant is streaming")
 	fmt.Println("note: all thread access in this example is serialized through threads.EventLoop.Do")
@@ -116,10 +122,11 @@ func main() {
 			}
 			var resolvedModel string
 			if err := loop.Do(context.Background(), func(thread *threads.Thread) error {
-				_, resolved, err := switchModelIfIdle(thread, nextModel)
+				nextExecutor, resolved, err := switchModelIfIdle(thread, nextModel)
 				if err != nil {
 					return err
 				}
+				canceler.Set(nextExecutor)
 				resolvedModel = resolved
 				return nil
 			}); err != nil {
@@ -157,6 +164,25 @@ type terminalUI struct {
 	streaming   bool
 	buf         []rune
 	hiddenLines []string
+	cancel      func()
+}
+
+type streamCanceler struct {
+	mu       sync.Mutex
+	executor *threads.ThreadExecutor
+}
+
+func (c *streamCanceler) Set(executor *threads.ThreadExecutor) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.executor = executor
+}
+
+func (c *streamCanceler) Cancel() bool {
+	c.mu.Lock()
+	executor := c.executor
+	c.mu.Unlock()
+	return executor != nil && executor.CancelCurrentStream()
 }
 
 func newTerminalUI(file *os.File) *terminalUI {
@@ -177,6 +203,12 @@ func (ui *terminalUI) Close() {
 		return
 	}
 	_ = ui.stty(ui.original)
+}
+
+func (ui *terminalUI) SetCancel(cancel func()) {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	ui.cancel = cancel
 }
 
 func (ui *terminalUI) Prompt() {
@@ -223,6 +255,14 @@ func (ui *terminalUI) Println(v ...any) {
 	fmt.Println(v...)
 }
 
+func (ui *terminalUI) PrintCanceled() {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	if ui.streaming {
+		fmt.Print("\n[canceling stream]\n")
+	}
+}
+
 func (ui *terminalUI) Errorf(format string, v ...any) {
 	ui.mu.Lock()
 	defer ui.mu.Unlock()
@@ -258,6 +298,8 @@ func (ui *terminalUI) ReadInputLines() <-chan inputLine {
 					ui.Println()
 				}
 				out <- inputLine{Text: line}
+			case 27:
+				ui.cancelStream()
 			case 4:
 				return
 			case 8, 127:
@@ -270,6 +312,15 @@ func (ui *terminalUI) ReadInputLines() <-chan inputLine {
 		}
 	}()
 	return out
+}
+
+func (ui *terminalUI) cancelStream() {
+	ui.mu.Lock()
+	cancel := ui.cancel
+	ui.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func (ui *terminalUI) submitInputBuffer() (string, bool) {

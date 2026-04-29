@@ -21,6 +21,7 @@ type ResponsesStreamer struct {
 	client            openaiapi.Client
 	model             string
 	Reasoning         shared.ReasoningParam
+	ServiceTier       responses.ResponseNewParamsServiceTier
 	OnOutputTextDelta func(string)
 }
 
@@ -59,6 +60,10 @@ func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Re
 		Model:     s.model,
 		Input:     responses.ResponseNewParamsInputUnion{OfInputItemList: inputItems},
 		Reasoning: s.Reasoning,
+		Store:     openaiapi.Bool(false),
+	}
+	if s.ServiceTier != "" {
+		params.ServiceTier = s.ServiceTier
 	}
 	if req.Instruction != "" {
 		params.Instructions = openaiapi.String(req.Instruction)

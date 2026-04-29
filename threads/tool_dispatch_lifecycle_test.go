@@ -90,7 +90,7 @@ func TestToolCallResolvingPreservesAmbiguousStateAcrossSnapshotAndWAL(t *testing
 		t.Fatalf("unexpected round-tripped resolving state: %#v", roundTripPending)
 	}
 
-	restored, err := RestoreFromCheckpointAndWAL(base, thread.WALAfter(base.Seq), RestoreOptions{})
+	restored, err := RestoreFromCheckpointAndWAL(base, thread.WALAfter(base.Seq), RestoreOptions{AllowUnsafe: true})
 	if err != nil {
 		t.Fatalf("restore from checkpoint + wal: %v", err)
 	}

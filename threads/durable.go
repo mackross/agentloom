@@ -217,7 +217,7 @@ func RestoreFromCheckpointAndWAL(cp Checkpoint, wal []WALEvent, opts RestoreOpti
 	if err := t.ReplayWAL(wal); err != nil {
 		return nil, err
 	}
-	if opts.AllowUnsafe || !t.isInflightState() {
+	if opts.AllowUnsafe || !t.requiresRecovery() {
 		return t, nil
 	}
 
@@ -230,7 +230,7 @@ func RestoreFromCheckpointAndWAL(cp Checkpoint, wal []WALEvent, opts RestoreOpti
 		if err := probe.ReplayWAL([]WALEvent{ev}); err != nil {
 			return nil, err
 		}
-		if !probe.isInflightState() {
+		if !probe.requiresRecovery() {
 			lastSafe = i + 1
 		}
 	}
@@ -518,6 +518,18 @@ func (t *Thread) applyWALEvent(ev WALEvent) error {
 func (t *Thread) isInflightState() bool {
 	s := t.State()
 	return s == StateConstructLLMRequest || s == StateReceivingStream || s == StateStreamComplete
+}
+
+func (t *Thread) requiresRecovery() bool {
+	if t.isInflightState() {
+		return true
+	}
+	for _, p := range t.cb.pendingToolCalls(&t.items) {
+		if p.resolving || p.started {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *Thread) waitUntilSafe(timeout time.Duration) error {

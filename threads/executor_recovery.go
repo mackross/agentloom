@@ -13,8 +13,64 @@ const (
 	ToolChunkRecoveryKeepAssistantPrefix ToolChunkRecoveryPolicy = "keep_assistant_prefix"
 )
 
+type ToolCallRecoveryPolicy string
+
+const (
+	// ToolCallRecoveryFail is the zero-value fail-closed policy for outstanding
+	// tool calls that cannot be completed exactly.
+	ToolCallRecoveryFail ToolCallRecoveryPolicy = ""
+	// ToolCallRecoveryRunSafe allows recovery to retry outstanding tool calls
+	// that are known to be safe to replay.
+	ToolCallRecoveryRunSafe ToolCallRecoveryPolicy = "run_safe"
+	// ToolCallRecoveryCancelUnsafe appends recovery status results for ambiguous
+	// or unsafe outstanding tool calls instead of rerunning them.
+	ToolCallRecoveryCancelUnsafe ToolCallRecoveryPolicy = "cancel_unsafe"
+	// ToolCallRecoveryCancelAll appends recovery status results for all
+	// outstanding tool calls instead of running or rerunning them.
+	ToolCallRecoveryCancelAll ToolCallRecoveryPolicy = "cancel_all"
+)
+
 type RecoveryOptions struct {
 	ToolChunkPolicy ToolChunkRecoveryPolicy
+	ToolCallPolicy  ToolCallRecoveryPolicy
+}
+
+func recoveryToolCallStatusResult(p pendingToolCall, policy ToolCallRecoveryPolicy) ToolCallResult {
+	output := recoveryToolCallStatusText(p, policy)
+	return ToolCallResult{
+		CallID: p.call.CallID,
+		Output: output,
+		Data: map[string]any{
+			"recovery":         true,
+			"tool_call_status": output,
+		},
+	}
+}
+
+func recoveryToolCallStatusText(p pendingToolCall, policy ToolCallRecoveryPolicy) string {
+	if !p.resolving && !p.started {
+		return "Tool call status: not completed after recovery.\n\n" +
+			"The runtime recovered from an interruption before this tool was run, so no action was taken for this tool call. " +
+			"If the result is still needed, you may request the tool again; otherwise continue without it."
+	}
+	if p.resolving && !p.started {
+		return "Tool call status: completion unknown after recovery.\n\n" +
+			"The runtime was interrupted while handling this tool call and cannot confirm whether the action completed. " +
+			"Do not assume it succeeded; if the result matters, verify the relevant state or ask the user before trying again."
+	}
+	if p.recovery == ToolRecoveryUnsafe {
+		return "Tool call status: not retried after recovery.\n\n" +
+			"The runtime cannot confirm whether the previous attempt completed, and retrying may duplicate an external action. " +
+			"Before requesting this tool again, verify the external state or ask the user for confirmation."
+	}
+	if p.recovery == ToolRecoverySafe && policy == ToolCallRecoveryCancelAll {
+		return "Tool call status: not retried after recovery.\n\n" +
+			"The previous attempt did not produce a result before the interruption. " +
+			"If the result is still needed, you may request the tool again; otherwise continue without it."
+	}
+	return "Tool call status: not completed after recovery.\n\n" +
+		"The runtime could not determine the outcome of this tool call after an interruption, so it did not run the tool again automatically. " +
+		"If this action matters, verify the current state or ask the user before retrying."
 }
 
 func (t *Thread) AttachExecutorForRecovery(e stateObserver) error {
@@ -25,6 +81,11 @@ func (t *Thread) AttachExecutorForRecoveryWithOptions(e stateObserver, opts Reco
 	state := t.State()
 	if state != StateIdle && state != StateAwaitingToolResults && state != StateConstructLLMRequest && state != StateReceivingStream {
 		return ErrAttachExecutorForRecoveryRequiresRecoverableState
+	}
+	if state == StateIdle || state == StateAwaitingToolResults {
+		if err := t.recoverPendingToolCalls(opts); err != nil {
+			return err
+		}
 	}
 	for _, p := range t.cb.pendingToolCalls(&t.items) {
 		if p.resolving || p.started {
@@ -43,6 +104,39 @@ func (t *Thread) AttachExecutorForRecoveryWithOptions(e stateObserver, opts Reco
 		return t.resumeConstructLLMRequest()
 	}
 	return nil
+}
+
+func (t *Thread) recoverPendingToolCalls(opts RecoveryOptions) error {
+	policy := opts.ToolCallPolicy
+	if policy == "" {
+		return nil
+	}
+	for _, p := range t.cb.pendingToolCalls(&t.items) {
+		if !pendingToolCallNeedsRecovery(p) {
+			continue
+		}
+		switch policy {
+		case ToolCallRecoveryCancelAll:
+			t.QueueItem(recoveryToolCallStatusResult(p, policy))
+		case ToolCallRecoveryCancelUnsafe:
+			if p.recovery == ToolRecoverySafe && p.started {
+				return ErrAttachExecutorForRecoveryRequiresCleanExactState
+			}
+			t.QueueItem(recoveryToolCallStatusResult(p, policy))
+		case ToolCallRecoveryRunSafe:
+			if p.recovery == ToolRecoverySafe && p.started {
+				continue
+			}
+			return ErrAttachExecutorForRecoveryRequiresCleanExactState
+		default:
+			return ErrAttachExecutorForRecoveryRequiresCleanExactState
+		}
+	}
+	return nil
+}
+
+func pendingToolCallNeedsRecovery(p pendingToolCall) bool {
+	return p.resolving || p.started
 }
 
 func (t *Thread) resumeReceivingStream(e stateObserver, opts RecoveryOptions) error {
