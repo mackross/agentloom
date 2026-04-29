@@ -13,15 +13,16 @@ import (
 // EventLoop ownership because tool completions can arrive from other goroutines
 // and must be serialized back onto the thread.
 type Thread struct {
-	cb       controlBlock
-	items    itemList[Item]
-	executor stateObserver
-	delegate ThreadDelegate
-	store    DurableStore
-	tools    ToolProvider
-	resolver ToolResolver
-	loop     *EventLoop
-	policy   ToolResultSendPolicy
+	cb             controlBlock
+	items          itemList[Item]
+	executor       stateObserver
+	delegate       ThreadDelegate
+	store          DurableStore
+	tools          ToolProvider
+	resolver       ToolResolver
+	loop           *EventLoop
+	policy         ToolResultSendPolicy
+	resolvingTools bool
 
 	mutationSeq  uint32
 	lastSafeSeq  uint32
@@ -104,10 +105,20 @@ func (t *Thread) advanceWhilePossible() error {
 
 func (t *Thread) QueueItem(v Item) {
 	t.mutationSeq++
+	lateAutoSend := false
+	if r, ok := v.(ToolCallResultable); ok && !t.resolvingTools {
+		for _, p := range t.cb.pendingToolCalls(&t.items) {
+			lateAutoSend = lateAutoSend || p.call.CallID == r.ToolCallID() && p.started && p.continueMode != ToolContinueManual && !t.cb.hasPendingSend(&t.items)
+		}
+	}
 	if err := t.cb.queueItem(&t.items, v); err != nil {
 		return
 	}
 	t.appendWAL(walOpQueueItem, v)
+	if lateAutoSend {
+		t.QueueItem(SendItem{})
+		return
+	}
 	_ = t.advanceWhilePossible()
 	t.captureSafeIfIdle()
 }
@@ -181,6 +192,8 @@ func (t *Thread) resolvePendingToolCalls() (bool, error) {
 	if t.resolver == nil {
 		return false, nil
 	}
+	t.resolvingTools = true
+	defer func() { t.resolvingTools = false }()
 	resolved := false
 	autoSend := false
 	hasPendingSend := t.cb.hasPendingSend(&t.items)

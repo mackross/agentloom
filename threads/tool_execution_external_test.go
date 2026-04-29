@@ -233,6 +233,67 @@ func TestToolDispatchManualContinueDoesNotAutoSend(t *testing.T) {
 	streamer.AssertCallCount(t)
 }
 
+func TestLateToolResultForStartedAutoContinueDispatchQueuesSend(t *testing.T) {
+	thread := threads.New()
+	thread.SetToolProvider(simpletool.ProviderFunc(func() threads.ToolsSnapshot {
+		return testBoundToolsSnapshot("calc", "calculate", `{"function":"tool/calc@v1","answer":"3"}`)
+	}))
+	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+		return threads.ToolDispatch{
+			Started: true,
+		}, nil
+	}))
+
+	streamer := newFakeStreamer().
+		Reply(func(b *streamBuilder) {
+			b.Emit(threads.ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1,"b":2}`})
+		}).
+		Reply(func(b *streamBuilder) {
+			b.AssertRequest(func(req threads.Req) {
+				want := []threads.Item{
+					threads.UserText("hello"),
+					threads.ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1,"b":2}`},
+					threads.ToolCallResult{CallID: "c1", Output: "3"},
+				}
+				if got := req.Items; !reflect.DeepEqual(got, want) {
+					t.Fatalf("unexpected follow-up request items: %#v", got)
+				}
+			})
+			b.Emit(threads.AssistantText("done"))
+		})
+	thread.SetExecutor(threads.NewThreadExecutor(streamer))
+
+	thread.QueueItem(threads.UserText("hello"))
+	thread.QueueItem(threads.SendItem{})
+	thread.QueueItem(threads.ToolCallResult{CallID: "c1", Output: "3"})
+
+	streamer.AssertCallCount(t)
+}
+
+func TestLateToolResultForStartedManualContinueDispatchDoesNotQueueSend(t *testing.T) {
+	thread := threads.New()
+	thread.SetToolProvider(simpletool.ProviderFunc(func() threads.ToolsSnapshot {
+		return testBoundToolsSnapshot("calc", "calculate", `{"function":"tool/calc@v1","answer":"3"}`)
+	}))
+	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+		return threads.ToolDispatch{
+			Started:  true,
+			Continue: threads.ToolContinueManual,
+		}, nil
+	}))
+
+	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
+		b.Emit(threads.ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1,"b":2}`})
+	})
+	thread.SetExecutor(threads.NewThreadExecutor(streamer))
+
+	thread.QueueItem(threads.UserText("hello"))
+	thread.QueueItem(threads.SendItem{})
+	thread.QueueItem(threads.ToolCallResult{CallID: "c1", Output: "3"})
+
+	streamer.AssertCallCount(t)
+}
+
 func TestToolAutoContinueUsesExistingPendingSendBoundary(t *testing.T) {
 	thread := threads.New()
 	thread.SetToolProvider(simpletool.ProviderFunc(func() threads.ToolsSnapshot {

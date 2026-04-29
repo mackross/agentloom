@@ -371,7 +371,15 @@ Caveat:
 - there is not yet a complete public async completion or late-result policy
 - consumers should avoid relying on this as a finished async API
 
-Safe async completion needs more than appending `ToolCallResult` manually later.
+If an external completion later queues a matching `ToolCallResultable` through
+`Thread.QueueItem`, the thread uses the `Continue` mode persisted on
+`ToolCallStarted`: automatic continuation queues a follow-up `SendItem{}` when no
+send is already pending, while `ToolContinueManual` records the result without
+continuing. This is a compatibility path for simple late completions, not a full
+async safety API.
+
+Safe async completion still needs more than appending `ToolCallResult` manually
+later.
 
 A safe async API should provide a completion handle after the start marker is
 durable:
