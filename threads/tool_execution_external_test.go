@@ -209,6 +209,34 @@ func TestToolResolutionUsesUpdatedProviderForLaterToolRequests(t *testing.T) {
 	streamer.AssertCallCount(t)
 }
 
+func TestCancelCurrentTurnSuppressesToolResultAutoSend(t *testing.T) {
+	thread := threads.New()
+	thread.SetToolProvider(simpletool.ProviderFunc(func() threads.ToolsSnapshot {
+		return testBoundToolsSnapshot("calc", "calculate", `{"function":"tool/calc@v1","answer":"3"}`)
+	}))
+	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+		return threads.ToolDispatch{
+			Started: true,
+			Items:   []threads.Item{threads.ToolCallResult{CallID: call.CallID, Output: "3"}},
+		}, nil
+	}))
+
+	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
+		b.Emit(threads.ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1,"b":2}`})
+		b.Do(func() {
+			if !thread.CancelCurrentTurn() {
+				t.Fatalf("expected active turn to cancel")
+			}
+		})
+	})
+	thread.SetExecutor(threads.NewThreadExecutor(streamer))
+
+	thread.QueueItem(threads.UserText("hello"))
+	thread.QueueItem(threads.SendItem{})
+
+	streamer.AssertCallCount(t)
+}
+
 func TestToolDispatchManualContinueDoesNotAutoSend(t *testing.T) {
 	thread := threads.New()
 	thread.SetToolProvider(simpletool.ProviderFunc(func() threads.ToolsSnapshot {
@@ -229,6 +257,30 @@ func TestToolDispatchManualContinueDoesNotAutoSend(t *testing.T) {
 
 	thread.QueueItem(threads.UserText("hello"))
 	thread.QueueItem(threads.SendItem{})
+
+	streamer.AssertCallCount(t)
+}
+
+func TestCancelCurrentTurnWithoutActiveStreamSuppressesLateToolResultAutoSend(t *testing.T) {
+	thread := threads.New()
+	thread.SetToolProvider(simpletool.ProviderFunc(func() threads.ToolsSnapshot {
+		return testBoundToolsSnapshot("calc", "calculate", `{"function":"tool/calc@v1","answer":"3"}`)
+	}))
+	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+		return threads.ToolDispatch{Started: true}, nil
+	}))
+
+	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
+		b.Emit(threads.ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1,"b":2}`})
+	})
+	thread.SetExecutor(threads.NewThreadExecutor(streamer))
+
+	thread.QueueItem(threads.UserText("hello"))
+	thread.QueueItem(threads.SendItem{})
+	if !thread.CancelCurrentTurn() {
+		t.Fatalf("expected cancel to be accepted for pending tool result")
+	}
+	thread.QueueItem(threads.ToolCallResult{CallID: "c1", Output: "3"})
 
 	streamer.AssertCallCount(t)
 }

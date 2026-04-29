@@ -3,6 +3,7 @@ package threads
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 )
 
 // Thread is a single-owner conversation state machine. Its mutation methods are
@@ -23,6 +24,7 @@ type Thread struct {
 	loop           *EventLoop
 	policy         ToolResultSendPolicy
 	resolvingTools bool
+	cancelAutoSend atomic.Bool
 
 	mutationSeq  uint32
 	lastSafeSeq  uint32
@@ -91,6 +93,22 @@ func (t *Thread) SetToolResolver(r ToolResolver) {
 	t.resolver = r
 }
 
+// CancelCurrentTurn cancels the active model stream and suppresses automatic
+// continuation from tool results produced by the canceled turn. It is safe to
+// call from outside an EventLoop mutation callback so UI cancellation can break
+// an in-progress stream immediately.
+func (t *Thread) CancelCurrentTurn() bool {
+	if c, ok := t.executor.(streamCanceler); ok && c.CancelCurrentStream() {
+		t.cancelAutoSend.Store(true)
+		return true
+	}
+	if len(t.cb.pendingToolCalls(&t.items)) > 0 {
+		t.cancelAutoSend.Store(true)
+		return true
+	}
+	return false
+}
+
 func (t *Thread) advanceNext() error {
 	return t.cb.advanceNext(&t.items)
 }
@@ -108,8 +126,11 @@ func (t *Thread) advanceWhilePossible() error {
 
 func (t *Thread) QueueItem(v Item) {
 	t.mutationSeq++
+	if _, ok := v.(SendItem); ok {
+		t.cancelAutoSend.Store(false)
+	}
 	lateAutoSend := false
-	if r, ok := v.(ToolCallResultable); ok && !t.resolvingTools && !t.replayingWAL {
+	if r, ok := v.(ToolCallResultable); ok && !t.resolvingTools && !t.replayingWAL && !t.cancelAutoSend.Load() {
 		for _, p := range t.cb.pendingToolCalls(&t.items) {
 			lateAutoSend = lateAutoSend || p.call.CallID == r.ToolCallID() && p.started && p.continueMode != ToolContinueManual && !t.cb.hasPendingSend(&t.items)
 		}
@@ -234,7 +255,7 @@ func (t *Thread) resolvePendingToolCalls() (bool, error) {
 	if hasPendingSend && resolved {
 		_ = t.advanceWhilePossible()
 	}
-	if autoSend && !hasPendingSend && !t.cb.hasPendingSend(&t.items) {
+	if autoSend && !hasPendingSend && !t.cb.hasPendingSend(&t.items) && !t.cancelAutoSend.Load() {
 		t.QueueItem(SendItem{})
 	}
 	return resolved, nil
@@ -254,6 +275,10 @@ func (t *Thread) queueBeforePendingSend(v Item) bool {
 		return true
 	}
 	return false
+}
+
+type streamCanceler interface {
+	CancelCurrentStream() bool
 }
 
 type stateObserver interface {
