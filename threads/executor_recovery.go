@@ -19,12 +19,12 @@ const (
 	// ToolCallRecoveryFail is the zero-value fail-closed policy for outstanding
 	// tool calls that cannot be completed exactly.
 	ToolCallRecoveryFail ToolCallRecoveryPolicy = ""
-	// ToolCallRecoveryRunSafe allows recovery to retry outstanding tool calls
+	// ToolCallRecoveryRunSafeUnimplemented allows recovery to retry outstanding tool calls
 	// that are known to be safe to replay.
-	ToolCallRecoveryRunSafe ToolCallRecoveryPolicy = "run_safe"
-	// ToolCallRecoveryCancelUnsafe appends recovery status results for ambiguous
+	ToolCallRecoveryRunSafeUnimplemented ToolCallRecoveryPolicy = "run_safe"
+	// ToolCallRecoveryCancelUnsafeUnimplemented appends recovery status results for ambiguous
 	// or unsafe outstanding tool calls instead of rerunning them.
-	ToolCallRecoveryCancelUnsafe ToolCallRecoveryPolicy = "cancel_unsafe"
+	ToolCallRecoveryCancelUnsafeUnimplemented ToolCallRecoveryPolicy = "cancel_unsafe"
 	// ToolCallRecoveryCancelAll appends recovery status results for all
 	// outstanding tool calls instead of running or rerunning them.
 	ToolCallRecoveryCancelAll ToolCallRecoveryPolicy = "cancel_all"
@@ -36,14 +36,10 @@ type RecoveryOptions struct {
 }
 
 func recoveryToolCallStatusResult(p pendingToolCall, policy ToolCallRecoveryPolicy) ToolCallResult {
-	output := recoveryToolCallStatusText(p, policy)
 	return ToolCallResult{
-		CallID: p.call.CallID,
-		Output: output,
-		Data: map[string]any{
-			"recovery":         true,
-			"tool_call_status": output,
-		},
+		CallID:    p.call.CallID,
+		Output:    recoveryToolCallStatusText(p, policy),
+		Recovered: true,
 	}
 }
 
@@ -79,6 +75,10 @@ func (t *Thread) AttachExecutorForRecovery(e stateObserver) error {
 
 func (t *Thread) AttachExecutorForRecoveryWithOptions(e stateObserver, opts RecoveryOptions) error {
 	state := t.State()
+	if state == StateStreamComplete {
+		t.cb.setState(StateIdle)
+		state = StateIdle
+	}
 	if state != StateIdle && state != StateAwaitingToolResults && state != StateConstructLLMRequest && state != StateReceivingStream {
 		return ErrAttachExecutorForRecoveryRequiresRecoverableState
 	}
@@ -86,6 +86,7 @@ func (t *Thread) AttachExecutorForRecoveryWithOptions(e stateObserver, opts Reco
 		if err := t.recoverPendingToolCalls(opts); err != nil {
 			return err
 		}
+		state = t.State()
 	}
 	for _, p := range t.cb.pendingToolCalls(&t.items) {
 		if p.resolving || p.started {
@@ -108,8 +109,13 @@ func (t *Thread) AttachExecutorForRecoveryWithOptions(e stateObserver, opts Reco
 
 func (t *Thread) recoverPendingToolCalls(opts RecoveryOptions) error {
 	policy := opts.ToolCallPolicy
-	if policy == "" {
+	switch policy {
+	case "":
 		return nil
+	case ToolCallRecoveryRunSafeUnimplemented:
+		panic("threads ToolCallRecoveryRunSafeUnimplemented is not implemented")
+	case ToolCallRecoveryCancelUnsafeUnimplemented:
+		panic("threads ToolCallRecoveryCancelUnsafeUnimplemented is not implemented")
 	}
 	for _, p := range t.cb.pendingToolCalls(&t.items) {
 		if !pendingToolCallNeedsRecovery(p) {
@@ -118,16 +124,6 @@ func (t *Thread) recoverPendingToolCalls(opts RecoveryOptions) error {
 		switch policy {
 		case ToolCallRecoveryCancelAll:
 			t.QueueItem(recoveryToolCallStatusResult(p, policy))
-		case ToolCallRecoveryCancelUnsafe:
-			if p.recovery == ToolRecoverySafe && p.started {
-				return ErrAttachExecutorForRecoveryRequiresCleanExactState
-			}
-			t.QueueItem(recoveryToolCallStatusResult(p, policy))
-		case ToolCallRecoveryRunSafe:
-			if p.recovery == ToolRecoverySafe && p.started {
-				continue
-			}
-			return ErrAttachExecutorForRecoveryRequiresCleanExactState
 		default:
 			return ErrAttachExecutorForRecoveryRequiresCleanExactState
 		}

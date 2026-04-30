@@ -1,7 +1,9 @@
 package threads
 
-import "reflect"
-import "slices"
+import (
+	"reflect"
+	"slices"
+)
 
 type RequestBuilder interface {
 	Build(items []Item) Req
@@ -40,9 +42,10 @@ func (defaultRequestBuilder) Build(items []Item) Req {
 		if v, ok := it.(ToolCallResultable); ok {
 			flushPending()
 			req.Items = append(req.Items, ToolCallResult{
-				CallID: v.ToolCallID(),
-				Output: v.ToolOutput(),
-				Data:   cloneData(v.ToolData()),
+				CallID:    v.ToolCallID(),
+				Output:    v.ToolOutput(),
+				Recovered: v.ToolRecovered(),
+				Data:      cloneData(v.ToolData()),
 			})
 			continue
 		}

@@ -49,4 +49,5 @@ type ToolCallResultable interface {
 	ToolCallID() string
 	ToolOutput() string
 	ToolData() map[string]any
+	ToolRecovered() bool
 }

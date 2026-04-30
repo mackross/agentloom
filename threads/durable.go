@@ -81,16 +81,17 @@ type ThreadSnapshot struct {
 }
 
 type SnapshotItem struct {
-	Type     string         `json:"kind"`
-	Text     string         `json:"text,omitempty"`
-	ID       string         `json:"id,omitempty"`
-	Name     string         `json:"name,omitempty"`
-	Mode     string         `json:"mode,omitempty"`
-	Recovery string         `json:"recovery,omitempty"`
-	Args     string         `json:"args,omitempty"`
-	Output   string         `json:"output,omitempty"`
-	Data     string         `json:"data,omitempty"`
-	Tools    *ToolsSnapshot `json:"tools,omitempty"`
+	Type      string         `json:"kind"`
+	Text      string         `json:"text,omitempty"`
+	ID        string         `json:"id,omitempty"`
+	Name      string         `json:"name,omitempty"`
+	Mode      string         `json:"mode,omitempty"`
+	Recovery  string         `json:"recovery,omitempty"`
+	Recovered bool           `json:"recovered,omitempty"`
+	Args      string         `json:"args,omitempty"`
+	Output    string         `json:"output,omitempty"`
+	Data      string         `json:"data,omitempty"`
+	Tools     *ToolsSnapshot `json:"tools,omitempty"`
 }
 
 func (t *Thread) Snapshot() (ThreadSnapshot, error) {
@@ -316,10 +317,11 @@ func itemToSnapshotItem(v Item) (SnapshotItem, error) {
 			return SnapshotItem{}, err
 		}
 		return SnapshotItem{
-			Type:   "tool_result",
-			ID:     x.ToolCallID(),
-			Output: x.ToolOutput(),
-			Data:   data,
+			Type:      "tool_result",
+			ID:        x.ToolCallID(),
+			Output:    x.ToolOutput(),
+			Data:      data,
+			Recovered: x.ToolRecovered(),
 		}, nil
 	case ToolsSnapshot:
 		snap := cloneToolsSnapshot(x)
@@ -356,7 +358,7 @@ func snapshotItemToItem(raw SnapshotItem) (Item, error) {
 		if err != nil {
 			return nil, fmt.Errorf("tool result data: %w", err)
 		}
-		return ToolCallResult{CallID: raw.ID, Output: raw.Output, Data: data}, nil
+		return ToolCallResult{CallID: raw.ID, Output: raw.Output, Data: data, Recovered: raw.Recovered}, nil
 	case "tool_snapshot":
 		if raw.Tools == nil {
 			return ToolsSnapshot{}, nil

@@ -125,6 +125,9 @@ func (t *Thread) advanceWhilePossible() error {
 }
 
 func (t *Thread) QueueItem(v Item) {
+	if r, ok := v.(ToolCallResultable); ok && t.hasRecoveryResultForToolCall(r.ToolCallID()) {
+		return
+	}
 	t.mutationSeq++
 	if _, ok := v.(SendItem); ok {
 		t.cancelAutoSend.Store(false)
@@ -145,6 +148,22 @@ func (t *Thread) QueueItem(v Item) {
 	}
 	_ = t.advanceWhilePossible()
 	t.captureSafeIfIdle()
+}
+
+func (t *Thread) hasRecoveryResultForToolCall(callID string) bool {
+	if callID == "" {
+		return false
+	}
+	for _, item := range t.items.Slice() {
+		r, ok := item.(ToolCallResultable)
+		if !ok || r.ToolCallID() != callID {
+			continue
+		}
+		if r.ToolRecovered() {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *Thread) Queued() *itemList[Item] {

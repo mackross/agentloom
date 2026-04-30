@@ -64,6 +64,9 @@ type ToolCallResult struct {
 	// Output is the string that is returned to the LLM for the ToolCallResult.
 	Output string
 
+	// Recovered marks a runtime-generated recovery status result.
+	Recovered bool
+
 	// Data is for storing structured data for things like UI and debugging.
 	Data map[string]any
 }
@@ -98,6 +101,7 @@ func (ToolCallResult) MergesWith() []any          { return nil }
 func (r ToolCallResult) ToolCallID() string       { return r.CallID }
 func (r ToolCallResult) ToolOutput() string       { return r.Output }
 func (r ToolCallResult) ToolData() map[string]any { return cloneData(r.Data) }
+func (r ToolCallResult) ToolRecovered() bool      { return r.Recovered }
 func (ToolsSnapshot) Emit() bool                  { return false }
 func (ToolsSnapshot) MergesWith() []any           { return nil }
 func (SendItem) Emit() bool                       { return false }

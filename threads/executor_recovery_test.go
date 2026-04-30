@@ -189,6 +189,79 @@ func walOps(events []WALEvent) []string {
 	return out
 }
 
+func walContainsItemType(events []WALEvent, typ string) bool {
+	for _, ev := range events {
+		if ev.Item.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAttachExecutorForRecoverySettlesStreamCompleteWithoutNewRequest(t *testing.T) {
+	thread := New()
+	thread.QueueItem(UserText("hello"))
+	thread.QueueItem(SendItem{})
+	thread.QueueItem(AssistantText("done"))
+	snap, err := thread.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot thread: %v", err)
+	}
+	snap.State = StateStreamComplete
+
+	restored, err := RestoreThreadSnapshot(snap)
+	if err != nil {
+		t.Fatalf("restore stream_complete snapshot: %v", err)
+	}
+	streamer := newFakeStreamer()
+
+	if err := restored.AttachExecutorForRecovery(NewThreadExecutor(streamer.Streamer())); err != nil {
+		t.Fatalf("attach executor for recovery: %v", err)
+	}
+
+	if got := restored.State(); got != StateIdle {
+		t.Fatalf("expected stream_complete recovery to settle idle, got %q", got)
+	}
+	if got := streamer.CallCount(); got != 0 {
+		t.Fatalf("expected no recovered model request, got %d", got)
+	}
+}
+
+func TestAttachExecutorForRecoverySettlesStreamCompleteWithRequestedTool(t *testing.T) {
+	thread := New()
+	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("calc", "calculate")})
+	thread.QueueItem(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
+	snap, err := thread.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot thread: %v", err)
+	}
+	snap.State = StateStreamComplete
+
+	restored, err := RestoreThreadSnapshot(snap)
+	if err != nil {
+		t.Fatalf("restore stream_complete snapshot: %v", err)
+	}
+	resolverCalls := 0
+	restored.SetToolResolver(toolResolverFunc(func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error) {
+		resolverCalls++
+		return ToolDispatch{Items: []Item{ToolCallResult{CallID: "c1", Output: "2"}}}, nil
+	}))
+
+	if err := restored.AttachExecutorForRecovery(NewThreadExecutor(newFakeStreamer().Streamer())); err != nil {
+		t.Fatalf("attach executor for recovery: %v", err)
+	}
+
+	if resolverCalls != 1 {
+		t.Fatalf("expected resolver to run once, got %d", resolverCalls)
+	}
+	if got := restored.State(); got != StateIdle {
+		t.Fatalf("expected stream_complete tool recovery to settle idle, got %q", got)
+	}
+	if got := toolLifecycleTypes(restored, "c1"); !reflect.DeepEqual(got, []string{"tool_call", "tool_call_resolving", "tool_result"}) {
+		t.Fatalf("unexpected tool lifecycle: %#v", got)
+	}
+}
+
 func TestAttachExecutorForRecoveryInstallsExecutorWhileIdle(t *testing.T) {
 	thread := newTestThread(t)
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
@@ -674,6 +747,150 @@ func TestAttachExecutorForRecoveryReceivingStreamScenarios(t *testing.T) {
 	}
 }
 
+func TestAttachExecutorForRecoveryCancelAllAddsRecoveryResultForResolvingTool(t *testing.T) {
+	thread := New()
+	thread.SetDurableStore(&fakeDurableStore{})
+	thread.QueueItem(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
+	thread.QueueItem(ToolCallResolving{CallID: "c1"})
+	cp, err := thread.Checkpoint(CheckpointOptions{Policy: InflightUnsafe})
+	if err != nil {
+		t.Fatalf("checkpoint thread: %v", err)
+	}
+	restored, err := RestoreCheckpoint(cp, RestoreOptions{AllowUnsafe: true})
+	if err != nil {
+		t.Fatalf("restore checkpoint: %v", err)
+	}
+	store := &fakeDurableStore{}
+	restored.SetDurableStore(store)
+
+	if err := restored.AttachExecutorForRecoveryWithOptions(NewThreadExecutor(newFakeStreamer().Streamer()), RecoveryOptions{ToolCallPolicy: ToolCallRecoveryCancelAll}); err != nil {
+		t.Fatalf("attach executor for recovery: %v", err)
+	}
+
+	if got := restored.State(); got != StateIdle {
+		t.Fatalf("expected idle after cancel-all recovery, got %q", got)
+	}
+	if got := toolLifecycleTypes(restored, "c1"); !reflect.DeepEqual(got, []string{"tool_call", "tool_call_resolving", "tool_result"}) {
+		t.Fatalf("unexpected tool lifecycle: %#v", got)
+	}
+	if len(store.appended) != 1 || store.appended[0].Item.Type != "tool_result" {
+		t.Fatalf("expected durable recovery result append, got %#v", store.appended)
+	}
+}
+
+func TestAttachExecutorForRecoveryCancelAllAddsRecoveryResultForStartedTools(t *testing.T) {
+	tests := []struct {
+		name     string
+		recovery ToolRecovery
+	}{
+		{name: "safe started tool", recovery: ToolRecoverySafe},
+		{name: "unsafe started tool", recovery: ToolRecoveryUnsafe},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			thread := New()
+			store := &fakeDurableStore{}
+			thread.SetDurableStore(store)
+			thread.QueueItem(UserText("hello"))
+			thread.QueueItem(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
+			thread.QueueItem(ToolCallStarted{CallID: "c1", Recovery: tt.recovery})
+			streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
+				b.AssertRequest(func(req Req) {
+					if len(req.Items) != 3 {
+						t.Fatalf("unexpected recovery follow-up request items: %#v", req.Items)
+					}
+					result, ok := req.Items[2].(ToolCallResult)
+					if !ok || !result.Recovered {
+						t.Fatalf("expected recovered tool result in follow-up request, got %#v", req.Items)
+					}
+				})
+				b.Emit(AssistantText("continued"))
+			})
+
+			if err := thread.AttachExecutorForRecoveryWithOptions(NewThreadExecutor(streamer.Streamer()), RecoveryOptions{ToolCallPolicy: ToolCallRecoveryCancelAll}); err != nil {
+				t.Fatalf("attach executor for recovery: %v", err)
+			}
+
+			if got := thread.State(); got != StateIdle {
+				t.Fatalf("expected idle after cancel-all recovery follow-up, got %q", got)
+			}
+			if got := toolLifecycleTypes(thread, "c1"); !reflect.DeepEqual(got, []string{"tool_call", "tool_call_started", "tool_result"}) {
+				t.Fatalf("unexpected tool lifecycle: %#v", got)
+			}
+			var result ToolCallResult
+			for _, item := range thread.items.Slice() {
+				if r, ok := item.(ToolCallResult); ok && r.CallID == "c1" {
+					result = r
+				}
+			}
+			if result.CallID == "" || !result.Recovered {
+				t.Fatalf("expected recovered tool result in thread items, got %#v", result)
+			}
+			if result.Data != nil {
+				t.Fatalf("expected recovery result not to use application data, got %#v", result.Data)
+			}
+			if !walContainsItemType(store.appended, "tool_result") {
+				t.Fatalf("expected durable recovery result append, got %#v", store.appended)
+			}
+			streamer.AssertCallCount(t)
+		})
+	}
+}
+
+func TestAttachExecutorForRecoveryCancelAllDurablyReloadsRecoveryResult(t *testing.T) {
+	thread := New()
+	store := &clearingDurableStore{}
+	thread.SetDurableStore(store)
+	thread.QueueItem(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
+	thread.QueueItem(ToolCallResolving{CallID: "c1"})
+
+	if err := thread.AttachExecutorForRecoveryWithOptions(NewThreadExecutor(newFakeStreamer().Streamer()), RecoveryOptions{ToolCallPolicy: ToolCallRecoveryCancelAll}); err != nil {
+		t.Fatalf("attach executor for recovery: %v", err)
+	}
+	cp, wal := store.Load()
+	reloaded, err := RestoreFromCheckpointAndWAL(cp, wal, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("reload recovered thread: %v", err)
+	}
+
+	if got := reloaded.State(); got != StateIdle {
+		t.Fatalf("expected recovered durable reload to be idle, got %q", got)
+	}
+	if got := toolLifecycleTypes(reloaded, "c1"); !reflect.DeepEqual(got, []string{"tool_call", "tool_call_resolving", "tool_result"}) {
+		t.Fatalf("unexpected reloaded lifecycle: %#v", got)
+	}
+	items := reloaded.items.Slice()
+	result, ok := items[len(items)-1].(ToolCallResult)
+	if !ok || !result.Recovered {
+		t.Fatalf("expected reloaded recovered tool result, got %#v", items[len(items)-1])
+	}
+	if result.Data != nil {
+		t.Fatalf("expected recovery result not to use application data after reload, got %#v", result.Data)
+	}
+}
+
+func TestLateToolResultAfterRecoveryCancellationIsDropped(t *testing.T) {
+	thread := New()
+	store := &fakeDurableStore{}
+	thread.SetDurableStore(store)
+	thread.QueueItem(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
+	thread.QueueItem(ToolCallResolving{CallID: "c1"})
+	if err := thread.AttachExecutorForRecoveryWithOptions(NewThreadExecutor(newFakeStreamer().Streamer()), RecoveryOptions{ToolCallPolicy: ToolCallRecoveryCancelAll}); err != nil {
+		t.Fatalf("attach executor for recovery: %v", err)
+	}
+	appendedBeforeLateResult := len(store.appended)
+
+	thread.QueueItem(ToolCallResult{CallID: "c1", Output: "real result arrived late"})
+
+	if got := toolLifecycleTypes(thread, "c1"); !reflect.DeepEqual(got, []string{"tool_call", "tool_call_resolving", "tool_result"}) {
+		t.Fatalf("late real result should not create contradictory lifecycle, got %#v", got)
+	}
+	if got := len(store.appended); got != appendedBeforeLateResult {
+		t.Fatalf("late real result should not append durable WAL event, got %d appends before and %d after", appendedBeforeLateResult, got)
+	}
+}
+
 func TestAttachExecutorForRecoveryRejectsIdleThreadWithOutstandingStartedToolCall(t *testing.T) {
 	thread := newTestThread(t)
 	thread.QueueItem(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
@@ -830,6 +1047,19 @@ func TestRestoreAfterEndStreamCrashKeepsToolCallRequestedUntilStartedItemPersist
 	}
 }
 
+func TestRecoveryResultMarksRecoveredWithoutUsingData(t *testing.T) {
+	pending := pendingToolCall{call: ToolCall{CallID: "c1", Name: "calc"}, resolving: true}
+
+	got := recoveryToolCallStatusResult(pending, ToolCallRecoveryCancelAll)
+
+	if !got.Recovered {
+		t.Fatalf("expected recovery result to be marked recovered")
+	}
+	if got.Data != nil {
+		t.Fatalf("expected recovery result not to use application data, got %#v", got.Data)
+	}
+}
+
 func TestToolRecoveryStatusTextForCanceledCalls(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -854,7 +1084,7 @@ func TestToolRecoveryStatusTextForCanceledCalls(t *testing.T) {
 				CallID: "c1",
 				Name:   "calc",
 			}, resolving: true},
-			policy: ToolCallRecoveryCancelUnsafe,
+			policy: ToolCallRecoveryCancelUnsafeUnimplemented,
 			wantOutput: "Tool call status: completion unknown after recovery.\n\n" +
 				"The runtime was interrupted while handling this tool call and cannot confirm whether the action completed. " +
 				"Do not assume it succeeded; if the result matters, verify the relevant state or ask the user before trying again.",
@@ -865,7 +1095,7 @@ func TestToolRecoveryStatusTextForCanceledCalls(t *testing.T) {
 				CallID: "c1",
 				Name:   "write_file",
 			}, started: true, recovery: ToolRecoveryUnsafe},
-			policy: ToolCallRecoveryCancelUnsafe,
+			policy: ToolCallRecoveryCancelUnsafeUnimplemented,
 			wantOutput: "Tool call status: not retried after recovery.\n\n" +
 				"The runtime cannot confirm whether the previous attempt completed, and retrying may duplicate an external action. " +
 				"Before requesting this tool again, verify the external state or ask the user for confirmation.",
@@ -887,7 +1117,7 @@ func TestToolRecoveryStatusTextForCanceledCalls(t *testing.T) {
 				CallID: "c1",
 				Name:   "send_email",
 			}, started: true},
-			policy: ToolCallRecoveryCancelUnsafe,
+			policy: ToolCallRecoveryCancelUnsafeUnimplemented,
 			wantOutput: "Tool call status: not completed after recovery.\n\n" +
 				"The runtime could not determine the outcome of this tool call after an interruption, so it did not run the tool again automatically. " +
 				"If this action matters, verify the current state or ask the user before retrying.",
@@ -903,14 +1133,8 @@ func TestToolRecoveryStatusTextForCanceledCalls(t *testing.T) {
 			if got.Output != tt.wantOutput {
 				t.Fatalf("unexpected recovery status output:\n%s", got.Output)
 			}
-			if got.Data == nil {
-				t.Fatalf("expected recovery status metadata")
-			}
-			if got.Data["recovery"] != true {
-				t.Fatalf("expected recovery metadata flag, got %#v", got.Data)
-			}
-			if got.Data["tool_call_status"] != got.Output {
-				t.Fatalf("expected metadata to include model-facing status text, got %#v", got.Data)
+			if got.Data != nil {
+				t.Fatalf("expected no recovery status metadata in application data, got %#v", got.Data)
 			}
 		})
 	}
