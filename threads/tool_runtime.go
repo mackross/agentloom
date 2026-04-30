@@ -17,7 +17,7 @@ const (
 	// ensure a follow-up SendItem is queued automatically.
 	ToolContinueAuto ToolContinue = ""
 	// ToolContinueManual suppresses automatic follow-up send scheduling.
-	// The tool result is still recorded on the tape, but some later explicit
+	// The tool result is still recorded in the thread items, but some later explicit
 	// SendItem is required before the model continues.
 	ToolContinueManual ToolContinue = "manual"
 )
@@ -36,7 +36,7 @@ type ToolDispatch struct {
 	// Continue defaults to ToolContinueAuto when left unset.
 	Continue ToolContinue
 	// Recovery is only persisted when Started is true and a ToolCallStarted item
-	// is durably recorded on the tape.
+	// is durably recorded in the thread items.
 	Recovery ToolRecovery
 	Items    []Item
 }

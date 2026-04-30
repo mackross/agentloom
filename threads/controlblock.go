@@ -48,7 +48,7 @@ type cbStateHandler interface {
 	EndStreaming() cbTransition
 }
 
-// cbItems is the narrow tape surface the control block reads/writes.
+// cbItems is the narrow thread-item storage surface the control block reads/writes.
 // This is a deliberate design smell: CB mutates storage directly instead of
 // returning pure actions for Thread to apply. We keep this tradeoff for now
 // because it keeps IP/queue/stream insertion invariants co-located and simple.

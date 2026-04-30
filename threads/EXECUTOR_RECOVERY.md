@@ -732,7 +732,7 @@ If the process dies and the thread is restored, an attached executor using
 
 ### Example 2: Unsafe Write-File Tool
 
-Tape contains:
+Thread history contains:
 
 - `ToolCall(write_file, ...)`
 - `ToolCallStarted(write_file, ...)`
@@ -749,7 +749,7 @@ If the process dies:
 
 ### Example 3: Tool Requested But Never Started
 
-Tape contains:
+Thread history contains:
 
 - `ToolCall(write_file, ...)`
 - no `ToolCallStarted`

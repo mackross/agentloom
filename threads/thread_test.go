@@ -510,7 +510,7 @@ func TestSendItemExcludedFromConstructedRequest(t *testing.T) {
 	}
 }
 
-func TestStreamItemsAreBeforeMidStreamQueuedItemsOnTape(t *testing.T) {
+func TestStreamItemsAreBeforeMidStreamQueuedItems(t *testing.T) {
 	thread := newTestThread(t)
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
 		b.Do(func() { thread.QueueItem(UserText("later")) })
@@ -525,19 +525,19 @@ func TestStreamItemsAreBeforeMidStreamQueuedItemsOnTape(t *testing.T) {
 
 	all := thread.items.Slice()
 	if len(all) != 4 {
-		t.Fatalf("expected four tape items, got %d", len(all))
+		t.Fatalf("expected four items, got %d", len(all))
 	}
 	if got := all[0]; got != UserText("hello") {
-		t.Fatalf("unexpected first tape item: %#v", got)
+		t.Fatalf("unexpected first item: %#v", got)
 	}
 	if _, ok := all[1].(SendItem); !ok {
-		t.Fatalf("unexpected second tape item: %#v", all[1])
+		t.Fatalf("unexpected second item: %#v", all[1])
 	}
 	if got := all[2]; got != AssistantText("w1w2") {
-		t.Fatalf("unexpected third tape item: %#v", got)
+		t.Fatalf("unexpected third item: %#v", got)
 	}
 	if got := all[3]; got != UserText("later") {
-		t.Fatalf("unexpected fourth tape item: %#v", got)
+		t.Fatalf("unexpected fourth item: %#v", got)
 	}
 }
 
@@ -624,7 +624,7 @@ func TestIPTracksLatestStreamChunkWithoutEnteringQueue(t *testing.T) {
 	thread.QueueItem(SendItem{})
 }
 
-func TestToolCallChunksCoalesceAndFinalizeOnTape(t *testing.T) {
+func TestToolCallChunksCoalesceAndFinalizeInThreadItems(t *testing.T) {
 	thread := newTestThread(t)
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
 		b.Emit(ToolCallChunk{CallID: "c1", Name: "calc", PayloadDelta: `{"a":`})
@@ -638,7 +638,7 @@ func TestToolCallChunksCoalesceAndFinalizeOnTape(t *testing.T) {
 
 	all := thread.items.Slice()
 	if len(all) != 3 {
-		t.Fatalf("expected three tape items, got %#v", all)
+		t.Fatalf("expected three items, got %#v", all)
 	}
 	if got := all[2]; got != (ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`}) {
 		t.Fatalf("unexpected finalized tool call: %#v", got)
@@ -716,7 +716,7 @@ func TestInterleavedToolCallChunksCoalesceByCallID(t *testing.T) {
 
 	all := thread.items.Slice()
 	if len(all) != 4 {
-		t.Fatalf("expected four tape items, got %#v", all)
+		t.Fatalf("expected four items, got %#v", all)
 	}
 	if got := all[2]; got != (ToolCall{CallID: "c1", Name: "first", Payload: `{"x":1}`}) {
 		t.Fatalf("unexpected first tool call: %#v", got)
