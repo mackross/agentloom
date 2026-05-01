@@ -3,6 +3,7 @@ package threads
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 )
 
@@ -24,6 +25,8 @@ type Thread struct {
 	loop           *EventLoop
 	policy         ToolResultSendPolicy
 	resolvingTools bool
+	toolCancelMu   sync.Mutex
+	toolCancels    map[string]*toolCancel
 	cancelAutoSend atomic.Bool
 
 	mutationSeq  uint32
@@ -97,16 +100,87 @@ func (t *Thread) SetToolResolver(r ToolResolver) {
 // continuation from tool results produced by the canceled turn. It is safe to
 // call from outside an EventLoop mutation callback so UI cancellation can break
 // an in-progress stream immediately.
+//
+// Cancellation flows from the LLM streamer through tool calls made by that
+// streamer: CancelCurrentTurn cancels the streamer's current turn and the
+// contexts passed to tool calls produced in that turn. If a streamer can emit
+// tool calls collected from multiple LLM turns (Fireworks-style), calls from
+// earlier turns may not be canceled here; that is likely a bug.
 func (t *Thread) CancelCurrentTurn() bool {
+	canceled := false
 	if c, ok := t.executor.(streamCanceler); ok && c.CancelCurrentStream() {
-		t.cancelAutoSend.Store(true)
-		return true
+		canceled = true
 	}
-	if len(t.cb.pendingToolCalls(&t.items)) > 0 {
+	if t.cancelToolCalls() {
+		canceled = true
+	}
+	if canceled || len(t.cb.pendingToolCalls(&t.items)) > 0 {
 		t.cancelAutoSend.Store(true)
 		return true
 	}
 	return false
+}
+
+type toolCancel struct {
+	cancel context.CancelFunc
+}
+
+func (t *Thread) beginToolCallContext(callID string) (context.Context, *toolCancel) {
+	ctx, cancel := context.WithCancel(context.Background())
+	tc := &toolCancel{cancel: cancel}
+	if callID == "" {
+		return ctx, tc
+	}
+	t.toolCancelMu.Lock()
+	if t.toolCancels == nil {
+		t.toolCancels = map[string]*toolCancel{}
+	}
+	t.toolCancels[callID] = tc
+	t.toolCancelMu.Unlock()
+	return ctx, tc
+}
+
+func (t *Thread) clearToolCallContext(callID string, tc *toolCancel) {
+	if callID != "" {
+		t.toolCancelMu.Lock()
+		if t.toolCancels[callID] == tc {
+			delete(t.toolCancels, callID)
+		}
+		t.toolCancelMu.Unlock()
+	}
+	if tc != nil && tc.cancel != nil {
+		tc.cancel()
+	}
+}
+
+func (t *Thread) clearToolCallContextForResult(callID string) {
+	if callID == "" {
+		return
+	}
+	var tc *toolCancel
+	t.toolCancelMu.Lock()
+	if t.toolCancels != nil {
+		tc = t.toolCancels[callID]
+		delete(t.toolCancels, callID)
+	}
+	t.toolCancelMu.Unlock()
+	if tc != nil && tc.cancel != nil {
+		tc.cancel()
+	}
+}
+
+func (t *Thread) cancelToolCalls() bool {
+	t.toolCancelMu.Lock()
+	defer t.toolCancelMu.Unlock()
+	if len(t.toolCancels) == 0 {
+		return false
+	}
+	for _, tc := range t.toolCancels {
+		if tc != nil && tc.cancel != nil {
+			tc.cancel()
+		}
+	}
+	return true
 }
 
 func (t *Thread) advanceNext() error {
@@ -125,8 +199,11 @@ func (t *Thread) advanceWhilePossible() error {
 }
 
 func (t *Thread) QueueItem(v Item) {
-	if r, ok := v.(ToolCallResultable); ok && t.hasRecoveryResultForToolCall(r.ToolCallID()) {
-		return
+	if r, ok := v.(ToolCallResultable); ok {
+		t.clearToolCallContextForResult(r.ToolCallID())
+		if t.hasRecoveryResultForToolCall(r.ToolCallID()) {
+			return
+		}
 	}
 	t.mutationSeq++
 	if _, ok := v.(SendItem); ok {
@@ -249,9 +326,14 @@ func (t *Thread) resolvePendingToolCalls() (bool, error) {
 		}
 		t.queueToolResolutionItem(hasPendingSend, ToolCallResolving{CallID: p.call.CallID})
 		resolved = true
-		dispatch, err := t.resolver.ResolveTool(context.Background(), p.call, p.load)
+		ctx, cancelTool := t.beginToolCallContext(p.call.CallID)
+		dispatch, err := t.resolver.ResolveTool(ctx, p.call, p.load)
 		if err != nil {
+			t.clearToolCallContext(p.call.CallID, cancelTool)
 			return resolved, err
+		}
+		if !dispatch.Started || dispatchHasResultForCall(dispatch, p.call.CallID) || ctx.Err() != nil {
+			t.clearToolCallContext(p.call.CallID, cancelTool)
 		}
 		if dispatch.Started {
 			t.queueToolResolutionItem(hasPendingSend, ToolCallStarted{
@@ -292,6 +374,16 @@ func (t *Thread) queueBeforePendingSend(v Item) bool {
 		t.mutationSeq++
 		t.appendWAL(walOpQueueItemBeforeSend, v)
 		return true
+	}
+	return false
+}
+
+func dispatchHasResultForCall(dispatch ToolDispatch, callID string) bool {
+	for _, item := range dispatch.Items {
+		result, ok := item.(ToolCallResultable)
+		if ok && result.ToolCallID() == callID {
+			return true
+		}
 	}
 	return false
 }

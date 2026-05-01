@@ -8,9 +8,13 @@ import (
 )
 
 type Handler interface {
+	// HandleToolCall receives the ResolveTool context, which CancelCurrentTurn
+	// cancels when the canceled LLM streamer turn produced this tool call.
 	HandleToolCall(context.Context, Call) Item
 }
 
+// HandlerFunc receives the ResolveTool context, which CancelCurrentTurn cancels
+// when the canceled LLM streamer turn produced this tool call.
 type HandlerFunc func(context.Context, Call) Item
 
 func (f HandlerFunc) HandleToolCall(ctx context.Context, call Call) Item {

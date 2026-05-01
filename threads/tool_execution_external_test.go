@@ -3,6 +3,7 @@ package threads_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -11,6 +12,41 @@ import (
 	"github.com/mackross/agentloom/threads"
 	"github.com/mackross/agentloom/threads/simpletool"
 )
+
+func TestCancelCurrentTurnCancelsBlockingToolResolver(t *testing.T) {
+	thread := threads.New()
+	thread.SetToolProvider(simpletool.ProviderFunc(func() threads.ToolsSnapshot {
+		return testBoundToolsSnapshot("slow", "slow tool", `{"function":"tool/slow@v1"}`)
+	}))
+	resolverStarted := make(chan struct{}, 1)
+	resolverDone := make(chan error, 1)
+	thread.SetToolResolver(simpletool.ResolverFunc(func(ctx context.Context, call threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
+		resolverStarted <- struct{}{}
+		<-ctx.Done()
+		resolverDone <- ctx.Err()
+		return threads.ToolDispatch{}, ctx.Err()
+	}))
+	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
+		b.Emit(threads.ToolCall{CallID: "c1", Name: "slow", Payload: `{}`})
+	})
+	thread.SetExecutor(threads.NewThreadExecutor(streamer))
+
+	sendDone := make(chan struct{})
+	go func() {
+		defer close(sendDone)
+		thread.QueueItem(threads.UserText("hello"))
+		thread.QueueItem(threads.SendItem{})
+	}()
+	<-resolverStarted
+	if !thread.CancelCurrentTurn() {
+		t.Fatalf("expected active tool resolver to cancel")
+	}
+	if err := <-resolverDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("resolver context error = %v, want context canceled", err)
+	}
+	<-sendDone
+	streamer.AssertCallCount(t)
+}
 
 func TestToolProviderAndResolverExecuteToolCallsEndToEnd(t *testing.T) {
 	thread := threads.New()

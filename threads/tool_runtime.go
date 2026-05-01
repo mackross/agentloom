@@ -42,6 +42,8 @@ type ToolDispatch struct {
 }
 
 type ToolResolver interface {
+	// ResolveTool receives a context canceled by CancelCurrentTurn when the
+	// canceled LLM streamer turn produced this tool call.
 	ResolveTool(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error)
 }
 
