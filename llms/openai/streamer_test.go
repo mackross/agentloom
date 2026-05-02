@@ -1,7 +1,9 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	gschema "github.com/google/jsonschema-go/jsonschema"
@@ -133,6 +135,32 @@ func TestResponsesStreamerServiceTierIsSettable(t *testing.T) {
 		t.Fatalf("service tier = %q, want priority", got)
 	}
 }
+
+func TestResponsesStreamerDefaultsToWebSocket(t *testing.T) {
+	streamer := NewResponsesStreamerWithClient(openaiapi.Client{}, "")
+	if got := streamer.Transport; got != ResponsesTransportWebSocket {
+		t.Fatalf("transport = %q, want %q", got, ResponsesTransportWebSocket)
+	}
+}
+
+func TestShouldRetryWebSocketNewError(t *testing.T) {
+	if !shouldRetryWebSocketNewError(t.Context(), errTestClosed) {
+		t.Fatalf("closed websocket error should be retried")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if shouldRetryWebSocketNewError(ctx, errTestClosed) {
+		t.Fatalf("canceled context should not be retried")
+	}
+	if shouldRetryWebSocketNewError(t.Context(), errTestInFlight) {
+		t.Fatalf("in-flight stream error should not be retried")
+	}
+}
+
+var (
+	errTestClosed   = errors.New("responses websocket: connection is closed")
+	errTestInFlight = errors.New("responses websocket: another response stream is already active on this connection")
+)
 
 func valueOrEmpty(v *string) string {
 	if v == nil {

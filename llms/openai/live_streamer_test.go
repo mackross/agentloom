@@ -48,7 +48,7 @@ func TestLiveSendBeforeToolResolution(t *testing.T) {
 
 	req1 := threads.Req{
 		Instruction: "Call the calculator tool exactly once. Do not output any text.",
-		Items: []threads.Item{threads.UserText("Compute 2 + 2 using the calculator tool.")},
+		Items:       []threads.Item{threads.UserText("Compute 2 + 2 using the calculator tool.")},
 		Tools: threads.ToolOfferSnapshot{
 			Offered: []threads.ToolSpec{{
 				Name:        "calculator",

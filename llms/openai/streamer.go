@@ -3,8 +3,10 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	gschema "github.com/google/jsonschema-go/jsonschema"
 	openaiapi "github.com/openai/openai-go/v3"
@@ -17,12 +19,30 @@ import (
 
 const DefaultModel = "gpt-4.1-mini"
 
+type ResponsesTransport string
+
+const (
+	ResponsesTransportWebSocket ResponsesTransport = "websocket"
+	ResponsesTransportSSE       ResponsesTransport = "sse"
+)
+
 type ResponsesStreamer struct {
 	client            openaiapi.Client
 	model             string
 	Reasoning         shared.ReasoningParam
 	ServiceTier       responses.ResponseNewParamsServiceTier
+	Transport         ResponsesTransport
 	OnOutputTextDelta func(string)
+
+	mu     sync.Mutex
+	wsConn *responses.WebSocketConn
+}
+
+type responseStream interface {
+	Next() bool
+	Current() responses.ResponseStreamEventUnion
+	Err() error
+	Close() error
 }
 
 type functionCallMeta struct {
@@ -39,7 +59,7 @@ func NewResponsesStreamerWithClient(client openaiapi.Client, model string) *Resp
 	if model == "" {
 		model = DefaultModel
 	}
-	return &ResponsesStreamer{client: client, model: model}
+	return &ResponsesStreamer{client: client, model: model, Transport: ResponsesTransportWebSocket}
 }
 
 func (*ResponsesStreamer) Capabilities() threads.StreamerCapabilities {
@@ -50,10 +70,36 @@ func (s *ResponsesStreamer) StreamReq(req threads.Req, emit func(threads.Item) e
 	return s.StreamReqContext(context.Background(), req, emit)
 }
 
+func (s *ResponsesStreamer) Close() error {
+	s.mu.Lock()
+	conn := s.wsConn
+	s.wsConn = nil
+	s.mu.Unlock()
+	if conn == nil {
+		return nil
+	}
+	return conn.Close()
+}
+
 func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Req, emit func(threads.Item) error) error {
-	inputItems, err := requestInputItems(req)
+	params, err := s.responseParams(req)
 	if err != nil {
 		return err
+	}
+
+	stream, err := s.newResponseStream(ctx, params)
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+
+	return s.consumeResponseStream(stream, emit)
+}
+
+func (s *ResponsesStreamer) responseParams(req threads.Req) (responses.ResponseNewParams, error) {
+	inputItems, err := requestInputItems(req)
+	if err != nil {
+		return responses.ResponseNewParams{}, err
 	}
 
 	params := responses.ResponseNewParams{
@@ -70,14 +116,14 @@ func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Re
 	}
 	tools, err := requestTools(req.Tools)
 	if err != nil {
-		return err
+		return responses.ResponseNewParams{}, err
 	}
 	if len(tools) > 0 {
 		params.Tools = tools
 	}
 	choice, err := requestToolChoice(req.Tools)
 	if err != nil {
-		return err
+		return responses.ResponseNewParams{}, err
 	}
 	if choice != nil {
 		params.ToolChoice = *choice
@@ -85,9 +131,85 @@ func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Re
 	if req.Tools.Parallel != nil {
 		params.ParallelToolCalls = openaiapi.Bool(*req.Tools.Parallel)
 	}
+	return params, nil
+}
 
-	stream := s.client.Responses.NewStreaming(ctx, params)
-	defer stream.Close()
+func (s *ResponsesStreamer) newResponseStream(ctx context.Context, params responses.ResponseNewParams) (responseStream, error) {
+	switch s.Transport {
+	case "", ResponsesTransportWebSocket:
+		return s.newWebSocketResponseStream(ctx, params)
+	case ResponsesTransportSSE:
+		return s.client.Responses.NewStreaming(ctx, params), nil
+	default:
+		return nil, fmt.Errorf("openai responses transport %q not supported", s.Transport)
+	}
+}
+
+func (s *ResponsesStreamer) newWebSocketResponseStream(ctx context.Context, params responses.ResponseNewParams) (*responses.WebSocketStream, error) {
+	conn, err := s.webSocketConn(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	stream, err := conn.New(ctx, params)
+	if err == nil {
+		return stream, nil
+	}
+	if !shouldRetryWebSocketNewError(ctx, err) {
+		return nil, err
+	}
+
+	s.dropWebSocketConn(conn)
+	conn, connErr := s.webSocketConn(ctx)
+	if connErr != nil {
+		return nil, errors.Join(err, connErr)
+	}
+	stream, streamErr := conn.New(ctx, params)
+	if streamErr != nil {
+		s.dropWebSocketConn(conn)
+		return nil, errors.Join(err, streamErr)
+	}
+	return stream, nil
+}
+
+func shouldRetryWebSocketNewError(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil {
+		return false
+	}
+	return !strings.Contains(err.Error(), "another response stream is already active")
+}
+
+func (s *ResponsesStreamer) webSocketConn(ctx context.Context) (*responses.WebSocketConn, error) {
+	s.mu.Lock()
+	conn := s.wsConn
+	s.mu.Unlock()
+	if conn != nil {
+		return conn, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.wsConn != nil {
+		return s.wsConn, nil
+	}
+	conn, err := s.client.Responses.ConnectWebSocket(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.wsConn = conn
+	return conn, nil
+}
+
+func (s *ResponsesStreamer) dropWebSocketConn(conn *responses.WebSocketConn) {
+	s.mu.Lock()
+	if s.wsConn == conn {
+		s.wsConn = nil
+	}
+	s.mu.Unlock()
+	_ = conn.Close()
+}
+
+func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit func(threads.Item) error) error {
 	functionCalls := map[string]functionCallMeta{}
 
 	for stream.Next() {

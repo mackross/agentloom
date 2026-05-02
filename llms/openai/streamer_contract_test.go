@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	openaiapi "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/shared"
@@ -20,16 +22,27 @@ func TestResponsesStreamerContract(t *testing.T) {
 	streamertest.RunContractTests(t, openAIContractHarness{})
 }
 
+func TestResponsesStreamerSSEContract(t *testing.T) {
+	streamertest.RunContractTests(t, openAISSEContractHarness{})
+}
+
 func TestResponsesStreamerSendsReasoningEffort(t *testing.T) {
 	bodyCh := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
+		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
-			t.Errorf("read request body: %v", err)
+			t.Errorf("websocket accept: %v", err)
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+
+		_, body, err := conn.Read(r.Context())
+		if err != nil {
+			t.Errorf("read websocket message: %v", err)
+			return
 		}
 		bodyCh <- append([]byte(nil), body...)
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		_ = conn.Write(r.Context(), websocket.MessageText, []byte(`[DONE]`))
 	}))
 	defer server.Close()
 
@@ -71,6 +84,65 @@ func (openAIContractHarness) Stream(t testing.TB, req threads.Req, events []stre
 
 	bodyCh := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		if r.URL.Path != "/responses" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("websocket accept: %v", err)
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+
+		_, body, err := conn.Read(r.Context())
+		if err != nil {
+			t.Errorf("read websocket message: %v", err)
+			return
+		}
+		bodyCh <- append([]byte(nil), body...)
+
+		for _, msg := range encodeResponseWebSocketEvents(t, events) {
+			if err := conn.Write(r.Context(), websocket.MessageText, msg); err != nil {
+				t.Errorf("write websocket message: %v", err)
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	client := openaiapi.NewClient(
+		option.WithAPIKey("test"),
+		option.WithBaseURL(server.URL),
+		option.WithHTTPClient(server.Client()),
+		option.WithMaxRetries(0),
+	)
+	streamer := NewResponsesStreamerWithClient(client, "test-model")
+	err := streamer.StreamReq(req, emit)
+
+	select {
+	case body := <-bodyCh:
+		return parseObservedRequest(t, body), err
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for outbound request")
+		return streamertest.ObservedRequest{}, err
+	}
+}
+
+type openAISSEContractHarness struct{}
+
+func (openAISSEContractHarness) Capabilities() streamertest.Capabilities {
+	return streamertest.Capabilities{ToolCallChunks: true}
+}
+
+func (openAISSEContractHarness) Stream(t testing.TB, req threads.Req, events []streamertest.Event, emit func(threads.Item) error) (streamertest.ObservedRequest, error) {
+	t.Helper()
+
+	bodyCh := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("unexpected method: %s", r.Method)
 		}
@@ -98,6 +170,7 @@ func (openAIContractHarness) Stream(t testing.TB, req threads.Req, events []stre
 		option.WithMaxRetries(0),
 	)
 	streamer := NewResponsesStreamerWithClient(client, "test-model")
+	streamer.Transport = ResponsesTransportSSE
 	err := streamer.StreamReq(req, emit)
 
 	select {
@@ -109,14 +182,25 @@ func (openAIContractHarness) Stream(t testing.TB, req threads.Req, events []stre
 	}
 }
 
-func encodeResponseStreamEvents(t testing.TB, events []streamertest.Event) string {
+func encodeResponseWebSocketEvents(t testing.TB, events []streamertest.Event) [][]byte {
 	t.Helper()
 
-	type toolMeta struct {
-		ItemID      string
-		OutputIndex int
-		Name        string
+	var messages [][]byte
+	appendMessage := func(payload map[string]any) {
+		t.Helper()
+		msg, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal stream event: %v", err)
+		}
+		messages = append(messages, msg)
 	}
+	encodeResponseEvents(t, events, appendMessage)
+	messages = append(messages, []byte(`[DONE]`))
+	return messages
+}
+
+func encodeResponseStreamEvents(t testing.TB, events []streamertest.Event) string {
+	t.Helper()
 
 	var out []byte
 	appendEvent := func(payload map[string]any) {
@@ -128,6 +212,20 @@ func encodeResponseStreamEvents(t testing.TB, events []streamertest.Event) strin
 		out = append(out, []byte("data: ")...)
 		out = append(out, line...)
 		out = append(out, '\n', '\n')
+	}
+	encodeResponseEvents(t, events, appendEvent)
+
+	out = append(out, []byte("data: [DONE]\n\n")...)
+	return string(out)
+}
+
+func encodeResponseEvents(t testing.TB, events []streamertest.Event, appendEvent func(map[string]any)) {
+	t.Helper()
+
+	type toolMeta struct {
+		ItemID      string
+		OutputIndex int
+		Name        string
 	}
 
 	toolCalls := map[string]toolMeta{}
@@ -223,9 +321,6 @@ func encodeResponseStreamEvents(t testing.TB, events []streamertest.Event) strin
 			t.Fatalf("unsupported contract event item: %T", ev.Item)
 		}
 	}
-
-	out = append(out, []byte("data: [DONE]\n\n")...)
-	return string(out)
 }
 
 func parseObservedRequest(t testing.TB, body []byte) streamertest.ObservedRequest {
