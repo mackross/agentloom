@@ -1,7 +1,6 @@
 package threads
 
 import (
-	"sync"
 	"testing"
 	"time"
 )
@@ -9,14 +8,9 @@ import (
 func TestCheckpointSkipUsesSafeBoundaryDuringInflight(t *testing.T) {
 	thread := New()
 	streamStart := make(chan struct{})
-	var once sync.Once
-	thread.SetDelegate(ThreadDelegateFuncs{
-		OnRequest: func(_ *Thread) {
-			once.Do(func() { close(streamStart) })
-		},
-	})
 
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
+		b.Do(func() { close(streamStart) })
 		b.Wait("hold")
 		b.Emit(AssistantText("world"))
 	})
@@ -56,14 +50,9 @@ func TestCheckpointSkipUsesSafeBoundaryDuringInflight(t *testing.T) {
 func TestCheckpointWaitReturnsAfterInflightCompletion(t *testing.T) {
 	thread := New()
 	streamStart := make(chan struct{})
-	var once sync.Once
-	thread.SetDelegate(ThreadDelegateFuncs{
-		OnRequest: func(_ *Thread) {
-			once.Do(func() { close(streamStart) })
-		},
-	})
 
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
+		b.Do(func() { close(streamStart) })
 		b.Wait("hold")
 		b.Emit(AssistantText("world"))
 	})
@@ -114,14 +103,9 @@ func TestCheckpointWaitReturnsAfterInflightCompletion(t *testing.T) {
 func TestCheckpointUnsafeRestoreRequiresExplicitOptIn(t *testing.T) {
 	thread := New()
 	streamStart := make(chan struct{})
-	var once sync.Once
-	thread.SetDelegate(ThreadDelegateFuncs{
-		OnRequest: func(_ *Thread) {
-			once.Do(func() { close(streamStart) })
-		},
-	})
 
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
+		b.Do(func() { close(streamStart) })
 		b.Wait("hold")
 		b.Emit(AssistantText("world"))
 	})
