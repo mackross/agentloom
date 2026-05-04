@@ -1,4 +1,4 @@
-package durability
+package sqlitebranchstore
 
 import (
 	"context"

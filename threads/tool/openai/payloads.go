@@ -1,5 +1,6 @@
-// Package openai provides payloads for openai tools. These are redefined in
-// the tool package.
+// Package openai marks OpenAI-specific tool payload forms.
+// RegexpDefinitionString and LarkDefinitionString live here.
+// Package threads/tool redefines them for ordinary callers.
 package openai
 
 type (
