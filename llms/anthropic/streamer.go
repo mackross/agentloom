@@ -30,6 +30,7 @@ type MessagesStreamer struct {
 	EagerToolStreaming bool
 	ServiceTier        anthropicapi.MessageNewParamsServiceTier
 	OnOutputTextDelta  func(string)
+	normalizers        threads.ToolNormalizers
 }
 
 type toolCallMeta struct {
@@ -67,6 +68,14 @@ func (s *MessagesStreamer) Capabilities() threads.StreamerCapabilities {
 	return threads.StreamerCapabilities{AssistantPrefix: supportsAssistantPrefix(string(s.model)), ToolResultSendPolicy: threads.ToolResultSendRequiresComplete}
 }
 
+func (s *MessagesStreamer) RegisterToolNormalizer(name string, normalizer threads.ToolNormalizer) {
+	s.normalizers.RegisterToolNormalizer(name, normalizer)
+}
+
+func (s *MessagesStreamer) UnregisterToolNormalizer(name string) {
+	s.normalizers.UnregisterToolNormalizer(name)
+}
+
 func supportsAssistantPrefix(model string) bool {
 	if strings.HasPrefix(model, "claude-sonnet-4-6") || strings.HasPrefix(model, "claude-opus-4-6") {
 		return false
@@ -88,6 +97,11 @@ func (s *MessagesStreamer) StreamReq(req threads.Req, emit func(threads.Item) er
 }
 
 func (s *MessagesStreamer) StreamReqContext(ctx context.Context, req threads.Req, emit func(threads.Item) error) error {
+	req, err := s.normalizers.NormalizeReq(req)
+	if err != nil {
+		return err
+	}
+
 	messages, err := requestMessages(req)
 	if err != nil {
 		return err
@@ -181,11 +195,16 @@ func (s *MessagesStreamer) StreamReqContext(ctx context.Context, req threads.Req
 			if name == "" {
 				name = meta.name
 			}
-			if err := emit(threads.ToolCall{
+			call := threads.ToolCall{
 				CallID:  callID,
 				Name:    name,
 				Payload: string(block.Input),
-			}); err != nil {
+			}
+			call, err := s.normalizers.NormalizeResponseToolCall(call)
+			if err != nil {
+				return err
+			}
+			if err := emit(call); err != nil {
 				return err
 			}
 			delete(toolCalls, v.Index)

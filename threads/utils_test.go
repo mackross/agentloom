@@ -127,6 +127,10 @@ func (r *fakeStreamerRuntime) Capabilities() StreamerCapabilities {
 	return r.owner.capabilities
 }
 
+func (r *fakeStreamerRuntime) RegisterToolNormalizer(string, ToolNormalizer) {}
+
+func (r *fakeStreamerRuntime) UnregisterToolNormalizer(string) {}
+
 func (f *fakeStreamer) streamReq(req Req, emit func(Item) error) error {
 	f.calls++
 	callIdx := f.calls - 1

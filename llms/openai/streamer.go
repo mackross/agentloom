@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
+	"time"
 
 	gschema "github.com/google/jsonschema-go/jsonschema"
 	openaiapi "github.com/openai/openai-go/v3"
@@ -18,6 +20,11 @@ import (
 )
 
 const DefaultModel = "gpt-4.1-mini"
+
+const (
+	DefaultWebSocketMaxIdle = 2 * time.Minute
+	DefaultWebSocketMaxAge  = 55 * time.Minute
+)
 
 type ResponsesTransport string
 
@@ -34,8 +41,43 @@ type ResponsesStreamer struct {
 	Transport         ResponsesTransport
 	OnOutputTextDelta func(string)
 
-	mu     sync.Mutex
-	wsConn *responses.WebSocketConn
+	// WebSocketMaxIdle controls how long an idle cached WebSocket connection is reused.
+	// Values less than or equal to zero use DefaultWebSocketMaxIdle.
+	WebSocketMaxIdle time.Duration
+	// WebSocketMaxAge controls the maximum lifetime of a cached WebSocket connection.
+	// Values less than or equal to zero use DefaultWebSocketMaxAge.
+	WebSocketMaxAge time.Duration
+
+	// UsePreviousResponseID enables WebSocket continuation requests. When enabled,
+	// the streamer uses a prefix hash to detect append-only follow-up requests and
+	// sends only the new input items with previous_response_id. The zero value means enabled.
+	UsePreviousResponseID bool
+	// DisablePreviousResponseID disables WebSocket continuation requests.
+	DisablePreviousResponseID bool
+
+	normalizers threads.ToolNormalizers
+
+	mu                         sync.Mutex
+	wsConn                     *responses.WebSocketConn
+	wsCreatedAt                time.Time
+	wsLastUsed                 time.Time
+	continuation               responseContinuation
+	lastUsedPreviousResponseID bool
+}
+
+type responseContinuation struct {
+	responseID string
+	prefixHash [32]byte
+	prefixLen  int
+	paramsHash [32]byte
+}
+
+type responseStreamRequest struct {
+	stream           responseStream
+	conn             *responses.WebSocketConn
+	inputItems       responses.ResponseInputParam
+	paramsHash       [32]byte
+	usedContinuation bool
 }
 
 type responseStream interface {
@@ -59,11 +101,25 @@ func NewResponsesStreamerWithClient(client openaiapi.Client, model string) *Resp
 	if model == "" {
 		model = DefaultModel
 	}
-	return &ResponsesStreamer{client: client, model: model, Transport: ResponsesTransportWebSocket}
+	return &ResponsesStreamer{
+		client:           client,
+		model:            model,
+		Transport:        ResponsesTransportWebSocket,
+		WebSocketMaxIdle: DefaultWebSocketMaxIdle,
+		WebSocketMaxAge:  DefaultWebSocketMaxAge,
+	}
 }
 
 func (*ResponsesStreamer) Capabilities() threads.StreamerCapabilities {
 	return threads.StreamerCapabilities{AssistantPrefix: true, ToolResultSendPolicy: threads.ToolResultSendRequiresComplete}
+}
+
+func (s *ResponsesStreamer) RegisterToolNormalizer(name string, normalizer threads.ToolNormalizer) {
+	s.normalizers.RegisterToolNormalizer(name, normalizer)
+}
+
+func (s *ResponsesStreamer) UnregisterToolNormalizer(name string) {
+	s.normalizers.UnregisterToolNormalizer(name)
 }
 
 func (s *ResponsesStreamer) StreamReq(req threads.Req, emit func(threads.Item) error) error {
@@ -73,7 +129,7 @@ func (s *ResponsesStreamer) StreamReq(req threads.Req, emit func(threads.Item) e
 func (s *ResponsesStreamer) Close() error {
 	s.mu.Lock()
 	conn := s.wsConn
-	s.wsConn = nil
+	s.clearWebSocketConnLocked()
 	s.mu.Unlock()
 	if conn == nil {
 		return nil
@@ -82,18 +138,53 @@ func (s *ResponsesStreamer) Close() error {
 }
 
 func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Req, emit func(threads.Item) error) error {
+	req, err := s.normalizers.NormalizeReq(req)
+	if err != nil {
+		return err
+	}
+
 	params, err := s.responseParams(req)
 	if err != nil {
 		return err
 	}
 
-	stream, err := s.newResponseStream(ctx, params)
+	streamReq, err := s.newResponseStream(ctx, params, true)
 	if err != nil {
 		return err
 	}
-	defer stream.Close()
+	defer streamReq.stream.Close()
 
-	return s.consumeResponseStream(stream, emit)
+	emitted := false
+	emitTracked := func(item threads.Item) error {
+		emitted = true
+		return emit(item)
+	}
+	responseID, outputItems, err := s.consumeResponseStream(streamReq.stream, emitTracked)
+	if err != nil && shouldRetryResponseStreamError(ctx, err, streamReq, emitted) {
+		if streamReq.conn != nil {
+			s.dropWebSocketConn(streamReq.conn)
+		}
+		_ = streamReq.stream.Close()
+		if streamReq.usedContinuation {
+			s.clearContinuation()
+		}
+		streamReq, err = s.newResponseStream(ctx, params, false)
+		if err != nil {
+			return err
+		}
+		defer streamReq.stream.Close()
+		responseID, outputItems, err = s.consumeResponseStream(streamReq.stream, emitTracked)
+	}
+	if err != nil {
+		if streamReq.conn != nil {
+			s.dropWebSocketConn(streamReq.conn)
+		}
+		return err
+	}
+	if streamReq.conn != nil {
+		s.rememberContinuation(responseID, streamReq.inputItems, outputItems, streamReq.paramsHash)
+	}
+	return nil
 }
 
 func (s *ResponsesStreamer) responseParams(req threads.Req) (responses.ResponseNewParams, error) {
@@ -134,42 +225,70 @@ func (s *ResponsesStreamer) responseParams(req threads.Req) (responses.ResponseN
 	return params, nil
 }
 
-func (s *ResponsesStreamer) newResponseStream(ctx context.Context, params responses.ResponseNewParams) (responseStream, error) {
+func (s *ResponsesStreamer) newResponseStream(ctx context.Context, params responses.ResponseNewParams, allowContinuation bool) (responseStreamRequest, error) {
+	fullInputItems := params.Input.OfInputItemList
+	paramsHash, err := hashResponseParams(params)
+	if err != nil {
+		return responseStreamRequest{}, err
+	}
+
+	sendParams := params
+	usedContinuation := false
+	if allowContinuation && s.usePreviousResponseID() {
+		usedContinuation = s.applyPreviousResponseID(&sendParams, fullInputItems, paramsHash)
+	}
+	s.mu.Lock()
+	s.lastUsedPreviousResponseID = usedContinuation
+	s.mu.Unlock()
+
+	sr := responseStreamRequest{
+		inputItems:       fullInputItems,
+		paramsHash:       paramsHash,
+		usedContinuation: usedContinuation,
+	}
+
 	switch s.Transport {
 	case "", ResponsesTransportWebSocket:
-		return s.newWebSocketResponseStream(ctx, params)
+		stream, conn, err := s.newWebSocketResponseStream(ctx, sendParams)
+		if err != nil {
+			return responseStreamRequest{}, err
+		}
+		sr.stream = stream
+		sr.conn = conn
+		return sr, nil
 	case ResponsesTransportSSE:
-		return s.client.Responses.NewStreaming(ctx, params), nil
+		sr.stream = s.client.Responses.NewStreaming(ctx, sendParams)
+		return sr, nil
 	default:
-		return nil, fmt.Errorf("openai responses transport %q not supported", s.Transport)
+		return responseStreamRequest{}, fmt.Errorf("openai responses transport %q not supported", s.Transport)
 	}
 }
 
-func (s *ResponsesStreamer) newWebSocketResponseStream(ctx context.Context, params responses.ResponseNewParams) (*responses.WebSocketStream, error) {
+func (s *ResponsesStreamer) newWebSocketResponseStream(ctx context.Context, params responses.ResponseNewParams) (*responses.WebSocketStream, *responses.WebSocketConn, error) {
 	conn, err := s.webSocketConn(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	stream, err := conn.New(ctx, params)
 	if err == nil {
-		return stream, nil
+		return stream, conn, nil
 	}
 	if !shouldRetryWebSocketNewError(ctx, err) {
-		return nil, err
+		return nil, nil, err
 	}
 
 	s.dropWebSocketConn(conn)
 	conn, connErr := s.webSocketConn(ctx)
 	if connErr != nil {
-		return nil, errors.Join(err, connErr)
+		return nil, nil, errors.Join(err, connErr)
 	}
 	stream, streamErr := conn.New(ctx, params)
 	if streamErr != nil {
 		s.dropWebSocketConn(conn)
-		return nil, errors.Join(err, streamErr)
+		return nil, nil, errors.Join(err, streamErr)
 	}
-	return stream, nil
+	return stream, conn, nil
 }
 
 func shouldRetryWebSocketNewError(ctx context.Context, err error) bool {
@@ -179,42 +298,106 @@ func shouldRetryWebSocketNewError(ctx context.Context, err error) bool {
 	return !strings.Contains(err.Error(), "another response stream is already active")
 }
 
+func shouldRetryResponseStreamError(ctx context.Context, err error, streamReq responseStreamRequest, emitted bool) bool {
+	if err == nil || emitted || ctx.Err() != nil {
+		return false
+	}
+	if streamReq.usedContinuation {
+		return true
+	}
+	if streamReq.conn == nil {
+		return false
+	}
+	return errors.Is(err, io.EOF) ||
+		strings.Contains(err.Error(), "connection is closed")
+}
+
 func (s *ResponsesStreamer) webSocketConn(ctx context.Context) (*responses.WebSocketConn, error) {
+	now := time.Now()
+
 	s.mu.Lock()
 	conn := s.wsConn
+	if conn != nil && !s.webSocketConnExpiredLocked(now) {
+		s.wsLastUsed = now
+		s.mu.Unlock()
+		return conn, nil
+	}
+	if conn != nil {
+		s.clearWebSocketConnLocked()
+	}
 	s.mu.Unlock()
 	if conn != nil {
-		return conn, nil
+		_ = conn.Close()
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now = time.Now()
 	if s.wsConn != nil {
-		return s.wsConn, nil
+		if s.webSocketConnExpiredLocked(now) {
+			conn = s.wsConn
+			s.clearWebSocketConnLocked()
+			s.mu.Unlock()
+			_ = conn.Close()
+			s.mu.Lock()
+		} else {
+			s.wsLastUsed = now
+			return s.wsConn, nil
+		}
 	}
 	conn, err := s.client.Responses.ConnectWebSocket(ctx)
 	if err != nil {
 		return nil, err
 	}
 	s.wsConn = conn
+	s.wsCreatedAt = now
+	s.wsLastUsed = now
 	return conn, nil
+}
+
+func (s *ResponsesStreamer) webSocketConnExpiredLocked(now time.Time) bool {
+	if s.wsConn == nil {
+		return false
+	}
+	maxIdle := s.WebSocketMaxIdle
+	if maxIdle <= 0 {
+		maxIdle = DefaultWebSocketMaxIdle
+	}
+	maxAge := s.WebSocketMaxAge
+	if maxAge <= 0 {
+		maxAge = DefaultWebSocketMaxAge
+	}
+	return maxIdle > 0 && now.Sub(s.wsLastUsed) > maxIdle || maxAge > 0 && now.Sub(s.wsCreatedAt) > maxAge
+}
+
+func (s *ResponsesStreamer) clearWebSocketConnLocked() {
+	s.wsConn = nil
+	s.wsCreatedAt = time.Time{}
+	s.wsLastUsed = time.Time{}
 }
 
 func (s *ResponsesStreamer) dropWebSocketConn(conn *responses.WebSocketConn) {
 	s.mu.Lock()
 	if s.wsConn == conn {
-		s.wsConn = nil
+		s.clearWebSocketConnLocked()
 	}
 	s.mu.Unlock()
 	_ = conn.Close()
 }
 
-func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit func(threads.Item) error) error {
+func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit func(threads.Item) error) (string, responses.ResponseInputParam, error) {
 	functionCalls := map[string]functionCallMeta{}
+	customCalls := map[string]functionCallMeta{}
+	var responseID string
+	var outputItems responses.ResponseInputParam
 
 	for stream.Next() {
 		event := stream.Current()
 		switch event.Type {
+		case "response.created", "response.completed":
+			if event.Response.ID != "" {
+				responseID = event.Response.ID
+			}
 		case "response.output_text.delta":
 			if event.Delta == "" {
 				continue
@@ -223,7 +406,7 @@ func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit fu
 				s.OnOutputTextDelta(event.Delta)
 			}
 			if err := emit(threads.AssistantText(event.Delta)); err != nil {
-				return err
+				return "", nil, err
 			}
 		case "response.function_call_arguments.delta":
 			if event.Delta == "" {
@@ -231,27 +414,56 @@ func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit fu
 			}
 			callID, name := resolveFunctionCall(functionCalls, event.ItemID, "")
 			if err := emit(threads.ToolCallChunk{CallID: callID, Name: name, PayloadDelta: event.Delta}); err != nil {
-				return err
+				return "", nil, err
 			}
 		case "response.function_call_arguments.done":
 			callID, name := resolveFunctionCall(functionCalls, event.ItemID, event.Name)
-			if err := emit(threads.ToolCall{CallID: callID, Name: name, Payload: event.Arguments}); err != nil {
-				return err
+			call := threads.ToolCall{CallID: callID, Name: name, Payload: event.Arguments}
+			call, err := s.normalizers.NormalizeResponseToolCall(call)
+			if err != nil {
+				return "", nil, err
+			}
+			if err := emit(call); err != nil {
+				return "", nil, err
+			}
+		case "response.custom_tool_call_input.delta":
+			if event.Delta == "" {
+				continue
+			}
+			callID, name := resolveFunctionCall(customCalls, event.ItemID, "")
+			if err := emit(threads.ToolCallChunk{CallID: callID, Name: name, PayloadDelta: event.Delta}); err != nil {
+				return "", nil, err
+			}
+		case "response.custom_tool_call_input.done":
+			callID, name := resolveFunctionCall(customCalls, event.ItemID, "")
+			call := threads.ToolCall{CallID: callID, Name: name, Payload: event.Input}
+			call, err := s.normalizers.NormalizeResponseToolCall(call)
+			if err != nil {
+				return "", nil, err
+			}
+			if err := emit(call); err != nil {
+				return "", nil, err
 			}
 		case "response.output_item.added", "response.output_item.done":
+			if event.Type == "response.output_item.done" {
+				if item, ok := outputItemInputParam(event.Item); ok {
+					outputItems = append(outputItems, item)
+				}
+			}
 			rememberFunctionCall(functionCalls, event.Item)
+			rememberCustomCall(customCalls, event.Item)
 		case "error":
 			if event.Message != "" {
-				return fmt.Errorf("openai responses stream error: %s", event.Message)
+				return "", nil, fmt.Errorf("openai responses stream error: %s", event.Message)
 			}
-			return fmt.Errorf("openai responses stream error")
+			return "", nil, fmt.Errorf("openai responses stream error")
 		}
 	}
 
 	if err := stream.Err(); err != nil {
-		return err
+		return "", nil, err
 	}
-	return nil
+	return responseID, outputItems, nil
 }
 
 func rememberFunctionCall(functionCalls map[string]functionCallMeta, item responses.ResponseOutputItemUnion) {
@@ -266,6 +478,20 @@ func rememberFunctionCall(functionCalls map[string]functionCallMeta, item respon
 		meta.name = item.Name
 	}
 	functionCalls[item.ID] = meta
+}
+
+func rememberCustomCall(customCalls map[string]functionCallMeta, item responses.ResponseOutputItemUnion) {
+	if item.Type != "custom_tool_call" || item.ID == "" {
+		return
+	}
+	meta := customCalls[item.ID]
+	if item.CallID != "" {
+		meta.callID = item.CallID
+	}
+	if item.Name != "" {
+		meta.name = item.Name
+	}
+	customCalls[item.ID] = meta
 }
 
 func resolveFunctionCall(functionCalls map[string]functionCallMeta, itemID, fallbackName string) (callID, name string) {

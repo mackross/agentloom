@@ -79,6 +79,10 @@ type tokenCountingStreamer struct {
 
 func (s *tokenCountingStreamer) Capabilities() StreamerCapabilities { return StreamerCapabilities{} }
 
+func (s *tokenCountingStreamer) RegisterToolNormalizer(string, ToolNormalizer) {}
+
+func (s *tokenCountingStreamer) UnregisterToolNormalizer(string) {}
+
 func (s *tokenCountingStreamer) StreamReq(Req, func(Item) error) error { return nil }
 
 func (s *tokenCountingStreamer) EstimateRequestTokens(_ context.Context, req Req) (int, error) {

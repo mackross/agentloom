@@ -29,6 +29,7 @@ type ChatCompletionsStreamer struct {
 	model                         string
 	ContextLengthExceededBehavior string
 	OnOutputTextDelta             func(string)
+	normalizers                   threads.ToolNormalizers
 }
 
 type toolKey struct {
@@ -62,6 +63,14 @@ func (*ChatCompletionsStreamer) Capabilities() threads.StreamerCapabilities {
 	return threads.StreamerCapabilities{AssistantPrefix: true}
 }
 
+func (s *ChatCompletionsStreamer) RegisterToolNormalizer(name string, normalizer threads.ToolNormalizer) {
+	s.normalizers.RegisterToolNormalizer(name, normalizer)
+}
+
+func (s *ChatCompletionsStreamer) UnregisterToolNormalizer(name string) {
+	s.normalizers.UnregisterToolNormalizer(name)
+}
+
 func newClientFromEnv() openaiapi.Client {
 	opts := []option.RequestOption{option.WithBaseURL(BaseURL)}
 	if apiKey := strings.TrimSpace(fireworksAPIKey()); apiKey != "" {
@@ -82,6 +91,11 @@ func (s *ChatCompletionsStreamer) StreamReq(req threads.Req, emit func(threads.I
 }
 
 func (s *ChatCompletionsStreamer) StreamReqContext(ctx context.Context, req threads.Req, emit func(threads.Item) error) error {
+	req, err := s.normalizers.NormalizeReq(req)
+	if err != nil {
+		return err
+	}
+
 	messages, err := requestMessages(req)
 	if err != nil {
 		return err
@@ -158,7 +172,7 @@ func (s *ChatCompletionsStreamer) StreamReqContext(ctx context.Context, req thre
 			}
 
 			if choice.FinishReason == "tool_calls" {
-				if err := emitFinalToolCalls(toolsInFlight, choice.Index, emit); err != nil {
+				if err := emitFinalToolCalls(toolsInFlight, choice.Index, s.normalizeToolCallEmit(emit)); err != nil {
 					return err
 				}
 			}
@@ -168,7 +182,22 @@ func (s *ChatCompletionsStreamer) StreamReqContext(ctx context.Context, req thre
 	if err := stream.Err(); err != nil {
 		return err
 	}
-	return emitRemainingToolCalls(toolsInFlight, emit)
+	return emitRemainingToolCalls(toolsInFlight, s.normalizeToolCallEmit(emit))
+}
+
+func (s *ChatCompletionsStreamer) normalizeToolCallEmit(emit func(threads.Item) error) func(threads.Item) error {
+	return func(item threads.Item) error {
+		call, ok := item.(threads.ToolCall)
+		if ok {
+			var err error
+			call, err = s.normalizers.NormalizeResponseToolCall(call)
+			if err != nil {
+				return err
+			}
+			item = call
+		}
+		return emit(item)
+	}
 }
 
 func requestMessages(req threads.Req) ([]openaiapi.ChatCompletionMessageParamUnion, error) {

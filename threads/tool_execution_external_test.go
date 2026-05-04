@@ -518,6 +518,10 @@ func (f *fakeStreamer) Capabilities() threads.StreamerCapabilities {
 	return threads.StreamerCapabilities{AssistantPrefix: true}
 }
 
+func (f *fakeStreamer) RegisterToolNormalizer(string, threads.ToolNormalizer) {}
+
+func (f *fakeStreamer) UnregisterToolNormalizer(string) {}
+
 func (f *fakeStreamer) StreamReq(req threads.Req, emit func(threads.Item) error) error {
 	f.calls++
 	f.requests = append(f.requests, cloneReq(req))

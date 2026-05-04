@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"fmt"
+	"io"
 
 	gschema "github.com/google/jsonschema-go/jsonschema"
 	openaiapi "github.com/openai/openai-go/v3"
@@ -157,9 +159,23 @@ func TestShouldRetryWebSocketNewError(t *testing.T) {
 	}
 }
 
+func TestShouldRetryResponseStreamError(t *testing.T) {
+	streamReq := responseStreamRequest{conn: &responses.WebSocketConn{}}
+	if !shouldRetryResponseStreamError(t.Context(), errTestEOFFrameHeader, streamReq, false) {
+		t.Fatalf("websocket EOF frame header error before emission should be retried")
+	}
+	if shouldRetryResponseStreamError(t.Context(), errTestEOFFrameHeader, streamReq, true) {
+		t.Fatalf("websocket EOF frame header error after emission should not be retried")
+	}
+	if shouldRetryResponseStreamError(t.Context(), errTestEOFFrameHeader, responseStreamRequest{}, false) {
+		t.Fatalf("SSE stream error should not be retried as websocket")
+	}
+}
+
 var (
-	errTestClosed   = errors.New("responses websocket: connection is closed")
-	errTestInFlight = errors.New("responses websocket: another response stream is already active on this connection")
+	errTestClosed         = errors.New("responses websocket: connection is closed")
+	errTestInFlight       = errors.New("responses websocket: another response stream is already active on this connection")
+	errTestEOFFrameHeader = fmt.Errorf("failed to get reader: failed to read frame header: %w", io.EOF)
 )
 
 func valueOrEmpty(v *string) string {

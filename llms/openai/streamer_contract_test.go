@@ -316,6 +316,20 @@ func encodeResponseEvents(t testing.TB, events []streamertest.Event, appendEvent
 				"sequence_number": sequence,
 			})
 			sequence++
+			appendEvent(map[string]any{
+				"type":            "response.output_item.done",
+				"output_index":    meta.OutputIndex,
+				"sequence_number": sequence,
+				"item": map[string]any{
+					"type":      "function_call",
+					"id":        meta.ItemID,
+					"call_id":   v.CallID,
+					"name":      name,
+					"arguments": v.Payload,
+					"status":    "completed",
+				},
+			})
+			sequence++
 		case nil:
 		default:
 			t.Fatalf("unsupported contract event item: %T", ev.Item)
@@ -380,6 +394,11 @@ func parseObservedInputItems(t testing.TB, raw any) []streamertest.ObservedInput
 				Kind:   "tool_result",
 				CallID: stringValue(item["call_id"]),
 				Output: extractToolOutput(t, item["output"]),
+			})
+		case "item_reference":
+			out = append(out, streamertest.ObservedInputItem{
+				Kind:   "item_reference",
+				CallID: stringValue(item["id"]),
 			})
 		default:
 			t.Fatalf("unsupported input item: %#v", item)

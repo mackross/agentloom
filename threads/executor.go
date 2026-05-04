@@ -26,11 +26,15 @@ const (
 
 type LLMStreamer interface {
 	Capabilities() StreamerCapabilities
+	RegisterToolNormalizer(name string, normalizer ToolNormalizer)
+	UnregisterToolNormalizer(name string)
 	StreamReq(req Req, emit func(Item) error) error
 }
 
 type ContextLLMStreamer interface {
 	Capabilities() StreamerCapabilities
+	RegisterToolNormalizer(name string, normalizer ToolNormalizer)
+	UnregisterToolNormalizer(name string)
 	StreamReqContext(ctx context.Context, req Req, emit func(Item) error) error
 }
 
