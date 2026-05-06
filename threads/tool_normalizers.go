@@ -5,6 +5,10 @@ import "sync"
 // ToolNormalizer adapts canonical tool specs/calls at streamer boundaries.
 // Streamers may use this to present a provider-compatible form of a tool while
 // normalizing returned tool calls back to the canonical form before emitting.
+// For example, apply_patch may use an OpenAI context-free grammar tool for
+// better performance, while JSON-only providers need a JSON-shaped equivalent;
+// a normalizer lets the same thread transition between providers without
+// changing the canonical tool seen by the application.
 type ToolNormalizer struct {
 	NormalizeSpec             func(ToolSpec) (ToolSpec, error)
 	NormalizeRequestToolCall  func(ToolCall) (ToolCall, error)

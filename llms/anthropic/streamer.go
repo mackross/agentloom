@@ -10,6 +10,8 @@ import (
 	anthropicapi "github.com/anthropics/anthropic-sdk-go"
 	gschema "github.com/google/jsonschema-go/jsonschema"
 
+	cacheanthropic "github.com/mackross/agentloom/llms/cache/anthropic"
+	"github.com/mackross/agentloom/llms/internal/streamerutil"
 	"github.com/mackross/agentloom/threads"
 )
 
@@ -260,10 +262,10 @@ func requestMessages(req threads.Req) ([]anthropicapi.MessageParam, error) {
 		results = map[string]anthropicapi.ContentBlockParamUnion{}
 	}
 
-	for _, item := range req.Items {
+	for i, item := range req.Items {
 		switch v := item.(type) {
 		case threads.UserText:
-			b := anthropicapi.NewTextBlock(string(v))
+			b := anthropicTextBlock(string(v), streamerutil.ItemMetadata(req, i))
 			if len(outstanding) > 0 {
 				deferredUser = append(deferredUser, b)
 				continue
@@ -304,6 +306,17 @@ func requestMessages(req threads.Req) ([]anthropicapi.MessageParam, error) {
 		}
 	}
 	return out, nil
+}
+
+func anthropicTextBlock(text string, meta map[string]any) anthropicapi.ContentBlockParamUnion {
+	block := anthropicapi.TextBlockParam{Text: text}
+	if cc, ok := meta[cacheanthropic.CacheControlKey].(map[string]any); ok && cc["type"] == "ephemeral" {
+		block.CacheControl = anthropicapi.NewCacheControlEphemeralParam()
+		if ttl, ok := cc["ttl"].(string); ok {
+			block.CacheControl.TTL = anthropicapi.CacheControlEphemeralTTL(ttl)
+		}
+	}
+	return anthropicapi.ContentBlockParamUnion{OfText: &block}
 }
 
 func decodeToolInput(payload string) (any, error) {

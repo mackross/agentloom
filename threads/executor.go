@@ -9,6 +9,7 @@ import (
 type Req struct {
 	Instruction string
 	Items       []Item
+	ItemMeta    []map[string]any
 	Tools       ToolOfferSnapshot
 }
 

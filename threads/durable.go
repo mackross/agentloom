@@ -296,6 +296,12 @@ func itemToSnapshotItem(v Item) (SnapshotItem, error) {
 		return SnapshotItem{Type: "user_text", Text: string(x)}, nil
 	case AssistantText:
 		return SnapshotItem{Type: "assistant_text", Text: string(x)}, nil
+	case PreviousItemMetadata:
+		data, err := encodeToolData(x)
+		if err != nil {
+			return SnapshotItem{}, err
+		}
+		return SnapshotItem{Type: "item_meta", Data: data}, nil
 	case AssistantInstruction:
 		return SnapshotItem{Type: "assistant_instruction", Text: string(x)}, nil
 	case ToolCallChunk:
@@ -339,6 +345,12 @@ func snapshotItemToItem(raw SnapshotItem) (Item, error) {
 		return UserText(raw.Text), nil
 	case "assistant_text":
 		return AssistantText(raw.Text), nil
+	case "item_meta":
+		data, err := decodeToolData(raw.Data)
+		if err != nil {
+			return nil, fmt.Errorf("item meta data: %w", err)
+		}
+		return PreviousItemMetadata(data), nil
 	case "assistant_instruction":
 		return AssistantInstruction(raw.Text), nil
 	case "tool_call_chunk":

@@ -16,6 +16,8 @@ import (
 	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
 
+	cacheopenai "github.com/mackross/agentloom/llms/cache/openai"
+	"github.com/mackross/agentloom/llms/internal/streamerutil"
 	"github.com/mackross/agentloom/threads"
 )
 
@@ -221,6 +223,12 @@ func (s *ResponsesStreamer) responseParams(req threads.Req) (responses.ResponseN
 	}
 	if req.Tools.Parallel != nil {
 		params.ParallelToolCalls = openaiapi.Bool(*req.Tools.Parallel)
+	}
+	if s, ok := streamerutil.LastStringMetadata(req, cacheopenai.PromptCacheKeyKey); ok {
+		params.PromptCacheKey = openaiapi.String(s)
+	}
+	if s, ok := streamerutil.LastStringMetadata(req, cacheopenai.PromptCacheRetentionKey); ok {
+		params.PromptCacheRetention = responses.ResponseNewParamsPromptCacheRetention(s)
 	}
 	return params, nil
 }

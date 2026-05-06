@@ -1,31 +1,26 @@
 package threads
 
-import (
-	"reflect"
-	"slices"
-)
+import "reflect"
 
-type RequestBuilder interface {
-	Build(items []Item) Req
-}
+type RequestBuilder interface{ Build(items []Item) Req }
 
 var DefaultRequestBuilder RequestBuilder = defaultRequestBuilder{}
 
 type defaultRequestBuilder struct{}
 
 func (defaultRequestBuilder) Build(items []Item) Req {
-	req := Req{Items: make([]Item, 0, len(items))}
-	var pending Item
-	hasPending := false
-	flushPending := func() {
-		if !hasPending {
-			return
+	req := Req{Items: make([]Item, 0, len(items)), ItemMeta: make([]map[string]any, 0, len(items))}
+	appendReq := func(it Item, meta map[string]any) {
+		if n := len(req.Items); n > 0 && reflect.DeepEqual(normalizeMeta(req.ItemMeta[n-1]), normalizeMeta(meta)) {
+			if merged, ok := coalesceRequestItems(req.Items[n-1], it); ok {
+				req.Items[n-1] = merged
+				return
+			}
 		}
-		req.Items = append(req.Items, pending)
-		hasPending = false
+		req.Items, req.ItemMeta = append(req.Items, it), append(req.ItemMeta, meta)
 	}
-
-	for _, it := range items {
+	for i := 0; i < len(items); i++ {
+		it := items[i]
 		if v, ok := it.(AssistantInstruction); ok {
 			req.Instruction = string(v)
 			continue
@@ -34,51 +29,45 @@ func (defaultRequestBuilder) Build(items []Item) Req {
 			req.Tools = cloneToolOfferSnapshot(v.Snapshot)
 			continue
 		}
-		if v, ok := it.(ToolCall); ok {
-			flushPending()
-			req.Items = append(req.Items, v)
+		if _, ok := it.(PreviousItemMetadata); ok {
 			continue
 		}
 		if v, ok := it.(ToolCallResultable); ok {
-			flushPending()
-			req.Items = append(req.Items, ToolCallResult{
-				CallID:    v.ToolCallID(),
-				Output:    v.ToolOutput(),
-				Recovered: v.ToolRecovered(),
-				Data:      cloneData(v.ToolData()),
-			})
-			continue
+			it = ToolCallResult{CallID: v.ToolCallID(), Output: v.ToolOutput(), Recovered: v.ToolRecovered(), Data: cloneData(v.ToolData())}
 		}
-
 		if !it.Emit() {
 			continue
 		}
-
-		if hasPending {
-			if sharesMergeKey(pending.MergesWith(), it.MergesWith()) {
-				if merged, ok := coalesceRequestItems(pending, it); ok {
-					pending = merged
-					continue
-				}
+		meta := map[string]any(nil)
+		for i+1 < len(items) {
+			m, ok := items[i+1].(PreviousItemMetadata)
+			if !ok {
+				break
 			}
-			flushPending()
+			meta = mergeMeta(meta, m)
+			i++
 		}
-
-		pending = it
-		hasPending = true
+		appendReq(it, meta)
 	}
-	flushPending()
 	return req
 }
 
-func sharesMergeKey(left, right []any) bool {
-	return slices.ContainsFunc(left, func(l any) bool {
-		return slices.ContainsFunc(right, func(r any) bool {
-			return reflect.DeepEqual(l, r)
-		})
-	})
+func mergeMeta(a map[string]any, b PreviousItemMetadata) map[string]any {
+	out := cloneData(a)
+	if out == nil {
+		out = map[string]any{}
+	}
+	for k, v := range b {
+		out[k] = v
+	}
+	return out
 }
-
+func normalizeMeta(m map[string]any) map[string]any {
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
 func coalesceRequestItems(left, right Item) (Item, bool) {
 	if l, ok := left.(UserText); ok {
 		if r, ok := right.(UserText); ok {

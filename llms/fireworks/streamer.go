@@ -14,6 +14,8 @@ import (
 	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/shared"
 
+	cachefireworks "github.com/mackross/agentloom/llms/cache/fireworks"
+	"github.com/mackross/agentloom/llms/internal/streamerutil"
 	"github.com/mackross/agentloom/threads"
 )
 
@@ -128,6 +130,12 @@ func (s *ChatCompletionsStreamer) StreamReqContext(ctx context.Context, req thre
 	opts := []option.RequestOption{}
 	if behavior := strings.TrimSpace(s.ContextLengthExceededBehavior); behavior != "" {
 		opts = append(opts, option.WithJSONSet("context_length_exceeded_behavior", behavior))
+	}
+	if key, ok := streamerutil.LastStringMetadata(req, cachefireworks.SessionAffinityKey); ok {
+		opts = append(opts, option.WithHeader("x-session-affinity", key))
+	}
+	if key, ok := streamerutil.LastStringMetadata(req, cachefireworks.PromptCacheIsolationKeyKey); ok {
+		opts = append(opts, option.WithJSONSet("prompt_cache_isolation_key", key))
 	}
 
 	stream := s.client.Chat.Completions.NewStreaming(ctx, params, opts...)

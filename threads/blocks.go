@@ -13,6 +13,11 @@ type (
 	// Assistant text is a queued message (text). If they are added sequentially
 	// they will be concatonated.
 	AssistantText string
+
+	// PreviousItemMetadata annotates the preceding queued item with request
+	// construction metadata. It is not sent to providers as content. Its presence
+	// also naturally prevents control-block coalescing between surrounding items.
+	PreviousItemMetadata map[string]any
 )
 
 // ToolCall is generally added to the thread when an LLM response is requesting
@@ -83,26 +88,17 @@ type ToolsSnapshot struct {
 type SendItem struct{}
 
 func (UserText) Emit() bool                       { return true }
-func (UserText) MergesWith() []any                { return []any{UserText("")} }
 func (AssistantText) Emit() bool                  { return true }
-func (AssistantText) MergesWith() []any           { return []any{AssistantText("")} }
+func (PreviousItemMetadata) Emit() bool           { return false }
 func (AssistantInstruction) Emit() bool           { return false }
-func (AssistantInstruction) MergesWith() []any    { return nil }
 func (ToolCallChunk) Emit() bool                  { return false }
-func (ToolCallChunk) MergesWith() []any           { return nil } // TODO: investigate why this is nil and UserText isnt? can we just get rid of this method?
-func (ToolCall) Emit() bool                       { return false }
-func (ToolCall) MergesWith() []any                { return nil }
+func (ToolCall) Emit() bool                       { return true }
 func (ToolCallResolving) Emit() bool              { return false }
-func (ToolCallResolving) MergesWith() []any       { return nil }
 func (ToolCallStarted) Emit() bool                { return false }
-func (ToolCallStarted) MergesWith() []any         { return nil }
-func (ToolCallResult) Emit() bool                 { return false }
-func (ToolCallResult) MergesWith() []any          { return nil }
+func (ToolCallResult) Emit() bool                 { return true }
 func (r ToolCallResult) ToolCallID() string       { return r.CallID }
 func (r ToolCallResult) ToolOutput() string       { return r.Output }
 func (r ToolCallResult) ToolData() map[string]any { return cloneData(r.Data) }
 func (r ToolCallResult) ToolRecovered() bool      { return r.Recovered }
 func (ToolsSnapshot) Emit() bool                  { return false }
-func (ToolsSnapshot) MergesWith() []any           { return nil }
 func (SendItem) Emit() bool                       { return false }
-func (SendItem) MergesWith() []any                { return nil }
