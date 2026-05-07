@@ -42,6 +42,10 @@ func (t *Thread) Seq() uint32 { return t.mutationSeq }
 // CompletedTurns returns the branchable completed single-role turns currently
 // visible in the thread. It excludes streaming tails and malformed or unresolved
 // tool-call prefixes.
+//
+// If an EventLoop owns this Thread, call CompletedTurns only from EventLoop.Do.
+// The returned Turn values are tied to the current mutation sequence and may be
+// invalidated by the next thread mutation.
 func (t *Thread) CompletedTurns() []Turn {
 	items := t.items.Slice()
 	limit := completedItemLimit(t, items)
