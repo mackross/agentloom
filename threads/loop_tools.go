@@ -1,6 +1,9 @@
 package threads
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // StartToolResult is a convenience helper for the common case where a resolver
 // wants to mark a tool call started, run work in a goroutine, and eventually
@@ -39,6 +42,23 @@ func (l *EventLoop) StartToolResult(ctx context.Context, call ToolCall, fn func(
 		})
 	}()
 	return ToolDispatch{Started: true, Recovery: recovery}
+}
+
+func (t *Thread) ReturnAsyncToolItem(ctx context.Context, callID string, item Item) error {
+	if item == nil {
+		return fmt.Errorf("threads return nil tool item")
+	}
+	if t.loop == nil {
+		return fmt.Errorf("threads async tool result requires event loop")
+	}
+	return t.loop.Do(ctx, func(thread *Thread) error {
+		outstanding, err := toolCallOutstanding(thread, callID)
+		if err != nil || !outstanding {
+			return err
+		}
+		thread.QueueItem(item)
+		return nil
+	})
 }
 
 func toolCallOutstanding(thread *Thread, callID string) (bool, error) {

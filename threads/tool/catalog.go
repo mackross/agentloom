@@ -4,28 +4,37 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"strings"
+
+	"github.com/mackross/agentloom/threads"
 )
+
+type ReturnItem func(Item) error
+
+type Handling struct {
+	Continue threads.ToolContinue
+	Recovery threads.ToolRecovery
+}
 
 type Handler interface {
 	// HandleToolCall receives the ResolveTool context, which CancelCurrentTurn
 	// cancels when the canceled LLM streamer turn produced this tool call.
-	HandleToolCall(context.Context, Call) Item
+	HandleToolCall(context.Context, Call, ReturnItem) (Handling, error)
 }
 
 // HandlerFunc receives the ResolveTool context, which CancelCurrentTurn cancels
 // when the canceled LLM streamer turn produced this tool call.
-type HandlerFunc func(context.Context, Call) Item
+type HandlerFunc func(context.Context, Call, ReturnItem) (Handling, error)
 
-func (f HandlerFunc) HandleToolCall(ctx context.Context, call Call) Item {
+func (f HandlerFunc) HandleToolCall(ctx context.Context, call Call, ret ReturnItem) (Handling, error) {
 	if f == nil {
 		panic("tool.HandlerFunc is nil")
 	}
-	item := f(ctx, call)
-	if item == nil {
-		panic(fmt.Sprintf("tool %q returned nil item", call.Name))
+	if ret == nil {
+		return Handling{}, fmt.Errorf("tool %q missing return item handler", call.Name)
 	}
-	return item
+	return f(ctx, call, ret)
 }
 
 type Catalog struct {
@@ -151,6 +160,38 @@ func (c *Catalog) LoadTool(name string) (Handler, error) {
 		return nil, fmt.Errorf("tool %q not found", name)
 	}
 	return entry.handler, nil
+}
+
+func (c *Catalog) Dispatch(ctx context.Context, thread *threads.Thread, call Call) (threads.ToolDispatch, error) {
+	h, err := c.LoadTool(call.Name)
+	if err != nil {
+		return threads.ToolDispatch{}, err
+	}
+	var mu sync.Mutex
+	inHandler := true
+	var items []Item
+	ret := func(item Item) error {
+		if item == nil {
+			return fmt.Errorf("tool %q returned nil item", call.Name)
+		}
+		mu.Lock()
+		if inHandler {
+			items = append(items, item)
+			mu.Unlock()
+			return nil
+		}
+		mu.Unlock()
+		if thread == nil {
+			return fmt.Errorf("async tool result for %q requires event loop", call.Name)
+		}
+		return thread.ReturnAsyncToolItem(context.Background(), call.CallID, item)
+	}
+	handling, err := h.HandleToolCall(ctx, call, ret)
+	mu.Lock()
+	inHandler = false
+	items = append([]Item(nil), items...)
+	mu.Unlock()
+	return threads.ToolDispatch{Started: true, Continue: handling.Continue, Recovery: handling.Recovery, Items: items}, err
 }
 
 func (c *Catalog) init() {
