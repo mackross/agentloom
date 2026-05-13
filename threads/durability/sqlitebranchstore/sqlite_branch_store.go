@@ -326,7 +326,7 @@ CREATE INDEX IF NOT EXISTS thread_branches_updated_idx ON thread_branches(update
 CREATE INDEX IF NOT EXISTS thread_wal_events_branch_seq_idx ON thread_wal_events(branch_id, seq);
 `
 
-func (s *SQLiteBranchStore) CreateBranch(ctx context.Context, opts threads.BranchCreateOptions) (*threads.Branch, error) {
+func (s *SQLiteBranchStore) CreateBranch(ctx context.Context, opts threads.BranchCreateOptions) (*threads.StoredBranch, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -359,7 +359,7 @@ func (s *SQLiteBranchStore) CreateBranch(ctx context.Context, opts threads.Branc
 	return branch, nil
 }
 
-func (s *SQLiteBranchStore) OpenBranch(ctx context.Context, id threads.BranchID, opts threads.BranchOpenOptions) (*threads.Branch, error) {
+func (s *SQLiteBranchStore) OpenBranch(ctx context.Context, id threads.BranchID, opts threads.BranchOpenOptions) (*threads.StoredBranch, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -386,10 +386,10 @@ func (s *SQLiteBranchStore) OpenBranch(ctx context.Context, id threads.BranchID,
 		return nil, err
 	}
 	s.open[id] = true
-	return &threads.Branch{Record: rec, Lease: &sqliteBranchLease{store: s, id: id, inner: inner}, Durable: &sqliteDurableStore{store: s, id: id}}, nil
+	return &threads.StoredBranch{Record: rec, Lease: &sqliteBranchLease{store: s, id: id, inner: inner}, Durable: &sqliteDurableStore{store: s, id: id}}, nil
 }
 
-func (s *SQLiteBranchStore) BranchFromCheckpoint(ctx context.Context, parent *threads.Branch, opts threads.BranchFromCheckpointOptions) (*threads.Branch, error) {
+func (s *SQLiteBranchStore) BranchFromCheckpoint(ctx context.Context, parent *threads.StoredBranch, opts threads.BranchFromCheckpointOptions) (*threads.StoredBranch, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -408,7 +408,7 @@ func (s *SQLiteBranchStore) BranchFromCheckpoint(ctx context.Context, parent *th
 	return s.createDurableChildFromRecord(ctx, parentRecord, opts, ancestors)
 }
 
-func (s *SQLiteBranchStore) createDurableChildFromRecord(ctx context.Context, parentRecord threads.BranchRecord, opts threads.BranchFromCheckpointOptions, ancestors []threads.BranchRef) (*threads.Branch, error) {
+func (s *SQLiteBranchStore) createDurableChildFromRecord(ctx context.Context, parentRecord threads.BranchRecord, opts threads.BranchFromCheckpointOptions, ancestors []threads.BranchRef) (*threads.StoredBranch, error) {
 	now := s.opts.Now()
 	id := opts.ID
 	if id == "" {
@@ -608,7 +608,7 @@ func (s *SQLiteBranchStore) insertDurableBranch(ctx context.Context, rec threads
 	})
 }
 
-func (s *SQLiteBranchStore) createEphemeralRoot(ctx context.Context, opts threads.BranchCreateOptions) (*threads.Branch, error) {
+func (s *SQLiteBranchStore) createEphemeralRoot(ctx context.Context, opts threads.BranchCreateOptions) (*threads.StoredBranch, error) {
 	now := s.opts.Now()
 	id := opts.ID
 	if id == "" {
@@ -623,7 +623,7 @@ func (s *SQLiteBranchStore) createEphemeralRoot(ctx context.Context, opts thread
 	return s.putEphemeralBranch(ctx, rec, threads.NewMemoryDurableStore(cp))
 }
 
-func (s *SQLiteBranchStore) createEphemeralChild(ctx context.Context, opts threads.BranchFromCheckpointOptions, ancestors []threads.BranchRef) (*threads.Branch, error) {
+func (s *SQLiteBranchStore) createEphemeralChild(ctx context.Context, opts threads.BranchFromCheckpointOptions, ancestors []threads.BranchRef) (*threads.StoredBranch, error) {
 	now := s.opts.Now()
 	id := opts.ID
 	if id == "" {
@@ -633,7 +633,7 @@ func (s *SQLiteBranchStore) createEphemeralChild(ctx context.Context, opts threa
 	return s.putEphemeralBranch(ctx, rec, threads.NewMemoryDurableStore(opts.Checkpoint))
 }
 
-func (s *SQLiteBranchStore) putEphemeralBranch(ctx context.Context, rec threads.BranchRecord, store *threads.MemoryDurableStore) (*threads.Branch, error) {
+func (s *SQLiteBranchStore) putEphemeralBranch(ctx context.Context, rec threads.BranchRecord, store *threads.MemoryDurableStore) (*threads.StoredBranch, error) {
 	s.branchMu.Lock()
 	defer s.branchMu.Unlock()
 	s.ephemeral.Lock()
@@ -653,20 +653,20 @@ func (s *SQLiteBranchStore) putEphemeralBranch(ctx context.Context, rec threads.
 		return nil, threads.ErrBranchAlreadyExists
 	}
 	s.ephemerals[rec.ID] = &sqliteEphemeralBranch{record: cloneSQLiteBranchRecord(rec), store: store}
-	return &threads.Branch{Record: cloneSQLiteBranchRecord(rec), Durable: store}, nil
+	return &threads.StoredBranch{Record: cloneSQLiteBranchRecord(rec), Durable: store}, nil
 }
 
-func (s *SQLiteBranchStore) openEphemeralBranch(id threads.BranchID) (*threads.Branch, bool) {
+func (s *SQLiteBranchStore) openEphemeralBranch(id threads.BranchID) (*threads.StoredBranch, bool) {
 	s.ephemeral.Lock()
 	defer s.ephemeral.Unlock()
 	branch := s.ephemerals[id]
 	if branch == nil {
 		return nil, false
 	}
-	return &threads.Branch{Record: cloneSQLiteBranchRecord(branch.record), Durable: branch.store}, true
+	return &threads.StoredBranch{Record: cloneSQLiteBranchRecord(branch.record), Durable: branch.store}, true
 }
 
-func (s *SQLiteBranchStore) openParentBranch(branch *threads.Branch) (threads.BranchRecord, error) {
+func (s *SQLiteBranchStore) openParentBranch(branch *threads.StoredBranch) (threads.BranchRecord, error) {
 	if branch == nil || branch.Record.ID == "" {
 		return threads.BranchRecord{}, threads.ErrBranchParentRequired
 	}

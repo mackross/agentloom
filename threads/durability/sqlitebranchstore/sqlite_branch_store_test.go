@@ -408,7 +408,7 @@ func TestSQLiteBranchStoreUsesExternalLeaseManagerAcrossStoreInstances(t *testin
 	}
 }
 
-func mustLoadCheckpoint(t *testing.T, branch *threads.Branch) threads.Checkpoint {
+func mustLoadCheckpoint(t *testing.T, branch *threads.StoredBranch) threads.Checkpoint {
 	t.Helper()
 	cp, _ := branch.Durable.Load()
 	return cp

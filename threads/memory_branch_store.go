@@ -40,7 +40,7 @@ func NewMemoryBranchStore() *MemoryBranchStore {
 	}
 }
 
-func (s *MemoryBranchStore) CreateBranch(ctx context.Context, opts BranchCreateOptions) (*Branch, error) {
+func (s *MemoryBranchStore) CreateBranch(ctx context.Context, opts BranchCreateOptions) (*StoredBranch, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (s *MemoryBranchStore) CreateBranch(ctx context.Context, opts BranchCreateO
 	return s.branchLocked(rec, opts.Owner)
 }
 
-func (s *MemoryBranchStore) OpenBranch(ctx context.Context, id BranchID, opts BranchOpenOptions) (*Branch, error) {
+func (s *MemoryBranchStore) OpenBranch(ctx context.Context, id BranchID, opts BranchOpenOptions) (*StoredBranch, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -86,7 +86,7 @@ func (s *MemoryBranchStore) OpenBranch(ctx context.Context, id BranchID, opts Br
 	return s.branchLocked(rec, opts.Owner)
 }
 
-func (s *MemoryBranchStore) BranchFromCheckpoint(ctx context.Context, parent *Branch, opts BranchFromCheckpointOptions) (*Branch, error) {
+func (s *MemoryBranchStore) BranchFromCheckpoint(ctx context.Context, parent *StoredBranch, opts BranchFromCheckpointOptions) (*StoredBranch, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -193,7 +193,7 @@ func (s *MemoryBranchStore) DeleteBranch(ctx context.Context, id BranchID) error
 	return nil
 }
 
-func (s *MemoryBranchStore) branchLocked(rec BranchRecord, _ string) (*Branch, error) {
+func (s *MemoryBranchStore) branchLocked(rec BranchRecord, _ string) (*StoredBranch, error) {
 	store := s.stores[rec.ID]
 	if store == nil {
 		return nil, ErrBranchNotFound
@@ -206,7 +206,7 @@ func (s *MemoryBranchStore) branchLocked(rec BranchRecord, _ string) (*Branch, e
 		s.open[rec.ID] = true
 		lease = &memoryBranchLease{store: s, id: rec.ID}
 	}
-	return &Branch{Record: cloneBranchRecord(rec), Lease: lease, Durable: store}, nil
+	return &StoredBranch{Record: cloneBranchRecord(rec), Lease: lease, Durable: store}, nil
 }
 
 func (s *MemoryBranchStore) allocateIDLocked(requested BranchID) (BranchID, error) {

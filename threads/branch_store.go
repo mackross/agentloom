@@ -187,9 +187,10 @@ type BranchLease interface {
 	Close() error
 }
 
-// Branch is an opened branch handle: metadata, optional writer lease, and the
-// branch-local stream store. It does not own a Thread or EventLoop.
-type Branch struct {
+// StoredBranch is an opened branch storage handle: metadata, optional writer
+// lease, and the branch-local durable store. It does not own a live Thread or
+// EventLoop.
+type StoredBranch struct {
 	// Record is the branch metadata as known when the branch was opened/created.
 	Record BranchRecord
 	// Lease must be closed when the caller is done writing a durable branch. It is
@@ -200,11 +201,123 @@ type Branch struct {
 	Durable DurableStore
 }
 
-func (b *Branch) Close() error {
+func (b *StoredBranch) Close() error {
 	if b == nil || b.Lease == nil {
 		return nil
 	}
 	return b.Lease.Close()
+}
+
+// Load restores this stored branch's current durable head into a live Branch.
+func (b *StoredBranch) Load(opts RestoreOptions) (*Branch, error) {
+	if b == nil || b.Durable == nil {
+		return nil, ErrBranchNotFound
+	}
+	cp, wal := b.Durable.Load()
+	thread, err := RestoreFromCheckpointAndWAL(cp, wal, opts)
+	if err != nil {
+		return nil, err
+	}
+	branch := &Branch{stored: b, idleCh: make(chan struct{}), Thread: thread}
+	thread.SetDelegate(branch)
+	return branch, nil
+}
+
+// Branch is a loaded branch: an opened stored branch plus its restored Thread.
+// Thread is embedded so callers can use Thread methods directly on Branch.
+type Branch struct {
+	stored        *StoredBranch
+	eventLoop     *EventLoop
+	eventLoopDone chan error
+	delegate      ThreadDelegate
+	idleCh        chan struct{}
+	*Thread
+}
+
+func (b *Branch) Close() error {
+	if b == nil {
+		return nil
+	}
+	if b.eventLoop != nil {
+		_ = b.eventLoop.Close()
+	}
+	if b.eventLoopDone != nil {
+		<-b.eventLoopDone
+	}
+	if b.stored == nil {
+		return nil
+	}
+	return b.stored.Close()
+}
+
+func (b *Branch) ID() BranchID {
+	if b == nil || b.stored == nil {
+		return ""
+	}
+	return b.stored.Record.ID
+}
+
+func (b *Branch) Record() BranchRecord {
+	if b == nil || b.stored == nil {
+		return BranchRecord{}
+	}
+	return cloneBranchRecord(b.stored.Record)
+}
+
+func (b *Branch) SetDelegate(d ThreadDelegate) {
+	if b == nil {
+		return
+	}
+	b.delegate = d
+	if b.Thread != nil {
+		b.Thread.SetDelegate(b)
+	}
+}
+
+func (b *Branch) RunOnEventLoop(ctx context.Context, fn func(*Thread) error) error {
+	if b == nil || b.eventLoop == nil {
+		return ErrEventLoopClosed
+	}
+	return b.eventLoop.Do(ctx, fn)
+}
+
+func (b *Branch) WaitUntilIdle(ctx context.Context) error {
+	if b == nil || b.eventLoop == nil {
+		return ErrEventLoopClosed
+	}
+	idle := false
+	if err := b.RunOnEventLoop(ctx, func(t *Thread) error {
+		idle = t.State() == StateIdle
+		return nil
+	}); err != nil {
+		return err
+	}
+	if idle {
+		return nil
+	}
+	ch := b.idleCh
+	select {
+	case <-ch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (b *Branch) OnThreadIdle(t *Thread) {
+	if b != nil {
+		if b.delegate != nil {
+			b.delegate.OnThreadIdle(t)
+		}
+		close(b.idleCh)
+		b.idleCh = make(chan struct{})
+	}
+}
+
+func (b *Branch) OnThreadRequest(t *Thread) {
+	if b != nil && b.delegate != nil {
+		b.delegate.OnThreadRequest(t)
+	}
 }
 
 // BranchStore creates, opens, lists, and deletes branch streams. It is
@@ -213,15 +326,15 @@ func (b *Branch) Close() error {
 type BranchStore interface {
 	// CreateBranch creates a new root branch and returns it opened. Durable roots
 	// should include a writer lease; ephemeral roots should not.
-	CreateBranch(ctx context.Context, opts BranchCreateOptions) (*Branch, error)
+	CreateBranch(ctx context.Context, opts BranchCreateOptions) (*StoredBranch, error)
 	// OpenBranch opens an existing branch and returns its branch-local store.
 	// Durable branches should acquire a writer lease; ephemeral branches need no
 	// lease.
-	OpenBranch(ctx context.Context, id BranchID, opts BranchOpenOptions) (*Branch, error)
+	OpenBranch(ctx context.Context, id BranchID, opts BranchOpenOptions) (*StoredBranch, error)
 	// BranchFromCheckpoint creates a child branch from opts.Checkpoint. The child
 	// starts with that checkpoint as its base and an empty WAL. Its Ancestors are
 	// derived from parent.Record.Ancestors plus parent.Record.Ref().
-	BranchFromCheckpoint(ctx context.Context, parent *Branch, opts BranchFromCheckpointOptions) (*Branch, error)
+	BranchFromCheckpoint(ctx context.Context, parent *StoredBranch, opts BranchFromCheckpointOptions) (*StoredBranch, error)
 	GetBranch(ctx context.Context, id BranchID) (BranchRecord, error)
 	ListBranches(ctx context.Context, filter BranchFilter) ([]BranchRecord, error)
 	DeleteBranch(ctx context.Context, id BranchID) error
