@@ -3,7 +3,8 @@
 agentloom is a Go library for building durable agent conversation loops.
 
 It provides a thread state machine, model-provider adapters, tool execution boundaries,
-and persistence primitives for applications that need conversations to survive restarts.
+and persistence primitives for applications that need conversations to reliably survive restarts.
+WAL with checkpointing data format aligns with databases with faster appends than updates.
 
 ## Packages
 
@@ -13,7 +14,7 @@ and persistence primitives for applications that need conversations to survive r
 - `threads/simpletool`: small adapters for lightweight tool providers and resolvers.
 - `threads/durability`: local file-backed durable thread storage.
 - `threads/durability/sqlitebranchstore`: SQLite branch, lease, checkpoint, and WAL storage.
-- `llms/openai`: OpenAI Responses API streamer.
+- `llms/openai`: OpenAI Responses API streamer (websocket and previous message for super fast responses).
 - `llms/anthropic`: Anthropic Messages API streamer.
 - `llms/fireworks`: Fireworks chat-completions streamer.
 - `llms/cache/*`: provider-specific prompt-cache metadata helpers.
