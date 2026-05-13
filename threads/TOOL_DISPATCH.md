@@ -446,3 +446,25 @@ Recovery can safely distinguish:
 
 The consumer's job is to ensure those durable markers accurately describe what
 actually happened.
+
+## Implementation Audit Notes (2026-05-13)
+
+- Async support has moved beyond the "not yet a complete public async
+  completion" wording. Current code includes `EventLoop.StartToolResult` and
+  `Thread.ReturnAsyncToolItem`; they serialize late returns through the
+  `EventLoop`, validate that a call is still started and incomplete, preserve the
+  persisted continuation mode for automatic sends, and drop ordinary late
+  results after a recovered result exists. A richer attempt handle, explicit
+  failure API, and conflict/audit policy are still future work. Decision: doc
+  update plus future for the richer handle API.
+- Recovery policy support is more limited than the target descriptions imply.
+  The zero-value policy fails closed, and `ToolCallRecoveryCancelAll` can append
+  recovered status results for outstanding resolving/started calls. The
+  `run_safe` and `cancel_unsafe` policy constants currently panic as
+  unimplemented. Decision: doc update plus future for those modes.
+- Automatic continuation has two important implementation details not captured
+  above: when a send is already pending, tool-resolution items are inserted
+  before that send instead of always queuing a new one; and streamers that report
+  `ToolResultSendRequiresComplete` can place the thread in
+  `awaiting_tool_results` until all pending tool calls have results. Decision:
+  doc update.

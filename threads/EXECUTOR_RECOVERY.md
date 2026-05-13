@@ -831,3 +831,49 @@ Recommended order from the current codebase:
 
 This keeps the already-landed prerequisites explicit while preserving the remaining
 direction of the design.
+
+## Implementation Audit Notes (2026-05-13)
+
+- Current state lists in this document should include the implemented
+  `awaiting_tool_results` state. `AttachExecutorForRecoveryWithOptions` accepts
+  it, and normal execution can enter it when a streamer requires complete tool
+  results before a follow-up send. Decision: doc update.
+- Some "still missing" text underreports current limited recovery attach
+  behavior. `SetExecutor` itself still only assigns the executor, but
+  `AttachExecutorForRecoveryWithOptions` accepts `idle`,
+  `awaiting_tool_results`, `construct_llm_request`, and `receiving_stream`
+  states; normalizes `stream_complete` to `idle`; can resume retained
+  `construct_llm_request`; and can recover `receiving_stream` by failing,
+  rolling back to retry, or keeping an assistant prefix depending on
+  `ToolChunkRecoveryPolicy` and streamer `AssistantPrefix`. Decision: doc
+  update.
+- Tool-call recovery policy is only partially implemented. The zero-value policy
+  fails closed for resolving/started calls, and `ToolCallRecoveryCancelAll`
+  appends recovered `ToolCallResult` status text. `ToolCallRecoveryRunSafe` and
+  `ToolCallRecoveryCancelUnsafe` are represented only by constants named
+  `ToolCallRecoveryRunSafeUnimplemented` and
+  `ToolCallRecoveryCancelUnsafeUnimplemented`, and currently panic if selected.
+  Decision: doc update plus future for safe retry/cancel-unsafe modes.
+- The outstanding-call derivation section is stale where it says recovery
+  metadata and continuation mode are missing from the derived view. The current
+  internal `pendingToolCall` also tracks `resolving`, `recovery`, and
+  `continueMode`. Decision: doc update.
+- Recovery result representation differs from the suggested structured JSON
+  examples. Current recovery cancellation/status output is an ordinary
+  `ToolCallResult` with `Recovered: true` and human-readable `Output`; it does
+  not populate structured `Data` with `execution_status` or
+  `side_effects_status`. Decision: doc update.
+- Late-result policy is no longer completely open, but it is still minimal. A
+  normal queued result for a call that already has a recovered result is dropped,
+  and `ReturnAsyncToolItem` validates that the call is still outstanding through
+  the event loop. There is still no explicit conflict/audit item or attempt
+  handle. Decision: doc update plus future for richer late-result policy.
+- The "rollback operations are not implemented" wording is stale for
+  `receiving_stream` recovery. Internal stream-tail rollback exists via
+  `dropStreamTail` and `replaceDurableSnapshot`; a general public
+  `ApplyRecoveryPolicy`/rollback API remains future work. Decision: doc update
+  plus future.
+- Live replacement remains incomplete. `CancelCurrentTurn` can cancel the active
+  model stream and tool contexts and suppress automatic sends, but replacing an
+  executor with `SetExecutor` does not automatically cancel the old live
+  execution or run recovery policy. Decision: future.

@@ -89,3 +89,25 @@ In this phase, the fork's control block is not runnable because its instruction 
 depends on unresolved parent progress.
 
 This makes the control block naturally representable as a state machine.
+
+## Implementation Audit Notes (2026-05-13)
+
+- The core state list in this spec omits the implemented
+  `awaiting_tool_results` state. Current code can block a pending send there
+  while waiting for outstanding tool results. Decision: doc update.
+- The note that executor attachment is "(later)" is stale. `Thread.SetExecutor`
+  exists today, and `AttachExecutorForRecoveryWithOptions` is a separate limited
+  recovery attach hook. Decision: doc update.
+- The executor section says the `Thread Executor` runs tool call execution and
+  notifies its delegate. In current code, `ThreadExecutor` runs model streaming;
+  synchronous tool dispatch is owned by `Thread.resolvePendingToolCalls`, async
+  helpers live on `EventLoop`, and request/idle/stream callbacks are thread
+  delegate callbacks. Decision: doc update.
+- The control block is not rebuilt from item history alone in restored
+  snapshots. Snapshots persist state and index fields such as `IPIndex`,
+  `QueueStartIndex`, and `StreamInsIndex`; WAL replay then re-drives lifecycle
+  operations. Decision: doc update.
+- The detached/joinable/promise fork and follow-then-fork semantics are still
+  design-only. Current code has branch storage/opening/copy helpers, but not
+  fork, join, merge, or blocking-fork item semantics in the thread state
+  machine. Decision: future.

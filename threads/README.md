@@ -105,3 +105,20 @@ follow-up request.
 - [`TOOL_HYDRATION.md`](./TOOL_HYDRATION.md)
 - [`examples/chat/main.go`](./examples/chat/main.go)
 - [`examples/chat_event_loop/main.go`](./examples/chat_event_loop/main.go)
+
+## Implementation Audit Notes (2026-05-13)
+
+- Runtime states: this overview lists `idle`, `construct_llm_request`,
+  `receiving_stream`, and `stream_complete`, but current code also has
+  `awaiting_tool_results`. That state is entered when a streamer requires all
+  tool results before the pending follow-up send may advance. Decision: doc
+  update.
+- Tool continuation: the statement that tool results are automatically followed
+  by a new `SendItem{}` describes only the default `ToolContinueAuto` path.
+  `ToolContinueManual`, `CancelCurrentTurn`, or an already-pending send can
+  suppress or replace the automatic send. Decision: doc update.
+- Recovery overview: `SetExecutor` itself is still assignment-only, but
+  `AttachExecutorForRecoveryWithOptions` now does more than retained
+  `construct_llm_request` recovery: it can handle `receiving_stream` with
+  tool-chunk policies and can convert unresolved tool calls to recovered status
+  results with `ToolCallRecoveryCancelAll`. Decision: doc update.

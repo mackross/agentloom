@@ -258,3 +258,28 @@ If a caller needs:
 - durable registry-backed behavior
 
 they should use the `tool` package instead.
+
+## Implementation Audit Notes (2026-05-13)
+
+- The `ToolResolver` description is stale where it says the resolver turns
+  `(tool name, opaque handler load data)` into a handler function. The current
+  core signature is `ResolveTool(context.Context, ToolCall, json.RawMessage)
+  (ToolDispatch, error)`: the resolver receives the whole call plus opaque load
+  data and may execute/dispatch directly. Decision: doc update.
+- The "helper execution hydration is not fully wired yet" sentence now needs a
+  narrower scope. Core `threads` execution is wired: `Thread` derives
+  outstanding calls, finds the nearest preceding `ToolsSnapshot`, reads the
+  matching `ToolHandlerBinding`, and calls the installed `ToolResolver`. What is
+  still missing is durable registry-backed hydration in the `threads/tool`
+  helper package. Decision: doc update.
+- The proposed `tool.Registry`, `Catalog.AddBound`, and `tool.NewRegistry`
+  example APIs are not implemented. Current `threads/tool.Catalog` stores
+  in-memory handlers and exposes `Snapshot`, `LoadTool`, and `Dispatch`, but it
+  does not implement `threads.ToolProvider`, does not produce durable
+  `ToolHandlerBinding` load data, and does not implement `threads.ToolResolver`.
+  Decision: future, with a doc update to avoid presenting the example as current
+  API.
+- The final guidance overstates today's `threads/tool` package for durable
+  registry-backed behavior. Use it today for catalogs, payload helpers, typed
+  JSON handlers, and result helpers; durable registry hydration remains future
+  work. Decision: doc update plus future.

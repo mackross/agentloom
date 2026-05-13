@@ -117,3 +117,31 @@ When changing durability behavior, add/adjust tests for:
 - restore trimming behavior
 - WAL replay sequence constraints
 - file-store snapshot/append semantics
+
+## Implementation Audit Notes (2026-05-13)
+
+- The state and safe-boundary discussion omits the implemented
+  `awaiting_tool_results` state. Current code treats only
+  `construct_llm_request`, `receiving_stream`, and `stream_complete` as
+  inflight; `awaiting_tool_results` is not inflight and can be captured as a
+  restorable safe snapshot, though `requiresRecovery` still returns true if it
+  contains unresolved resolving/started tool markers. Decision: doc update.
+- `Checkpoint.Unsafe` only reflects inflight stream/request state today; it does
+  not by itself mark unresolved tool recovery markers. `RestoreCheckpoint` only
+  rejects checkpoints whose `Unsafe` bit is set, while
+  `RestoreFromCheckpointAndWAL` trims a recovery-required WAL suffix but cannot
+  trim recovery-required content already present in the base checkpoint.
+  Decision: doc update.
+- The checkpoint `wait` policy waits only for inflight states. It does not wait
+  for `awaiting_tool_results` or for outstanding tool completion unless the
+  thread is also in an inflight state. Decision: doc update.
+- The WAL operation list is missing `queue_item_before_send`, which is used when
+  tool-resolution items need to be inserted before an already-pending send.
+  Decision: doc update.
+- The file layout path is stale. The current file store is the
+  `threads/durability` package implemented in `filestore.go`; there is no
+  `threads/durability/filestore` subpackage. Decision: doc update.
+- The JSON key description is stale. Current snapshot and WAL encoding uses the
+  exported Go field names (`Version`, `State`, `Items`, `Seq`, `Op`, `Item`,
+  etc.) because the durability structs do not define compact JSON tags such as
+  `ver`, `kind`, `s`, `o`, or `i`. Decision: doc update.
