@@ -373,6 +373,11 @@ func parseObservedToolChoice(t testing.TB, req threads.Req, raw any) streamertes
 		if v == "none" {
 			return streamertest.ObservedToolChoice{Mode: "none"}
 		}
+		if v == "required" && req.Tools.Allowed != nil && len(req.Tools.Allowed) > 0 {
+			choice := allowedToolChoice(req.Tools.Allowed)
+			choice.Mode = "required"
+			return choice
+		}
 		if v == "auto" && req.Tools.Allowed != nil && len(req.Tools.Allowed) > 1 {
 			return allowedToolChoice(req.Tools.Allowed)
 		}
@@ -380,8 +385,12 @@ func parseObservedToolChoice(t testing.TB, req threads.Req, raw any) streamertes
 	case map[string]any:
 		if stringValue(v["type"]) == "function" {
 			function, _ := v["function"].(map[string]any)
+			mode := "allowed"
+			if req.Tools.Required {
+				mode = "required"
+			}
 			return streamertest.ObservedToolChoice{
-				Mode: "allowed",
+				Mode: mode,
 				Allowed: []streamertest.ObservedAllowedTool{{
 					Kind: "function",
 					Name: stringValue(function["name"]),

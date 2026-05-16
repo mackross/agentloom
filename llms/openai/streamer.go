@@ -602,6 +602,10 @@ func closeObjectSchemas(v any) {
 
 func requestToolChoice(snap threads.ToolOfferSnapshot) (*responses.ResponseNewParamsToolChoiceUnion, error) {
 	if snap.Allowed == nil {
+		if snap.Required {
+			opt := param.NewOpt(responses.ToolChoiceOptionsRequired)
+			return &responses.ResponseNewParamsToolChoiceUnion{OfToolChoiceMode: opt}, nil
+		}
 		return nil, nil
 	}
 	if len(snap.Allowed) > 0 {
@@ -609,7 +613,14 @@ func requestToolChoice(snap threads.ToolOfferSnapshot) (*responses.ResponseNewPa
 		if err != nil {
 			return nil, err
 		}
-		return &responses.ResponseNewParamsToolChoiceUnion{OfAllowedTools: &responses.ToolChoiceAllowedParam{Mode: responses.ToolChoiceAllowedModeAuto, Tools: tools}}, nil
+		mode := responses.ToolChoiceAllowedModeAuto
+		if snap.Required {
+			mode = responses.ToolChoiceAllowedModeRequired
+		}
+		return &responses.ResponseNewParamsToolChoiceUnion{OfAllowedTools: &responses.ToolChoiceAllowedParam{Mode: mode, Tools: tools}}, nil
+	}
+	if snap.Required {
+		return nil, fmt.Errorf("openai tool choice cannot require an empty allowed tool set")
 	}
 	opt := param.NewOpt(responses.ToolChoiceOptionsNone)
 	return &responses.ResponseNewParamsToolChoiceUnion{OfToolChoiceMode: opt}, nil

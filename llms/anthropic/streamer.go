@@ -457,6 +457,20 @@ func requestToolChoice(snap threads.ToolOfferSnapshot, hasTools bool) *anthropic
 		none := anthropicapi.NewToolChoiceNoneParam()
 		return &anthropicapi.ToolChoiceUnionParam{OfNone: &none}
 	}
+	if snap.Required {
+		if len(snap.Allowed) == 1 {
+			tool := anthropicapi.ToolChoiceToolParam{Type: "tool", Name: snap.Allowed[0]}
+			if snap.Parallel != nil {
+				tool.DisableParallelToolUse = anthropicapi.Bool(!*snap.Parallel)
+			}
+			return &anthropicapi.ToolChoiceUnionParam{OfTool: &tool}
+		}
+		any := anthropicapi.ToolChoiceAnyParam{Type: "any"}
+		if snap.Parallel != nil {
+			any.DisableParallelToolUse = anthropicapi.Bool(!*snap.Parallel)
+		}
+		return &anthropicapi.ToolChoiceUnionParam{OfAny: &any}
+	}
 	if snap.Allowed == nil && snap.Parallel == nil {
 		return nil
 	}

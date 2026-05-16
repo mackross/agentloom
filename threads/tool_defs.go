@@ -20,6 +20,7 @@ type ToolOfferSnapshot struct {
 	Offered  []ToolSpec `json:"offered,omitempty"`
 	Allowed  []string   `json:"allowed"`
 	Parallel *bool      `json:"parallel,omitempty"`
+	Required bool       `json:"required,omitempty"`
 }
 
 type ToolHandlerBinding struct {

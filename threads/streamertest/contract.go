@@ -145,6 +145,45 @@ func RunContractTests(t *testing.T, h Harness) {
 		assertObservedRequest(t, got, want)
 	})
 
+	t.Run("forwards_required_single_tool_choice", func(t *testing.T) {
+		parallel := false
+		req := threads.Req{
+			Tools: threads.ToolOfferSnapshot{
+				Offered: []threads.ToolSpec{{
+					Name:        "submit",
+					Description: "submit structured data",
+					Payload:     threads.ToolPayloadJSONSchema(gschema.Schema{Type: "object"}),
+				}},
+				Allowed:  []string{"submit"},
+				Parallel: &parallel,
+				Required: true,
+			},
+		}
+
+		got, err := h.Stream(t, req, nil, func(threads.Item) error { return nil })
+		if err != nil {
+			t.Fatalf("stream req: %v", err)
+		}
+
+		want := ObservedRequest{
+			Tools: []ObservedTool{{
+				Kind:        "function",
+				Name:        "submit",
+				Description: "submit structured data",
+				SchemaType:  "object",
+			}},
+			ToolChoice: ObservedToolChoice{
+				Mode: "required",
+				Allowed: []ObservedAllowedTool{{
+					Kind: "function",
+					Name: "submit",
+				}},
+			},
+			Parallel: boolRef(false),
+		}
+		assertObservedRequest(t, got, want)
+	})
+
 	t.Run("forwards_explicit_disable_all_tools", func(t *testing.T) {
 		parallel := false
 		req := threads.Req{

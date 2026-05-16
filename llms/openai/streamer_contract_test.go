@@ -446,7 +446,11 @@ func parseObservedToolChoice(t testing.TB, raw any) streamertest.ObservedToolCho
 				})
 			}
 			if len(out.Allowed) > 0 {
-				out.Mode = "allowed"
+				if mode := stringValue(v["mode"]); mode == "required" {
+					out.Mode = "required"
+				} else {
+					out.Mode = "allowed"
+				}
 			}
 		}
 		if out.Mode == "" {

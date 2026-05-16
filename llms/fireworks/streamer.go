@@ -336,9 +336,17 @@ func closeObjectSchemas(v any) {
 
 func requestToolChoice(snap threads.ToolOfferSnapshot) (*openaiapi.ChatCompletionToolChoiceOptionUnionParam, error) {
 	if snap.Allowed == nil {
+		if snap.Required {
+			return &openaiapi.ChatCompletionToolChoiceOptionUnionParam{
+				OfAuto: param.NewOpt(string(openaiapi.ChatCompletionToolChoiceOptionAutoRequired)),
+			}, nil
+		}
 		return nil, nil
 	}
 	if len(snap.Allowed) == 0 {
+		if snap.Required {
+			return nil, fmt.Errorf("fireworks tool choice cannot require an empty allowed tool set")
+		}
 		return &openaiapi.ChatCompletionToolChoiceOptionUnionParam{
 			OfAuto: param.NewOpt(string(openaiapi.ChatCompletionToolChoiceOptionAutoNone)),
 		}, nil
@@ -352,6 +360,11 @@ func requestToolChoice(snap threads.ToolOfferSnapshot) (*openaiapi.ChatCompletio
 			OfFunctionToolChoice: &openaiapi.ChatCompletionNamedToolChoiceParam{
 				Function: openaiapi.ChatCompletionNamedToolChoiceFunctionParam{Name: name},
 			},
+		}, nil
+	}
+	if snap.Required {
+		return &openaiapi.ChatCompletionToolChoiceOptionUnionParam{
+			OfAuto: param.NewOpt(string(openaiapi.ChatCompletionToolChoiceOptionAutoRequired)),
 		}, nil
 	}
 	return &openaiapi.ChatCompletionToolChoiceOptionUnionParam{

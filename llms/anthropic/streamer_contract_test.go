@@ -389,14 +389,18 @@ func parseObservedToolChoice(t testing.TB, req threads.Req, raw any) (streamerte
 	case "none":
 		choice.Mode = "none"
 	case "tool":
-		choice.Mode = "allowed"
+		choice.Mode = "required"
 		choice.Allowed = []streamertest.ObservedAllowedTool{{
 			Kind: "function",
 			Name: stringValue(obj["name"]),
 		}}
 	case "auto", "any":
 		if req.Tools.Allowed != nil && len(req.Tools.Allowed) > 0 {
-			choice.Mode = "allowed"
+			if stringValue(obj["type"]) == "any" || req.Tools.Required {
+				choice.Mode = "required"
+			} else {
+				choice.Mode = "allowed"
+			}
 			choice.Allowed = make([]streamertest.ObservedAllowedTool, 0, len(req.Tools.Allowed))
 			for _, name := range req.Tools.Allowed {
 				choice.Allowed = append(choice.Allowed, streamertest.ObservedAllowedTool{
