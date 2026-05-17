@@ -303,7 +303,7 @@ type staticToolProvider struct {
 	snap ToolsSnapshot
 }
 
-func (p staticToolProvider) ToolsSnapshot() ToolsSnapshot { return p.snap }
+func (p staticToolProvider) ToolsSnapshot(*Thread) ToolsSnapshot { return p.snap }
 
 func TestSetToolProviderQueuesToolOfferSnapshot(t *testing.T) {
 	thread := newTestThread(t)

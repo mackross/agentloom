@@ -17,10 +17,10 @@ type resultView interface {
 
 func TestCatalogSnapshotUsesPolicyAndPreservesAddOrder(t *testing.T) {
 	cat := NewCatalog().
-		AddFunc(Spec{Name: "first", Payload: PayloadText()}, func(_ context.Context, _ Call, ret ReturnItem) (Handling, error) {
+		AddFunc(Spec{Name: "first", Payload: PayloadText()}, func(_ context.Context, _ *threads.Thread, _ Call, ret ReturnItem) (Handling, error) {
 			return Handling{}, ret(ResultText(Call{CallID: "first"}, "ok"))
 		}).
-		AddFunc(Spec{Name: "second", Payload: PayloadText()}, func(_ context.Context, _ Call, ret ReturnItem) (Handling, error) {
+		AddFunc(Spec{Name: "second", Payload: PayloadText()}, func(_ context.Context, _ *threads.Thread, _ Call, ret ReturnItem) (Handling, error) {
 			return Handling{}, ret(ResultText(Call{CallID: "second"}, "ok"))
 		}).
 		Disallow("first")
@@ -33,7 +33,7 @@ func TestCatalogSnapshotUsesPolicyAndPreservesAddOrder(t *testing.T) {
 		t.Fatalf("unexpected allowed names: %#v", got)
 	}
 
-	cat.AddFunc(Spec{Name: "third", Payload: PayloadText()}, func(_ context.Context, _ Call, ret ReturnItem) (Handling, error) {
+	cat.AddFunc(Spec{Name: "third", Payload: PayloadText()}, func(_ context.Context, _ *threads.Thread, _ Call, ret ReturnItem) (Handling, error) {
 		return Handling{}, ret(ResultText(Call{CallID: "third"}, "ok"))
 	})
 	snap = cat.Snapshot()
@@ -43,7 +43,7 @@ func TestCatalogSnapshotUsesPolicyAndPreservesAddOrder(t *testing.T) {
 }
 
 func TestJSONReturnsSpecAndHandlerForCommonUsage(t *testing.T) {
-	cat := NewCatalog().Add(JSON("lookup", "lookup item", func(_ context.Context, call Call, args struct {
+	cat := NewCatalog().Add(JSON("lookup", "lookup item", func(_ context.Context, _ *threads.Thread, call Call, args struct {
 		ID string `json:"id"`
 	}) Item {
 		return ResultText(call, args.ID)
@@ -65,7 +65,7 @@ func TestJSONHandlerReturnsModelVisibleErrorItemOnBadPayload(t *testing.T) {
 		Payload: PayloadFor[struct {
 			ID string `json:"id"`
 		}](),
-	}, JSONHandler(func(_ context.Context, call Call, args struct {
+	}, JSONHandler(func(_ context.Context, _ *threads.Thread, call Call, args struct {
 		ID string `json:"id"`
 	}) Item {
 		return ResultText(call, args.ID)
@@ -76,7 +76,7 @@ func TestJSONHandlerReturnsModelVisibleErrorItemOnBadPayload(t *testing.T) {
 		t.Fatalf("load tool: %v", err)
 	}
 	var item Item
-	_, err = handler.HandleToolCall(context.Background(), Call{
+	_, err = handler.HandleToolCall(context.Background(), nil, Call{
 		CallID:  "c1",
 		Name:    "lookup",
 		Payload: "{",
@@ -101,7 +101,7 @@ func TestJSONHandlerReturnsModelVisibleErrorItemOnBadPayload(t *testing.T) {
 
 func TestCatalogDispatchBuffersImmediateReturns(t *testing.T) {
 	var lateReturn ReturnItem
-	cat := NewCatalog().AddFunc(Spec{Name: "work", Payload: PayloadText()}, func(_ context.Context, call Call, ret ReturnItem) (Handling, error) {
+	cat := NewCatalog().AddFunc(Spec{Name: "work", Payload: PayloadText()}, func(_ context.Context, _ *threads.Thread, call Call, ret ReturnItem) (Handling, error) {
 		if err := ret(ResultText(call, "now")); err != nil {
 			return Handling{}, err
 		}
@@ -122,7 +122,7 @@ func TestCatalogDispatchBuffersImmediateReturns(t *testing.T) {
 
 func TestCatalogDispatchLateReturnRequiresEventLoop(t *testing.T) {
 	var lateReturn ReturnItem
-	cat := NewCatalog().AddFunc(Spec{Name: "work", Payload: PayloadText()}, func(_ context.Context, _ Call, ret ReturnItem) (Handling, error) {
+	cat := NewCatalog().AddFunc(Spec{Name: "work", Payload: PayloadText()}, func(_ context.Context, _ *threads.Thread, _ Call, ret ReturnItem) (Handling, error) {
 		lateReturn = ret
 		return Handling{}, nil
 	})
@@ -156,7 +156,7 @@ func TestCatalogDispatchRoutesLateReturnThroughThreadEventLoop(t *testing.T) {
 	}
 
 	var lateReturn ReturnItem
-	cat := NewCatalog().AddFunc(Spec{Name: "work", Payload: PayloadText()}, func(_ context.Context, _ Call, ret ReturnItem) (Handling, error) {
+	cat := NewCatalog().AddFunc(Spec{Name: "work", Payload: PayloadText()}, func(_ context.Context, _ *threads.Thread, _ Call, ret ReturnItem) (Handling, error) {
 		lateReturn = ret
 		return Handling{}, nil
 	})
@@ -207,7 +207,7 @@ func TestSnapshotDeepClonesPayloadDefinitions(t *testing.T) {
 		Value string `json:"value"`
 	}
 
-	cat := NewCatalog().AddFunc(Spec{Name: "json", Payload: PayloadFor[args]()}, func(_ context.Context, _ Call, ret ReturnItem) (Handling, error) {
+	cat := NewCatalog().AddFunc(Spec{Name: "json", Payload: PayloadFor[args]()}, func(_ context.Context, _ *threads.Thread, _ Call, ret ReturnItem) (Handling, error) {
 		return Handling{}, ret(ResultText(Call{CallID: "json"}, "ok"))
 	})
 	first := cat.Snapshot()

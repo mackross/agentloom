@@ -87,7 +87,7 @@ func (t *Thread) SetToolProvider(p ToolProvider) {
 	t.tools = p
 	snap := ToolsSnapshot{}
 	if p != nil {
-		snap = cloneToolsSnapshot(p.ToolsSnapshot())
+		snap = cloneToolsSnapshot(p.ToolsSnapshot(t))
 	}
 	t.QueueItem(snap)
 }
@@ -327,7 +327,7 @@ func (t *Thread) resolvePendingToolCalls() (bool, error) {
 		t.queueToolResolutionItem(hasPendingSend, ToolCallResolving{CallID: p.call.CallID})
 		resolved = true
 		ctx, cancelTool := t.beginToolCallContext(p.call.CallID)
-		dispatch, err := t.resolver.ResolveTool(ctx, p.call, p.load)
+		dispatch, err := t.resolver.ResolveTool(ctx, t, p.call, p.load)
 		if err != nil {
 			t.clearToolCallContext(p.call.CallID, cancelTool)
 			return resolved, err

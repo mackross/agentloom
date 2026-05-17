@@ -10,7 +10,7 @@ import (
 )
 
 func TestProviderFuncClonesToolsSnapshot(t *testing.T) {
-	provider := ProviderFunc(func() threads.ToolsSnapshot {
+	provider := ProviderFunc(func(_ *threads.Thread) threads.ToolsSnapshot {
 		return threads.ToolsSnapshot{
 			Snapshot: threads.ToolOfferSnapshot{Offered: []threads.ToolSpec{{
 				Name:        "calc",
@@ -24,10 +24,10 @@ func TestProviderFuncClonesToolsSnapshot(t *testing.T) {
 		}
 	})
 
-	got := provider.ToolsSnapshot()
+	got := provider.ToolsSnapshot(nil)
 	got.Handlers[0].HandlerLoadData = []byte(`{"function":"tool/other@v1"}`)
 
-	again := provider.ToolsSnapshot()
+	again := provider.ToolsSnapshot(nil)
 	if want := []byte(`{"function":"tool/calc@v1"}`); !bytes.Equal(again.Handlers[0].HandlerLoadData, want) {
 		t.Fatalf("provider snapshot was not cloned: %s", string(again.Handlers[0].HandlerLoadData))
 	}
@@ -38,13 +38,13 @@ func TestResolverFuncReceivesOpaqueLoadData(t *testing.T) {
 	var gotName string
 	var gotData json.RawMessage
 
-	resolver := ResolverFunc(func(_ context.Context, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+	resolver := ResolverFunc(func(_ context.Context, _ *threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 		gotName = call.Name
 		gotData = append(json.RawMessage(nil), handlerLoadData...)
 		return threads.ToolDispatch{Items: []threads.Item{threads.AssistantText("ok")}}, nil
 	})
 
-	dispatch, err := resolver.ResolveTool(context.Background(), threads.ToolCall{Name: "write_file"}, wantData)
+	dispatch, err := resolver.ResolveTool(context.Background(), nil, threads.ToolCall{Name: "write_file"}, wantData)
 	if err != nil {
 		t.Fatalf("resolve tool: %v", err)
 	}

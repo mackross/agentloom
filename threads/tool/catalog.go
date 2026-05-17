@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sync"
 	"strings"
+	"sync"
 
 	"github.com/mackross/agentloom/threads"
 )
@@ -20,21 +20,21 @@ type Handling struct {
 type Handler interface {
 	// HandleToolCall receives the ResolveTool context, which CancelCurrentTurn
 	// cancels when the canceled LLM streamer turn produced this tool call.
-	HandleToolCall(context.Context, Call, ReturnItem) (Handling, error)
+	HandleToolCall(context.Context, *threads.Thread, Call, ReturnItem) (Handling, error)
 }
 
 // HandlerFunc receives the ResolveTool context, which CancelCurrentTurn cancels
 // when the canceled LLM streamer turn produced this tool call.
-type HandlerFunc func(context.Context, Call, ReturnItem) (Handling, error)
+type HandlerFunc func(context.Context, *threads.Thread, Call, ReturnItem) (Handling, error)
 
-func (f HandlerFunc) HandleToolCall(ctx context.Context, call Call, ret ReturnItem) (Handling, error) {
+func (f HandlerFunc) HandleToolCall(ctx context.Context, thread *threads.Thread, call Call, ret ReturnItem) (Handling, error) {
 	if f == nil {
 		panic("tool.HandlerFunc is nil")
 	}
 	if ret == nil {
 		return Handling{}, fmt.Errorf("tool %q missing return item handler", call.Name)
 	}
-	return f(ctx, call, ret)
+	return f(ctx, thread, call, ret)
 }
 
 type Catalog struct {
@@ -186,7 +186,7 @@ func (c *Catalog) Dispatch(ctx context.Context, thread *threads.Thread, call Cal
 		}
 		return thread.ReturnAsyncToolItem(context.Background(), call.CallID, item)
 	}
-	handling, err := h.HandleToolCall(ctx, call, ret)
+	handling, err := h.HandleToolCall(ctx, thread, call, ret)
 	mu.Lock()
 	inHandler = false
 	items = append([]Item(nil), items...)

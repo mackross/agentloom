@@ -12,28 +12,30 @@ import (
 // It implements threads.ToolProvider and threads.ToolResolver, so it can be
 // installed directly with Thread.SetToolProvider and Thread.SetToolResolver.
 type StructTool[T any] struct {
-	spec Spec
-	fn   StructToolDelegateFunc[T]
+	spec     Spec
+	delegate StructToolDelegate[T]
 }
 
-type StructToolDelegateFunc[T any] func(context.Context, Call, T)
+type StructToolDelegate[T any] interface {
+	OnStructToolCall(context.Context, *threads.Thread, Call, T) Item
+}
 
 // NewStructTool creates a single-tool toolbox for T. The tool is offered as the
 // only allowed tool, marked required, and parallel tool use is disabled.
 //
-// If fn is nil, successful calls return a simple "ok" tool result.
-func NewStructTool[T any](name, desc string, fn StructToolDelegateFunc[T]) *StructTool[T] {
+// If delegate is nil, successful calls return a simple "ok" tool result.
+func NewStructTool[T any](name, desc string, delegate StructToolDelegate[T]) *StructTool[T] {
 	return &StructTool[T]{
 		spec: Spec{
 			Name:        name,
 			Description: desc,
 			Payload:     PayloadFor[T](),
 		},
-		fn: fn,
+		delegate: delegate,
 	}
 }
 
-func (s *StructTool[T]) ToolsSnapshot() threads.ToolsSnapshot {
+func (s *StructTool[T]) ToolsSnapshot(_ *threads.Thread) threads.ToolsSnapshot {
 	parallel := false
 	return threads.ToolsSnapshot{
 		Snapshot: threads.ToolOfferSnapshot{
@@ -46,7 +48,7 @@ func (s *StructTool[T]) ToolsSnapshot() threads.ToolsSnapshot {
 	}
 }
 
-func (s *StructTool[T]) ResolveTool(ctx context.Context, call threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
+func (s *StructTool[T]) ResolveTool(ctx context.Context, thread *threads.Thread, call threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
 	if call.Name != s.spec.Name {
 		return threads.ToolDispatch{}, fmt.Errorf("tool %q not found", call.Name)
 	}
@@ -60,12 +62,16 @@ func (s *StructTool[T]) ResolveTool(ctx context.Context, call threads.ToolCall, 
 			},
 		}, nil
 	}
-	if s.fn != nil {
-		s.fn(ctx, call, args)
+	item := Item(ResultText(call, "ok"))
+	if s.delegate != nil {
+		item = s.delegate.OnStructToolCall(ctx, thread, call, args)
+		if item == nil {
+			return threads.ToolDispatch{}, fmt.Errorf("tool %q delegate returned nil item", call.Name)
+		}
 	}
 	return threads.ToolDispatch{
 		Started:  true,
 		Continue: threads.ToolContinueManual,
-		Items:    []threads.Item{ResultText(call, "ok")},
+		Items:    []threads.Item{item},
 	}, nil
 }

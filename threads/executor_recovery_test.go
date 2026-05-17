@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-type toolResolverFunc func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error)
+type toolResolverFunc func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error)
 
-func (f toolResolverFunc) ResolveTool(ctx context.Context, call ToolCall, load json.RawMessage) (ToolDispatch, error) {
-	return f(ctx, call, load)
+func (f toolResolverFunc) ResolveTool(ctx context.Context, thread *Thread, call ToolCall, load json.RawMessage) (ToolDispatch, error) {
+	return f(ctx, thread, call, load)
 }
 
 func runPendingToolDispatch(t *testing.T, dispatch ToolDispatch) (*Thread, Checkpoint) {
@@ -19,7 +19,7 @@ func runPendingToolDispatch(t *testing.T, dispatch ToolDispatch) (*Thread, Check
 
 	thread := New()
 	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("calc", "calculate")})
-	thread.SetToolResolver(toolResolverFunc(func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		return dispatch, nil
 	}))
 
@@ -242,7 +242,7 @@ func TestAttachExecutorForRecoverySettlesStreamCompleteWithRequestedTool(t *test
 		t.Fatalf("restore stream_complete snapshot: %v", err)
 	}
 	resolverCalls := 0
-	restored.SetToolResolver(toolResolverFunc(func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	restored.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		resolverCalls++
 		return ToolDispatch{Items: []Item{ToolCallResult{CallID: "c1", Output: "2"}}}, nil
 	}))
@@ -376,7 +376,7 @@ func TestAttachExecutorForRecoveryResolvesRequestedToolAfterEndStreamRestore(t *
 	}
 
 	resolverCalls := 0
-	restored.SetToolResolver(toolResolverFunc(func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	restored.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		resolverCalls++
 		return ToolDispatch{Items: []Item{ToolCallResult{CallID: "c1", Output: "2"}}}, nil
 	}))
@@ -941,7 +941,7 @@ func TestAttachExecutorForRecoveryAcceptsAwaitingToolResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restore awaiting: %v", err)
 	}
-	restored.SetToolResolver(toolResolverFunc(func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	restored.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		return ToolDispatch{Items: []Item{ToolCallResult{CallID: "c1", Output: "1"}}}, nil
 	}))
 	followup := newFakeStreamer().Reply(func(b *streamBuilder) {

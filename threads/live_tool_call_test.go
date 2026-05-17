@@ -30,7 +30,7 @@ func TestLiveThreadExecutesCalculatorToolWithOpenAIResponses(t *testing.T) {
 	thread := threads.New()
 	streamer := debugStreamer{t: t, inner: openaiwrap.NewResponsesStreamer(model)}
 	thread.SetExecutor(threads.NewThreadExecutor(streamer))
-	thread.SetToolProvider(simpletool.ProviderFunc(func() threads.ToolsSnapshot {
+	thread.SetToolProvider(simpletool.ProviderFunc(func(_ *threads.Thread) threads.ToolsSnapshot {
 		return threads.ToolsSnapshot{
 			Snapshot: threads.ToolOfferSnapshot{
 				Offered: []threads.ToolSpec{{
@@ -51,7 +51,7 @@ func TestLiveThreadExecutesCalculatorToolWithOpenAIResponses(t *testing.T) {
 	}))
 
 	resolveCalls := 0
-	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ *threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 		resolveCalls++
 		var args struct {
 			A int `json:"a"`

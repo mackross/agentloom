@@ -16,6 +16,17 @@ type yesNoAnswer struct {
 	Reason string `json:"reason" jsonschema:"one short sentence explaining the answer"`
 }
 
+type answerDelegate struct {
+	answer   yesNoAnswer
+	answered bool
+}
+
+func (d *answerDelegate) OnStructToolCall(_ context.Context, _ *threads.Thread, call tool.Call, v yesNoAnswer) tool.Item {
+	d.answer = v
+	d.answered = true
+	return tool.ResultText(call, "ok")
+}
+
 func main() {
 	question := strings.TrimSpace(strings.Join(os.Args[1:], " "))
 	if question == "" {
@@ -27,12 +38,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	var answer yesNoAnswer
-	answered := false
-	answerTool := tool.NewStructTool[yesNoAnswer]("answer_yes_no", "Answer the user's question with yes or no and a short reason.", func(_ context.Context, _ tool.Call, v yesNoAnswer) {
-		answer = v
-		answered = true
-	})
+	delegate := &answerDelegate{}
+	answerTool := tool.NewStructTool[yesNoAnswer]("answer_yes_no", "Answer the user's question with yes or no and a short reason.", delegate)
 
 	thread := threads.New()
 	streamer := openaiwrap.NewResponsesStreamer(os.Getenv("OPENAI_MODEL"))
@@ -43,10 +50,10 @@ func main() {
 	thread.QueueItem(threads.AssistantInstruction("Answer by calling the required tool. The answer field must be exactly yes or no."))
 	thread.QueueItem(threads.UserText(question))
 	thread.QueueItem(threads.SendItem{})
-	if !answered {
+	if !delegate.answered {
 		fmt.Fprintln(os.Stderr, "model did not return a structured yes/no answer")
 		os.Exit(1)
 	}
 
-	fmt.Printf("%s\n%s\n", answer.Answer, answer.Reason)
+	fmt.Printf("%s\n%s\n", delegate.answer.Answer, delegate.answer.Reason)
 }

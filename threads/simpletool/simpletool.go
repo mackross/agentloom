@@ -7,22 +7,22 @@ import (
 	"github.com/mackross/agentloom/threads"
 )
 
-type ProviderFunc func() threads.ToolsSnapshot
+type ProviderFunc func(*threads.Thread) threads.ToolsSnapshot
 
-func (f ProviderFunc) ToolsSnapshot() threads.ToolsSnapshot {
+func (f ProviderFunc) ToolsSnapshot(thread *threads.Thread) threads.ToolsSnapshot {
 	if f == nil {
 		panic("simpletool.ProviderFunc is nil")
 	}
-	return cloneToolsSnapshot(f())
+	return cloneToolsSnapshot(f(thread))
 }
 
-type ResolverFunc func(context.Context, threads.ToolCall, json.RawMessage) (threads.ToolDispatch, error)
+type ResolverFunc func(context.Context, *threads.Thread, threads.ToolCall, json.RawMessage) (threads.ToolDispatch, error)
 
-func (f ResolverFunc) ResolveTool(ctx context.Context, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+func (f ResolverFunc) ResolveTool(ctx context.Context, thread *threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 	if f == nil {
 		panic("simpletool.ResolverFunc is nil")
 	}
-	return f(ctx, call, append(json.RawMessage(nil), handlerLoadData...))
+	return f(ctx, thread, call, append(json.RawMessage(nil), handlerLoadData...))
 }
 
 func cloneToolsSnapshot(in threads.ToolsSnapshot) threads.ToolsSnapshot {

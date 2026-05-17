@@ -13,7 +13,7 @@ type TurnRole string
 
 const (
 	// TurnUser is a completed user turn.
-	TurnUser      TurnRole = "user"
+	TurnUser TurnRole = "user"
 	// TurnAssistant is a completed assistant turn.
 	TurnAssistant TurnRole = "assistant"
 )

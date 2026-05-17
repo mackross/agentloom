@@ -6,7 +6,7 @@ import (
 )
 
 type ToolProvider interface {
-	ToolsSnapshot() ToolsSnapshot
+	ToolsSnapshot(*Thread) ToolsSnapshot
 }
 
 type ToolContinue string
@@ -44,7 +44,7 @@ type ToolDispatch struct {
 type ToolResolver interface {
 	// ResolveTool receives a context canceled by CancelCurrentTurn when the
 	// canceled LLM streamer turn produced this tool call.
-	ResolveTool(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error)
+	ResolveTool(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error)
 }
 
 type ToolCallResultable interface {

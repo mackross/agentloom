@@ -35,7 +35,7 @@ func toolLifecycleTypes(thread *Thread, callID string) []string {
 func TestToolResolutionRecordsResolvingBeforeResolverRuns(t *testing.T) {
 	thread := New()
 	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("calc", "calculate")})
-	thread.SetToolResolver(toolResolverFunc(func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		// The resolving marker is written before consumer resolver code runs, so a
 		// crash/panic inside this function is distinguishable from a call that never
 		// entered resolution.

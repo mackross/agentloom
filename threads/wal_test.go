@@ -101,7 +101,7 @@ func TestRestoreFromCheckpointAndWALTrimsUnsafeTailByDefault(t *testing.T) {
 func TestRestoreFromCheckpointAndWALTrimsPendingStartedToolTailByDefault(t *testing.T) {
 	thread := New()
 	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("edit", "edit files")})
-	thread.SetToolResolver(toolResolverFunc(func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		return ToolDispatch{
 			Started:  true,
 			Recovery: ToolRecoveryUnsafe,
@@ -148,7 +148,7 @@ func TestRestoreFromCheckpointAndWALTrimsPendingStartedToolTailByDefault(t *test
 func TestRestoreFromCheckpointAndWALAllowsCompletedStartedTool(t *testing.T) {
 	thread := New()
 	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("edit", "edit files")})
-	thread.SetToolResolver(toolResolverFunc(func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		return ToolDispatch{
 			Started:  true,
 			Recovery: ToolRecoveryUnsafe,
@@ -199,7 +199,7 @@ func TestRestoreFromCheckpointAndWALAllowsUnsafeStartedToolWhenRequested(t *test
 func TestRestoreFromCheckpointAndWALReplaysLateAutoSend(t *testing.T) {
 	thread := New()
 	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("calc", "calculate")})
-	thread.SetToolResolver(toolResolverFunc(func(context.Context, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		return ToolDispatch{
 			Started:  true,
 			Recovery: ToolRecoveryUnsafe,

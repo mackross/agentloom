@@ -5,10 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"github.com/mackross/agentloom/threads"
 	"github.com/mackross/agentloom/threads/durability"
 	"github.com/mackross/agentloom/threads/simpletool"
+	"os"
 	"strings"
 
 	"github.com/dop251/goja"
@@ -278,7 +278,7 @@ type jsToolArgs struct {
 func configureThread(thread *threads.Thread, executor *threads.ThreadExecutor, delegate threads.ThreadDelegate) {
 	thread.SetExecutor(executor)
 	thread.SetDelegate(delegate)
-	thread.SetToolProvider(simpletool.ProviderFunc(func() threads.ToolsSnapshot {
+	thread.SetToolProvider(simpletool.ProviderFunc(func(_ *threads.Thread) threads.ToolsSnapshot {
 		return threads.ToolsSnapshot{
 			Snapshot: threads.ToolOfferSnapshot{Offered: []threads.ToolSpec{{
 				Name:        "javascript",
@@ -291,7 +291,7 @@ func configureThread(thread *threads.Thread, executor *threads.ThreadExecutor, d
 			}},
 		}
 	}))
-	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, call threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ *threads.Thread, call threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
 		if call.Name != "javascript" {
 			return threads.ToolDispatch{}, fmt.Errorf("unknown tool %q", call.Name)
 		}
