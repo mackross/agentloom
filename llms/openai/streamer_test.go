@@ -62,6 +62,45 @@ func TestRequestToolsAddsAdditionalPropertiesFalseWhenMissing(t *testing.T) {
 	}
 }
 
+func TestRequestToolsNormalizesStrictSchemaRequiredAndNullableOptional(t *testing.T) {
+	snap := threads.ToolOfferSnapshot{Offered: []threads.ToolSpec{{
+		Name: "extract",
+		Payload: threads.ToolPayloadJSONSchema(gschema.Schema{
+			Type: "object",
+			Properties: map[string]*gschema.Schema{
+				"entities": {
+					Type: "array",
+					Items: &gschema.Schema{
+						Type: "object",
+						Properties: map[string]*gschema.Schema{
+							"name":        {Type: "string"},
+							"type":        {Type: "string"},
+							"description": {Type: "string"},
+						},
+						Required: []string{"name", "type"},
+					},
+				},
+			},
+			Required: []string{"entities"},
+		}),
+	}}}
+
+	tools, err := requestTools(snap)
+	if err != nil {
+		t.Fatalf("request tools: %v", err)
+	}
+	params := tools[0].OfFunction.Parameters
+	entities := params["properties"].(map[string]any)["entities"].(map[string]any)
+	item := entities["items"].(map[string]any)
+	if got := stringSliceSet(item["required"]); !got["name"] || !got["type"] || !got["description"] {
+		t.Fatalf("nested required did not include every property: %#v", item["required"])
+	}
+	description := item["properties"].(map[string]any)["description"].(map[string]any)
+	if !schemaTypeContains(description, "null") {
+		t.Fatalf("optional description was not made nullable: %#v", description["type"])
+	}
+}
+
 func TestRequestInputItemsMapsToolCallsAndResults(t *testing.T) {
 	items, err := requestInputItems(threads.Req{Items: []threads.Item{
 		threads.UserText("hello"),
@@ -183,4 +222,41 @@ func valueOrEmpty(v *string) string {
 		return ""
 	}
 	return *v
+}
+
+func stringSliceSet(v any) map[string]bool {
+	out := map[string]bool{}
+	switch xs := v.(type) {
+	case []string:
+		for _, s := range xs {
+			out[s] = true
+		}
+	case []any:
+		for _, v := range xs {
+			if s, ok := v.(string); ok {
+				out[s] = true
+			}
+		}
+	}
+	return out
+}
+
+func schemaTypeContains(schema map[string]any, want string) bool {
+	switch typ := schema["type"].(type) {
+	case string:
+		return typ == want
+	case []any:
+		for _, v := range typ {
+			if s, ok := v.(string); ok && s == want {
+				return true
+			}
+		}
+	case []string:
+		for _, s := range typ {
+			if s == want {
+				return true
+			}
+		}
+	}
+	return false
 }

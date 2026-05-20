@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -553,7 +554,7 @@ func requestTools(snap threads.ToolOfferSnapshot) ([]responses.ToolUnionParam, e
 			if err := json.Unmarshal(b, &params); err != nil {
 				return nil, fmt.Errorf("openai tool %q schema: %w", spec.Name, err)
 			}
-			closeObjectSchemas(params)
+			normalizeStrictObjectSchemas(params)
 			f := &responses.FunctionToolParam{Name: spec.Name, Parameters: params, Strict: openaiapi.Bool(true)}
 			if spec.Description != "" {
 				f.Description = openaiapi.String(spec.Description)
@@ -582,21 +583,84 @@ func requestTools(snap threads.ToolOfferSnapshot) ([]responses.ToolUnionParam, e
 	return out, nil
 }
 
-func closeObjectSchemas(v any) {
+func normalizeStrictObjectSchemas(v any) {
 	switch x := v.(type) {
 	case map[string]any:
-		if x["type"] == "object" {
+		if schemaHasType(x, "object") {
 			if _, ok := x["additionalProperties"]; !ok {
 				x["additionalProperties"] = false
 			}
+			if props, ok := x["properties"].(map[string]any); ok && len(props) > 0 {
+				originalRequired := requiredStringSet(x["required"])
+				required := make([]string, 0, len(props))
+				for name, child := range props {
+					required = append(required, name)
+					if _, ok := originalRequired[name]; !ok {
+						allowSchemaNull(child)
+					}
+				}
+				sort.Strings(required)
+				x["required"] = required
+			}
 		}
 		for _, child := range x {
-			closeObjectSchemas(child)
+			normalizeStrictObjectSchemas(child)
 		}
 	case []any:
 		for _, child := range x {
-			closeObjectSchemas(child)
+			normalizeStrictObjectSchemas(child)
 		}
+	}
+}
+
+func schemaHasType(schema map[string]any, want string) bool {
+	switch typ := schema["type"].(type) {
+	case string:
+		return typ == want
+	case []any:
+		for _, v := range typ {
+			if s, ok := v.(string); ok && s == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func requiredStringSet(v any) map[string]struct{} {
+	out := map[string]struct{}{}
+	switch xs := v.(type) {
+	case []any:
+		for _, v := range xs {
+			if s, ok := v.(string); ok {
+				out[s] = struct{}{}
+			}
+		}
+	case []string:
+		for _, s := range xs {
+			out[s] = struct{}{}
+		}
+	}
+	return out
+}
+
+func allowSchemaNull(v any) {
+	schema, ok := v.(map[string]any)
+	if !ok {
+		return
+	}
+	switch typ := schema["type"].(type) {
+	case string:
+		if typ != "null" {
+			schema["type"] = []any{typ, "null"}
+		}
+	case []any:
+		for _, v := range typ {
+			if s, ok := v.(string); ok && s == "null" {
+				return
+			}
+		}
+		schema["type"] = append(typ, "null")
 	}
 }
 
