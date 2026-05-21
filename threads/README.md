@@ -46,6 +46,10 @@ implemented feature overview.
   - request start
   - streamed item appended
   - idle
+  - when a thread is owned by an `EventLoop`, delegate callbacks already run on
+    the event-loop mutation lane; use the supplied `*Thread` directly inside the
+    callback, and use a goroutine for any later `EventLoop.Do` /
+    `Branch.RunOnEventLoop` call
 - Durability support:
   - full thread snapshots
   - append-only WAL diffs
@@ -53,6 +57,15 @@ implemented feature overview.
   - restore from checkpoint alone or checkpoint plus WAL
   - attach-time resume from retained `construct_llm_request` state
   - a file-backed durable store in [`durability`](./durability)
+- Branch storage and branch management:
+  - `BranchStore` creates, opens, lists, deletes, and forks branch-local durable
+    stores
+  - `BranchManager` opens branch refs such as `/branch/<id>` and
+    `/branch/<id>/turn/<n>`
+  - `OpenAsEphemeralCopy` and `OpenAsDurableCopy` create child branches from a
+    head or completed-turn checkpoint
+  - copy opens read the parent without taking a writer lease, so callers can
+    fork from a branch that is already open elsewhere in the process
 - Tool helper packages:
   - [`simpletool`](./simpletool) for small provider/resolver adapters
   - [`tool`](./tool) for catalogs, typed JSON handlers, and result helpers

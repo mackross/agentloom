@@ -44,6 +44,7 @@ type branchOpenConfig struct {
 	copyID           BranchID
 	copyKind         BranchKind
 	withoutEventLoop bool
+	allowUnsafe      bool
 }
 
 // OpenAsDurableCopy makes opening a turn target create a durable child branch with
@@ -70,6 +71,12 @@ func OpenAsEphemeralCopy(id BranchID) BranchOpenOption {
 func OpenWithoutEventLoop() BranchOpenOption {
 	return func(c *branchOpenConfig) {
 		c.withoutEventLoop = true
+	}
+}
+
+func OpenAllowUnsafeRestore() BranchOpenOption {
+	return func(c *branchOpenConfig) {
+		c.allowUnsafe = true
 	}
 }
 
@@ -118,11 +125,35 @@ func (m BranchManager[T]) Open(ctx context.Context, ref T, opts ...BranchOpenOpt
 		}
 	}
 	if target.IsHead() {
-		stored, err := m.Store.OpenBranch(ctx, target.BranchID, BranchOpenOptions{Owner: m.Owner})
+		stored, err := m.Store.OpenBranch(ctx, target.BranchID, BranchOpenOptions{Owner: m.Owner, ReadOnly: cfg.copySet})
 		if err != nil {
 			return nil, err
 		}
-		return loadStoredBranch(stored, RestoreOptions{}, !cfg.withoutEventLoop)
+		if cfg.copySet {
+			parent, err := stored.Load(RestoreOptions{AllowUnsafe: cfg.allowUnsafe})
+			if err != nil {
+				_ = stored.Close()
+				return nil, err
+			}
+			cp, err := parent.Checkpoint(CheckpointOptions{Policy: InflightSkip})
+			if err != nil {
+				_ = parent.Close()
+				return nil, err
+			}
+			childStored, err := m.Store.BranchFromCheckpoint(ctx, stored, BranchFromCheckpointOptions{
+				ID:         cfg.copyID,
+				Kind:       cfg.copyKind,
+				Owner:      m.Owner,
+				Checkpoint: cp,
+			})
+			if err != nil {
+				_ = parent.Close()
+				return nil, err
+			}
+			_ = parent.Close()
+			return loadStoredBranch(childStored, RestoreOptions{AllowUnsafe: cfg.allowUnsafe}, !cfg.withoutEventLoop)
+		}
+		return loadStoredBranch(stored, RestoreOptions{AllowUnsafe: cfg.allowUnsafe}, !cfg.withoutEventLoop)
 	}
 	return m.openTurnTarget(ctx, target, cfg)
 }
@@ -134,7 +165,7 @@ func (m BranchManager[T]) openTurnTarget(ctx context.Context, target BranchTarge
 	if !cfg.copySet {
 		return nil, ErrBranchCopyOptionRequired
 	}
-	parentStored, err := m.Store.OpenBranch(ctx, target.BranchID, BranchOpenOptions{Owner: m.Owner})
+	parentStored, err := m.Store.OpenBranch(ctx, target.BranchID, BranchOpenOptions{Owner: m.Owner, ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}

@@ -371,7 +371,7 @@ func (s *SQLiteBranchStore) OpenBranch(ctx context.Context, id threads.BranchID,
 	if branch, ok := s.openEphemeralBranch(id); ok {
 		return branch, nil
 	}
-	if s.open[id] {
+	if s.open[id] && !opts.ReadOnly {
 		return nil, threads.ErrBranchAlreadyOpen
 	}
 	rec, err := s.GetBranch(ctx, id)
@@ -380,6 +380,9 @@ func (s *SQLiteBranchStore) OpenBranch(ctx context.Context, id threads.BranchID,
 	}
 	if rec.Kind != threads.BranchKindDurable {
 		return nil, threads.ErrInvalidBranchKind
+	}
+	if opts.ReadOnly {
+		return &threads.StoredBranch{Record: rec, Durable: &sqliteDurableStore{store: s, id: id}}, nil
 	}
 	inner, err := s.opts.LeaseManager.AcquireBranchLease(ctx, id, opts.Owner)
 	if err != nil {
@@ -680,12 +683,15 @@ func (s *SQLiteBranchStore) openParentBranch(branch *threads.StoredBranch) (thre
 		}
 		return cloneSQLiteBranchRecord(ephemeral.record), nil
 	}
-	lease, ok := branch.Lease.(*sqliteBranchLease)
-	if !ok || lease == nil || lease.store != s || lease.id != id || lease.closed {
-		return threads.BranchRecord{}, threads.ErrBranchParentRequired
-	}
 	durable, ok := branch.Durable.(*sqliteDurableStore)
 	if !ok || durable == nil || durable.store != s || durable.id != id {
+		return threads.BranchRecord{}, threads.ErrBranchParentRequired
+	}
+	if branch.Lease == nil {
+		return s.GetBranch(context.Background(), id)
+	}
+	lease, ok := branch.Lease.(*sqliteBranchLease)
+	if !ok || lease == nil || lease.store != s || lease.id != id || lease.closed {
 		return threads.BranchRecord{}, threads.ErrBranchParentRequired
 	}
 	s.branchMu.Lock()

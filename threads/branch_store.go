@@ -138,6 +138,10 @@ type BranchOpenOptions struct {
 	// Owner identifies the caller for lease implementations. It is not interpreted
 	// by threads. Ephemeral branches may ignore it.
 	Owner string
+	// ReadOnly opens branch storage without acquiring a writer lease. Read-only
+	// opens are intended for snapshotting/copying; callers must not mutate the
+	// returned Durable store.
+	ReadOnly bool
 }
 
 // BranchCreateOptions controls creating a new root branch.
@@ -264,6 +268,17 @@ func (b *Branch) Record() BranchRecord {
 	return cloneBranchRecord(b.stored.Record)
 }
 
+// StoredBranch returns the opened storage handle backing this live branch.
+// BranchStore.BranchFromCheckpoint needs this exact handle to validate parent
+// ownership, so returning only BranchRecord is not enough for callers that fork
+// an already manager-opened branch.
+func (b *Branch) StoredBranch() *StoredBranch {
+	if b == nil {
+		return nil
+	}
+	return b.stored
+}
+
 func (b *Branch) SetDelegate(d ThreadDelegate) {
 	if b == nil {
 		return
@@ -317,6 +332,15 @@ func (b *Branch) OnThreadIdle(t *Thread) {
 func (b *Branch) OnThreadRequest(t *Thread) {
 	if b != nil && b.delegate != nil {
 		b.delegate.OnThreadRequest(t)
+	}
+}
+
+func (b *Branch) OnThreadStreamItemAppended(t *Thread, item Item) {
+	if b == nil || b.delegate == nil {
+		return
+	}
+	if d, ok := b.delegate.(ThreadStreamItemAppendedDelegate); ok {
+		d.OnThreadStreamItemAppended(t, item)
 	}
 }
 

@@ -396,11 +396,23 @@ type stateObserver interface {
 	OnControlBlockStateChange(t *Thread, from, to State) error
 }
 
+// ThreadDelegate observes thread lifecycle events.
+//
+// If the Thread is owned by an EventLoop, delegate methods are called while the
+// event loop is already executing on the thread mutation lane. Delegate
+// implementations may use the supplied *Thread directly for immediate
+// inspection/mutation. They must not synchronously call EventLoop.Do or
+// Branch.RunOnEventLoop for the same thread from inside the callback; doing so
+// waits for the current callback to return and can deadlock. If a delegate needs
+// to schedule follow-up work through the event loop, start a goroutine and call
+// EventLoop.Do/Branch.RunOnEventLoop from there after the callback returns.
 type ThreadDelegate interface {
 	OnThreadIdle(t *Thread)
 	OnThreadRequest(t *Thread)
 }
 
+// ThreadStreamItemAppendedDelegate observes stream items as they are appended.
+// The same event-loop callback rules described on ThreadDelegate apply.
 type ThreadStreamItemAppendedDelegate interface {
 	OnThreadStreamItemAppended(t *Thread, item Item)
 }

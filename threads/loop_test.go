@@ -123,3 +123,4 @@ func TestEventLoopDoPanicsWithNilFunc(t *testing.T) {
 		t.Fatalf("unexpected error before panic: %v", err)
 	}
 }
+

@@ -70,7 +70,7 @@ func (s *MemoryBranchStore) CreateBranch(ctx context.Context, opts BranchCreateO
 	}
 	s.records[id] = cloneBranchRecord(rec)
 	s.stores[id] = NewMemoryDurableStore(cp)
-	return s.branchLocked(rec, opts.Owner)
+	return s.branchLocked(rec, opts.Owner, false)
 }
 
 func (s *MemoryBranchStore) OpenBranch(ctx context.Context, id BranchID, opts BranchOpenOptions) (*StoredBranch, error) {
@@ -83,7 +83,7 @@ func (s *MemoryBranchStore) OpenBranch(ctx context.Context, id BranchID, opts Br
 	if !ok {
 		return nil, ErrBranchNotFound
 	}
-	return s.branchLocked(rec, opts.Owner)
+	return s.branchLocked(rec, opts.Owner, opts.ReadOnly)
 }
 
 func (s *MemoryBranchStore) BranchFromCheckpoint(ctx context.Context, parent *StoredBranch, opts BranchFromCheckpointOptions) (*StoredBranch, error) {
@@ -124,7 +124,7 @@ func (s *MemoryBranchStore) BranchFromCheckpoint(ctx context.Context, parent *St
 	}
 	s.records[id] = cloneBranchRecord(rec)
 	s.stores[id] = NewMemoryDurableStore(opts.Checkpoint)
-	return s.branchLocked(rec, opts.Owner)
+	return s.branchLocked(rec, opts.Owner, false)
 }
 
 func (s *MemoryBranchStore) GetBranch(ctx context.Context, id BranchID) (BranchRecord, error) {
@@ -193,13 +193,13 @@ func (s *MemoryBranchStore) DeleteBranch(ctx context.Context, id BranchID) error
 	return nil
 }
 
-func (s *MemoryBranchStore) branchLocked(rec BranchRecord, _ string) (*StoredBranch, error) {
+func (s *MemoryBranchStore) branchLocked(rec BranchRecord, _ string, readOnly bool) (*StoredBranch, error) {
 	store := s.stores[rec.ID]
 	if store == nil {
 		return nil, ErrBranchNotFound
 	}
 	var lease BranchLease
-	if normalizeBranchKind(rec.Kind) == BranchKindDurable {
+	if normalizeBranchKind(rec.Kind) == BranchKindDurable && !readOnly {
 		if s.open[rec.ID] {
 			return nil, ErrBranchAlreadyOpen
 		}

@@ -62,6 +62,19 @@ Implementers of `DurableStore` are expected to:
 - make `ReplaceSnapshot` atomically replace base snapshot and clear prior WAL tail for that base
 - make `AppendWALDiff` append-only (no rewrite of existing WAL history)
 
+## Branch Copying
+
+`BranchManager` can open branch refs as durable or ephemeral copies with
+`OpenAsDurableCopy` and `OpenAsEphemeralCopy`. Copy opens are read-only with
+respect to the parent branch: the manager opens the parent without acquiring a
+writer lease, snapshots either the branch head or the selected completed turn,
+and creates a child branch from that materialized checkpoint. This allows a
+caller to fork from a branch that is already open for writing elsewhere.
+
+The returned child branch is a normal opened branch. Ephemeral children are
+process-local and do not require a lease; durable children acquire their own
+writer lease.
+
 ## Crash Window Expectations
 
 Behavior after abrupt termination depends on the last persisted point:

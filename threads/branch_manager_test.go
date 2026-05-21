@@ -107,6 +107,51 @@ func TestStoredBranchLoadAndBranchManagerOpen(t *testing.T) {
 	if len(turns) != 1 || turns[0].Text() != "hello" {
 		t.Fatalf("turn target turns = %#v, want just user hello", turns)
 	}
+
+	headCopy, err := manager.Open(ctx, "root", OpenAsEphemeralCopy("head-copy"), OpenWithoutEventLoop())
+	if err != nil {
+		t.Fatalf("Open head copy: %v", err)
+	}
+	defer headCopy.Close()
+	if headCopy.Record().Kind != BranchKindEphemeral {
+		t.Fatalf("head copy kind = %q, want ephemeral", headCopy.Record().Kind)
+	}
+	if headCopy.ID() != "head-copy" {
+		t.Fatalf("head copy ID = %q, want head-copy", headCopy.ID())
+	}
+	if headCopy.Record().ParentID() != "root" {
+		t.Fatalf("head copy parent = %q, want root", headCopy.Record().ParentID())
+	}
+	turns = headCopy.CompletedTurns()
+	if len(turns) != 2 || turns[0].Text() != "hello" || turns[1].Text() != "hi" {
+		t.Fatalf("head copy turns = %#v, want full head", turns)
+	}
+}
+
+func TestBranchManagerOpenAsCopyDoesNotRequireParentLease(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryBranchStore()
+	root, err := store.CreateBranch(ctx, BranchCreateOptions{ID: "root"})
+	if err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+	thread := New()
+	thread.QueueItem(UserText("hello"))
+	cp, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
+	if err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	root.Durable.ReplaceSnapshot(cp)
+
+	manager := NewDefaultBranchManager(store, "test")
+	copy, err := manager.Open(ctx, "/branch/root", OpenAsEphemeralCopy("copy"), OpenWithoutEventLoop())
+	if err != nil {
+		t.Fatalf("OpenAsEphemeralCopy while parent open: %v", err)
+	}
+	defer copy.Close()
+	if copy.Record().Kind != BranchKindEphemeral || copy.Record().ParentID() != "root" {
+		t.Fatalf("copy record = %#v", copy.Record())
+	}
 }
 
 func TestDefaultBranchTargetCodec(t *testing.T) {
@@ -158,6 +203,49 @@ func TestBranchWaitUntilIdleAlreadyIdle(t *testing.T) {
 	defer branch.Close()
 	if err := branch.WaitUntilIdle(ctx); err != nil {
 		t.Fatalf("WaitUntilIdle: %v", err)
+	}
+}
+
+func TestBranchSetDelegateForwardsStreamItems(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryBranchStore()
+	stored, err := store.CreateBranch(ctx, BranchCreateOptions{ID: "stream-forward"})
+	if err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+	if err := stored.Close(); err != nil {
+		t.Fatalf("Close stored: %v", err)
+	}
+
+	branch, err := NewDefaultBranchManager(store, "test").Open(ctx, "/branch/stream-forward")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer branch.Close()
+
+	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
+		b.Emit(AssistantText("hello"))
+	})
+	var streamed []Item
+	branch.SetDelegate(ThreadDelegateFuncs{
+		OnStreamItemAppended: func(_ *Thread, item Item) {
+			streamed = append(streamed, item)
+		},
+	})
+	if err := branch.RunOnEventLoop(ctx, func(thread *Thread) error {
+		thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
+		thread.QueueItem(UserText("hi"))
+		thread.QueueItem(SendItem{})
+		return nil
+	}); err != nil {
+		t.Fatalf("RunOnEventLoop: %v", err)
+	}
+	if err := branch.WaitUntilIdle(ctx); err != nil {
+		t.Fatalf("WaitUntilIdle: %v", err)
+	}
+	text, ok := streamed[0].(AssistantText)
+	if len(streamed) != 1 || !ok || string(text) != "hello" {
+		t.Fatalf("streamed = %#v, want assistant text hello", streamed)
 	}
 }
 

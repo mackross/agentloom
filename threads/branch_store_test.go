@@ -192,3 +192,40 @@ func TestMemoryBranchStoreErrorsAndLeaseCloseIdempotent(t *testing.T) {
 		t.Fatalf("DeleteBranch missing err = %v, want ErrBranchNotFound", err)
 	}
 }
+
+func TestBranchManagerOpenedBranchCanForkCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryBranchStore()
+	root, err := store.CreateBranch(ctx, BranchCreateOptions{ID: "root", Owner: "test"})
+	if err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	thread := New()
+	thread.QueueItem(UserText("base"))
+	cp, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
+	if err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	root.Durable.ReplaceSnapshot(cp)
+	if err := root.Close(); err != nil {
+		t.Fatalf("close root: %v", err)
+	}
+
+	manager := NewDefaultBranchManager(store, "test")
+	opened, err := manager.Open(ctx, "/branch/root", OpenWithoutEventLoop())
+	if err != nil {
+		t.Fatalf("open root through manager: %v", err)
+	}
+	defer opened.Close()
+	child, err := store.BranchFromCheckpoint(ctx, opened.StoredBranch(), BranchFromCheckpointOptions{
+		ID:         "child",
+		Kind:       BranchKindEphemeral,
+		Checkpoint: cp,
+	})
+	if err != nil {
+		t.Fatalf("fork child from manager-opened branch: %v", err)
+	}
+	if child.Record.ParentID() != "root" {
+		t.Fatalf("child parent = %q, want root", child.Record.ParentID())
+	}
+}
