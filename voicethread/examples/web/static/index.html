@@ -3,47 +3,35 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Agentloom OpenAI Realtime Voice Spike</title>
+  <title>Agentloom OpenAI Realtime WebRTC Sideband Spike</title>
   <style>
     body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 900px; }
     button { margin: 0.25rem; padding: 0.5rem 0.75rem; }
     input { padding: 0.5rem; min-width: 24rem; }
     #log { margin-top: 1rem; padding: 1rem; background: #111; color: #eee; min-height: 20rem; white-space: pre-wrap; overflow-wrap: anywhere; }
     .status { margin: 0.75rem 0; font-weight: 600; }
-    #metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.5rem; margin: 1rem 0; }
-    .metric { padding: 0.6rem; border: 1px solid #ddd; border-radius: 0.5rem; background: #fafafa; }
-    .metric .label { color: #666; font-size: 0.85rem; }
-    .metric .value { font-size: 1.25rem; font-weight: 700; }
+    .note { padding: 0.75rem; border: 1px solid #ddd; border-radius: 0.5rem; background: #fafafa; }
   </style>
 </head>
 <body>
-  <h1>Agentloom OpenAI Realtime Voice Spike</h1>
-  <p>Run with <code>OPENAI_API_KEY</code>, then connect. The browser sends microphone PCM16/24k via AudioWorklet to this Go server.</p>
+  <h1>Agentloom OpenAI Realtime WebRTC Sideband Spike</h1>
+  <p class="note">
+    Browser media goes directly to OpenAI over WebRTC using an ephemeral key. The Go server owns the API key,
+    joins the same call by <code>call_id</code> over the Realtime sideband WebSocket, and sends the real
+    instructions/tools via <code>session.update</code>.
+  </p>
 
   <div>
-    <button id="connect">Connect</button>
-    <button id="mic" disabled>Start Mic</button>
-    <button id="commit" disabled>Commit Audio</button>
-    <button id="interrupt" disabled>Interrupt</button>
-    <button id="summary" disabled>Summarize Since Last</button>
+    <button id="connect">Connect WebRTC</button>
+    <button id="disconnect" disabled>Disconnect</button>
+    <button id="cancel" disabled>Server Cancel</button>
   </div>
   <div>
-    <input id="text" placeholder="Or type a message" />
+    <input id="text" placeholder="Type a message over the WebRTC data channel" />
     <button id="sendText" disabled>Send Text</button>
   </div>
   <div class="status" id="status">disconnected</div>
-  <div id="metrics">
-    <div class="metric"><div class="label">Browser ↔ server RTT</div><div class="value" id="metric-rtt">—</div></div>
-    <div class="metric"><div class="label">Mic chunks sent</div><div class="value" id="metric-audio-chunks">0</div></div>
-    <div class="metric"><div class="label">VAD speech start</div><div class="value" id="metric-vad-start">—</div></div>
-    <div class="metric"><div class="label">Speech stop → response</div><div class="value" id="metric-stop-response">—</div></div>
-    <div class="metric"><div class="label">Response → first audio</div><div class="value" id="metric-response-audio">—</div></div>
-    <div class="metric"><div class="label">Speech stop → first audio</div><div class="value" id="metric-stop-audio">—</div></div>
-    <div class="metric"><div class="label">Playback queue</div><div class="value" id="metric-playback-queue">—</div></div>
-    <div class="metric"><div class="label">Last event age</div><div class="value" id="metric-event-age">—</div></div>
-  </div>
-  <h2>Running summary</h2>
-  <div id="summaryBox" style="padding: 1rem; border: 1px solid #ddd; border-radius: 0.5rem; min-height: 5rem; white-space: pre-wrap;"></div>
+  <audio id="remoteAudio" autoplay></audio>
   <div id="log"></div>
 
   <script src="/static/app.js"></script>
