@@ -43,7 +43,7 @@ func realtimeURL(opts Options) (string, error) {
 		return "", err
 	}
 	q := u.Query()
-	if q.Get("call_id") == "" && q.Get("model") == "" {
+	if q.Get("model") == "" {
 		q.Set("model", opts.Model)
 	}
 	u.RawQuery = q.Encode()

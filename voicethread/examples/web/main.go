@@ -1,19 +1,17 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/mackross/agentloom/threads"
 	"github.com/mackross/agentloom/threads/tool"
 	"github.com/mackross/agentloom/voicethread"
@@ -22,39 +20,27 @@ import (
 //go:embed static/*
 var staticFS embed.FS
 
-type sessionRequest struct {
-	Voice string `json:"voice,omitempty"`
+type clientMessage struct {
+	Type         string `json:"type"`
+	Data         string `json:"data,omitempty"`
+	Text         string `json:"text,omitempty"`
+	ItemID       string `json:"item_id,omitempty"`
+	ContentIndex *int   `json:"content_index,omitempty"`
+	AudioEndMS   int    `json:"audio_end_ms,omitempty"`
+	ClientTimeMS int64  `json:"client_time_ms,omitempty"`
 }
-
-type clientSecretRequest struct {
-	Session realtimeSessionConfig `json:"session"`
-}
-
-type realtimeSessionConfig struct {
-	Type  string `json:"type"`
-	Model string `json:"model"`
-}
-
-type sidebandRequest struct {
-	CallID string `json:"call_id"`
-}
-
-var sidebands = struct {
-	sync.Mutex
-	sessions map[string]*voicethread.VoiceSession
-}{sessions: map[string]*voicethread.VoiceSession{}}
 
 func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", serveIndex)
 	mux.Handle("/static/", noStore(http.FileServer(http.FS(staticFS))))
-	mux.HandleFunc("/session", serveSession)
-	mux.HandleFunc("/sideband", serveSideband)
-	mux.HandleFunc("/cancel", serveCancel)
-	mux.HandleFunc("/log", serveBrowserLog)
+	mux.HandleFunc("/voice", serveVoice)
 
-	addr := envDefault("ADDR", ":8080")
-	log.Printf("WebRTC sideband voice example listening on http://localhost%s", addr)
+	addr := ":8080"
+	if v := os.Getenv("ADDR"); v != "" {
+		addr = v
+	}
+	log.Printf("voice example listening on http://localhost%s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
 
@@ -73,132 +59,138 @@ func serveIndex(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
-func serveSession(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+func serveVoice(w http.ResponseWriter, r *http.Request) {
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		log.Printf("accept websocket: %v", err)
 		return
 	}
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" {
-		http.Error(w, "set OPENAI_API_KEY before running the example", http.StatusInternalServerError)
-		return
-	}
-	var req sessionRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Keep the browser's ephemeral session intentionally minimal. The Go sideband
-	// connection joins by call_id and sends the real instructions/tools via
-	// session.update, so business logic stays server-controlled.
-	body := clientSecretRequest{Session: realtimeSessionConfig{
-		Type:  "realtime",
-		Model: envDefault("OPENAI_REALTIME_MODEL", "gpt-realtime-2"),
-	}}
-	b, err := json.Marshal(body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	ctx := r.Context()
+	var writeMu sync.Mutex
+	writeEvent := func(ev voicethread.Event) {
+		if ev.ServerTimeMS == 0 {
+			ev.ServerTimeMS = time.Now().UnixMilli()
+		}
+		logVoiceEvent(ev)
+		b, err := json.Marshal(ev)
+		if err != nil {
+			log.Printf("marshal event: %v", err)
+			return
+		}
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if err := conn.Write(ctx, websocket.MessageText, b); err != nil {
+			log.Printf("write browser websocket: %v", err)
+		}
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	reqOpenAI, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.openai.com/v1/realtime/client_secrets", bytes.NewReader(b))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+
+	var session *voicethread.VoiceSession
+	defer func() {
+		if session != nil {
+			_ = session.Close()
+		}
+	}()
+
+	writeEvent(voicethread.Event{Type: "browser.connected"})
+	for {
+		_, b, err := conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		var msg clientMessage
+		if err := json.Unmarshal(b, &msg); err != nil {
+			writeEvent(voicethread.Event{Type: "error", Message: "bad browser message: " + err.Error()})
+			continue
+		}
+		switch msg.Type {
+		case "start":
+			if session != nil {
+				writeEvent(voicethread.Event{Type: "debug", Message: "session already started"})
+				continue
+			}
+			apiKey := os.Getenv("OPENAI_API_KEY")
+			if apiKey == "" {
+				writeEvent(voicethread.Event{Type: "error", Message: "set OPENAI_API_KEY before running the example"})
+				continue
+			}
+			session = voicethread.New(voicethread.Options{
+				APIKey:                apiKey,
+				Model:                 envDefault("OPENAI_REALTIME_MODEL", "gpt-realtime-2"),
+				Voice:                 envDefault("OPENAI_REALTIME_VOICE", "marin"),
+				TranscriptionLanguage: "en",
+				Instructions:          "You are a concise voice assistant. You can use tools for time and echo. Speak naturally and briefly.",
+				ToolRuntime:           voicethread.NewCatalogRuntime(exampleTools()),
+				OnEvent:               writeEvent,
+			})
+			if err := session.Start(ctx); err != nil {
+				writeEvent(voicethread.Event{Type: "error", Message: err.Error()})
+				_ = session.Close()
+				session = nil
+			}
+		case "audio":
+			if session != nil && msg.Data != "" {
+				if err := session.AppendAudio(ctx, msg.Data); err != nil {
+					writeEvent(voicethread.Event{Type: "error", Message: err.Error()})
+				}
+			}
+		case "commit":
+			if session != nil {
+				if err := session.CommitAudio(ctx); err != nil {
+					writeEvent(voicethread.Event{Type: "error", Message: err.Error()})
+				}
+			}
+		case "text":
+			if session != nil && msg.Text != "" {
+				if err := session.SendText(ctx, msg.Text); err != nil {
+					writeEvent(voicethread.Event{Type: "error", Message: err.Error()})
+				}
+			}
+		case "summary":
+			if session != nil {
+				if err := session.SummarizeSinceLast(ctx); err != nil {
+					writeEvent(voicethread.Event{Type: "error", Message: err.Error()})
+				}
+			}
+		case "interrupt":
+			if session != nil {
+				if msg.ItemID != "" && msg.ContentIndex != nil {
+					log.Printf("browser interrupt truncate item_id=%q content_index=%d audio_end_ms=%d", msg.ItemID, *msg.ContentIndex, msg.AudioEndMS)
+					if err := session.TruncateAssistantAudio(ctx, msg.ItemID, *msg.ContentIndex, msg.AudioEndMS); err != nil {
+						writeEvent(voicethread.Event{Type: "error", Message: err.Error()})
+					}
+				}
+				if err := session.Interrupt(ctx); err != nil {
+					writeEvent(voicethread.Event{Type: "error", Message: err.Error()})
+				}
+			}
+		case "truncate":
+			if session != nil && msg.ItemID != "" && msg.ContentIndex != nil {
+				log.Printf("browser truncate item_id=%q content_index=%d audio_end_ms=%d", msg.ItemID, *msg.ContentIndex, msg.AudioEndMS)
+				if err := session.TruncateAssistantAudio(ctx, msg.ItemID, *msg.ContentIndex, msg.AudioEndMS); err != nil {
+					writeEvent(voicethread.Event{Type: "error", Message: err.Error()})
+				}
+			}
+		case "browser.log":
+			log.Printf("browser log: %s", msg.Text)
+		case "ping":
+			writeEvent(voicethread.Event{
+				Type:         "pong",
+				ClientTimeMS: msg.ClientTimeMS,
+				ServerTimeMS: time.Now().UnixMilli(),
+			})
+		default:
+			writeEvent(voicethread.Event{Type: "error", Message: "unknown browser message type: " + msg.Type})
+		}
 	}
-	reqOpenAI.Header.Set("Authorization", "Bearer "+apiKey)
-	reqOpenAI.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(reqOpenAI)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		log.Printf("client_secrets failed status=%d body=%s", resp.StatusCode, truncate(string(respBody), 2000))
-		http.Error(w, string(respBody), resp.StatusCode)
-		return
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(respBody)
 }
 
-func serveSideband(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" {
-		http.Error(w, "set OPENAI_API_KEY before running the example", http.StatusInternalServerError)
-		return
-	}
-	var req sidebandRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CallID == "" {
-		http.Error(w, "missing call_id", http.StatusBadRequest)
-		return
-	}
-	sidebands.Lock()
-	if existing := sidebands.sessions[req.CallID]; existing != nil {
-		sidebands.Unlock()
-		_ = existing.Close()
-	} else {
-		sidebands.Unlock()
-	}
-
-	session := voicethread.New(voicethread.Options{
-		APIKey:                apiKey,
-		BaseURL:               "wss://api.openai.com/v1/realtime?call_id=" + url.QueryEscape(req.CallID),
-		Model:                 envDefault("OPENAI_REALTIME_MODEL", "gpt-realtime-2"),
-		Voice:                 envDefault("OPENAI_REALTIME_VOICE", "marin"),
-		TranscriptionLanguage: "en",
-		Instructions:          "You are a concise voice assistant. You can use tools for time and echo. Speak naturally and briefly.",
-		ToolRuntime:           voicethread.NewCatalogRuntime(exampleTools()),
-		OnEvent:               logVoiceEvent,
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
 	})
-	if err := session.Start(r.Context()); err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	sidebands.Lock()
-	sidebands.sessions[req.CallID] = session
-	sidebands.Unlock()
-	log.Printf("sideband connected call_id=%s", req.CallID)
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"ok":true}`))
-}
-
-func serveCancel(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var req sidebandRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	sidebands.Lock()
-	session := sidebands.sessions[req.CallID]
-	sidebands.Unlock()
-	if session == nil {
-		http.Error(w, "unknown call_id", http.StatusNotFound)
-		return
-	}
-	if err := session.Interrupt(r.Context()); err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func serveBrowserLog(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	defer r.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(r.Body, 4096))
-	log.Printf("browser log: %s", truncate(string(b), 4000))
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func exampleTools() *tool.Catalog {
@@ -218,6 +210,13 @@ func exampleTools() *tool.Catalog {
 	catalog.Add(echoSpec, echoHandler)
 
 	return catalog
+}
+
+func envDefault(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func logVoiceEvent(ev voicethread.Event) {
@@ -246,20 +245,6 @@ func logVoiceEvent(ev voicethread.Event) {
 		ev.ResponseID,
 		raw,
 	)
-}
-
-func noStore(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		next.ServeHTTP(w, r)
-	})
-}
-
-func envDefault(name, fallback string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	return fallback
 }
 
 func truncate(s string, n int) string {
