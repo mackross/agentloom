@@ -250,7 +250,7 @@ type awaitingToolResultsState cbState
 
 func (s awaitingToolResultsState) QueueItem(items cbItems, v Item) cbTransition {
 	cb := s.controlBlock
-	if _, ok := v.(ToolCallResultable); ok && cb.queueToolResultBeforeBlockedSend(items, v) {
+	if _, ok := v.(ToolCallResult); ok && cb.queueToolResultBeforeBlockedSend(items, v) {
 		return cbTransition{From: cb.state, To: cb.state, Changed: false}
 	}
 	return queueItemTransition(cb, items, v)
@@ -481,8 +481,8 @@ func (cb *controlBlock) hasPendingToolCallsThrough(end *item[Item], items cbItem
 			if v.CallID != "" {
 				pending[v.CallID] = true
 			}
-		case ToolCallResultable:
-			delete(pending, v.ToolCallID())
+		case ToolCallResult:
+			delete(pending, v.CallID)
 		}
 		if n == end {
 			break
@@ -553,10 +553,10 @@ func (cb *controlBlock) pendingToolCalls(items cbItems) []pendingToolCall {
 				pending[i].recovery = v.Recovery
 				pending[i].continueMode = v.Continue
 			}
-		case ToolCallResultable:
-			if i, ok := pendingByID[v.ToolCallID()]; ok {
+		case ToolCallResult:
+			if i, ok := pendingByID[v.CallID]; ok {
 				pending[i].call = ToolCall{}
-				delete(pendingByID, v.ToolCallID())
+				delete(pendingByID, v.CallID)
 			}
 		}
 		if n == cb.ip {

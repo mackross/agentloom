@@ -40,7 +40,7 @@ A tool call has four important durable states:
   - no tool result exists
   - recovery must use started-tool policy
 - completed
-  - a matching `ToolCallResultable` item exists
+  - a matching `ToolCallResult` item exists
   - the tool is no longer outstanding
 
 The key distinction is requested versus resolving/started. If only `ToolCall` is
@@ -151,11 +151,11 @@ Why this exists:
 
 `Items` are the durable thread outcome of the dispatch.
 
-The normal item is `ToolCallResult` or another `ToolCallResultable` value. A
-resultable item with automatic continuation queues a follow-up model request.
+The normal item is `ToolCallResult`. A result item with automatic continuation
+queues a follow-up model request.
 
-Other items are possible, but consumers should prefer resultable items for normal
-tool execution because they preserve the model-visible call/result relationship.
+Other items are possible, but consumers should prefer `ToolCallResult` for normal
+tool execution because it preserves the model-visible call/result relationship.
 
 Rules:
 
@@ -371,7 +371,7 @@ Caveat:
 - there is not yet a complete public async completion or late-result policy
 - consumers should avoid relying on this as a finished async API
 
-If an external completion later queues a matching `ToolCallResultable` through
+If an external completion later queues a matching `ToolCallResult` through
 `Thread.QueueItem`, the thread uses the `Continue` mode persisted on
 `ToolCallStarted`: automatic continuation queues a follow-up `SendItem{}` when no
 send is already pending, while `ToolContinueManual` records the result without

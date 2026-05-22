@@ -3,8 +3,8 @@
 // It includes JSON, text, regexp, and Lark payload helpers.
 //
 // TODO: Decide whether Handler/ReturnItem should accept any Item or only
-// threads.ToolCallResultable values. ToolDispatch supports arbitrary Items, but
-// a normal tool handler must eventually produce a call result to complete the
+// threads.ToolCallResult values. ToolDispatch supports arbitrary Items, but a
+// normal tool handler must eventually produce a call result to complete the
 // pending ToolCall; a result-only API may be simpler and safer.
 //
 // TODO: Make Catalog a complete easy-path tool surface by adding a provider /

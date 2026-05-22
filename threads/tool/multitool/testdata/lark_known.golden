@@ -1,0 +1,9 @@
+SETUP: multitool.setupView{Name:"multi", Description:"Stable multitool for tests.", Mode:"lark", CommandDescription:"Command line for tests.", InputDescription:"Input body for tests.", Required:false}
+CONFIG: multitool.configView{Subtools:[]multitool.subtoolSpecView{multitool.subtoolSpecView{Command:"echo", Description:"echoes parsed input", Usage:"[--upper] <label>"}, multitool.subtoolSpecView{Command:"count", Description:"counts input bytes", Usage:""}}, Fallback:"default"}
+SNAPSHOT: offered=1 name="multi" description="Stable multitool for tests." payload=threads.ToolPayloadLark required=false handlers=1
+
+CASE known command
+payload: "echo --upper 'two words'\n\nhello world"
+started: true items: 1
+result call_id="call-1":
+command="echo" args=[]string{"--upper", "two words"} input="hello world"

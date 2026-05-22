@@ -391,8 +391,8 @@ func requestMessages(req threads.Req) ([]openaiapi.ChatCompletionMessageParamUni
 			out = append(out, openaiapi.AssistantMessage(string(v)))
 		case threads.ToolCall:
 			out = append(out, assistantToolCallMessage(v))
-		case threads.ToolCallResultable:
-			out = append(out, openaiapi.ToolMessage(v.ToolOutput(), v.ToolCallID()))
+		case threads.ToolCallResult:
+			out = append(out, openaiapi.ToolMessage(v.Output, v.CallID))
 		default:
 			return nil, fmt.Errorf("cerebras request item not supported: %T", item)
 		}

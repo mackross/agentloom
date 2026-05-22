@@ -74,6 +74,28 @@ type ToolCallResult struct {
 
 	// Data is for storing structured data for things like UI and debugging.
 	Data map[string]any
+
+	// SafeRollback permits capable request builders to hide this tool call/result
+	// and retry from a safe assistant prefix when doing so will not remove
+	// unrelated tool calls.
+	SafeRollback *ToolCallSafeRollback
+}
+
+// ToolCallSafeRollback marks a model-correctable failed tool result where the
+// next request may retry from immediately before the failed call. Presence of
+// this value grants permission to attempt rollback; the request builder must
+// still prove rollback is safe for the current transcript projection.
+//
+// SteeringHint is inserted as-is as user text at the retry point. Callers
+// should make it distinguishable from ordinary user intent, for example with XML
+// such as:
+//
+//	<tool_call_hint tool="search">Retry with valid JSON.</tool_call_hint>
+//
+// The hint is ephemeral: after a successful retry it disappears from future
+// requests, so it should favor clarity and completeness over brevity.
+type ToolCallSafeRollback struct {
+	SteeringHint string `json:"steering_hint,omitempty"`
 }
 
 // ToolsSnapshot is the durable helper boundary for tool routing.
@@ -96,9 +118,5 @@ func (ToolCall) Emit() bool                       { return true }
 func (ToolCallResolving) Emit() bool              { return false }
 func (ToolCallStarted) Emit() bool                { return false }
 func (ToolCallResult) Emit() bool                 { return true }
-func (r ToolCallResult) ToolCallID() string       { return r.CallID }
-func (r ToolCallResult) ToolOutput() string       { return r.Output }
-func (r ToolCallResult) ToolData() map[string]any { return cloneData(r.Data) }
-func (r ToolCallResult) ToolRecovered() bool      { return r.Recovered }
 func (ToolsSnapshot) Emit() bool                  { return false }
 func (SendItem) Emit() bool                       { return false }

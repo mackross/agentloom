@@ -23,8 +23,8 @@ func toolLifecycleTypes(thread *Thread, callID string) []string {
 			if v.CallID == callID {
 				out = append(out, "tool_call_started")
 			}
-		case ToolCallResultable:
-			if v.ToolCallID() == callID {
+		case ToolCallResult:
+			if v.CallID == callID {
 				out = append(out, "tool_result")
 			}
 		}

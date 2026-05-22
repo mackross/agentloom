@@ -222,6 +222,43 @@ func TestSnapshotRoundTripRestoresToolResultItemsAsCanonicalThreadBlocks(t *test
 	}
 }
 
+func TestWALReplayPreservesRollbackableToolResult(t *testing.T) {
+	const hint = `<tool_call_hint tool="calc">Retry with valid JSON.</tool_call_hint>`
+
+	thread := New()
+	thread.QueueItem(ToolCallResult{
+		CallID: "c1",
+		Output: "invalid JSON",
+		SafeRollback: &ToolCallSafeRollback{
+			SteeringHint: hint,
+		},
+	})
+
+	events := thread.WALAfter(0)
+	if len(events) != 1 {
+		t.Fatalf("expected one WAL event, got %#v", events)
+	}
+	if got := events[0].Item; got.SafeRollback == nil || got.SafeRollback.SteeringHint != hint {
+		t.Fatalf("WAL item lost rollback metadata: %#v", got)
+	}
+
+	restored := New()
+	if err := restored.ReplayWAL(events); err != nil {
+		t.Fatalf("replay WAL: %v", err)
+	}
+	items := restored.items.Slice()
+	if len(items) != 1 {
+		t.Fatalf("expected one restored item, got %#v", items)
+	}
+	got, ok := items[0].(ToolCallResult)
+	if !ok {
+		t.Fatalf("expected ToolCallResult, got %T", items[0])
+	}
+	if got.SafeRollback == nil || got.SafeRollback.SteeringHint != hint {
+		t.Fatalf("restored result lost rollback metadata: %#v", got)
+	}
+}
+
 func snapshotThread(t *Thread) threadSnapshot {
 	index := map[*item[Item]]int{}
 	items := make([]Item, 0)

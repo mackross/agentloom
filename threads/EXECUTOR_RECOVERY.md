@@ -29,22 +29,26 @@ What has already landed since the first draft:
 
 What is still missing:
 
-- `SetExecutor(...)` attach/recovery semantics
-- recovery policy selection and application
-- rollback operations for retained thread history/state
+- automatic `SetExecutor(...)` attach/recovery semantics
+- general recovery policy selection and application
+- general rollback operations for retained thread history/state
 - live cancellation when replacing an executor on an active thread
-- recovery behavior for started-but-unfinished tools
-- a late-result policy for tool work that finishes after recovery has already
-  canceled that call
+- safe retry / cancel-unsafe recovery behavior for started-but-unfinished tools
+- a rich late-result conflict policy for tool work that finishes after recovery
+  has already canceled that call
 
 Important current mismatch with the target design:
 
 - `SetExecutor(...)` only assigns the executor field today
 - `RestoreFromCheckpointAndWAL(...)` still trims an unsafe inflight tail by default
-- outstanding started tool calls are detectable but are not retried, canceled, or
-  converted into recovery results
-- durable `ToolDispatch` recovery metadata is recorded, but no attach-time policy
-  consumes it yet
+- `AttachExecutorForRecoveryWithOptions(...)` is the explicit recovery attach API
+  today; it is not automatically invoked by `SetExecutor(...)`
+- outstanding resolving/started tool calls are detectable and can be converted
+  into recovered status results with `ToolCallRecoveryCancelAll`, but safe retry
+  and cancel-unsafe modes are still not implemented
+- durable `ToolDispatch` recovery metadata is recorded and used only by the
+  current recovered status text path; there is no full attach-time policy engine
+  yet
 
 ## Current Model
 
@@ -59,6 +63,7 @@ Today the relevant pieces are:
   - tracks `IP`
   - tracks thread state:
     - `idle`
+    - `awaiting_tool_results`
     - `construct_llm_request`
     - `receiving_stream`
     - `stream_complete`
@@ -167,10 +172,20 @@ Current status:
 
 - partially implemented
 - today `SetExecutor` only stores the executor reference
-- `AttachExecutorForRecovery(...)` can resume retained `construct_llm_request`
-  state when there are no outstanding started tool calls
-- attaching an executor to later inflight states still does not inspect state,
-  choose policy, or resume anything
+- `AttachExecutorForRecovery(...)` / `AttachExecutorForRecoveryWithOptions(...)`
+  are the explicit recovery attach entry points
+- recovery attach accepts `idle`, `awaiting_tool_results`,
+  `construct_llm_request`, and `receiving_stream`; it normalizes
+  `stream_complete` to `idle`
+- recovery attach can resume retained `construct_llm_request` state when there
+  are no outstanding resolving/started tool calls
+- recovery attach can handle `receiving_stream` by failing closed, rolling back
+  the interrupted stream tail and retrying, or keeping an assistant prefix and
+  dropping later tool-call stream material, depending on
+  `ToolChunkRecoveryPolicy` and `AssistantPrefix`
+- recovery attach can append recovered status results for outstanding
+  resolving/started calls with `ToolCallRecoveryCancelAll`
+- recovery attach still does not implement safe retry or cancel-unsafe policy
 - replacing an executor on a live thread does not cancel the prior request
 
 ### Internal Note
@@ -208,7 +223,9 @@ Current status:
 
 - not implemented
 - there is no recovery policy type
-- there is no rollback or cancellation-result API on `Thread`
+- there is no general public rollback API on `Thread`
+- cancellation/status results exist only as internal recovery-attach behavior for
+  `ToolCallRecoveryCancelAll`
 
 ## Streamer Capability Boundary
 
@@ -229,7 +246,9 @@ Current status:
 - landed for streamer reporting
   - `LLMStreamer` exposes `Capabilities()`
   - current streamers report `AssistantPrefix`
-- attach-time recovery policy still does not use the capability surface yet
+- `receiving_stream` recovery already uses `AssistantPrefix` for
+  rollback-vs-prefix decisions
+- a full recovery policy engine still does not exist
 
 ## Tool Recovery Model
 
@@ -257,7 +276,7 @@ The thread can already distinguish these states for each tool call:
    - the tool may have executed partially or fully
 
 4. `completed`
-   - some `ToolCallResultable` exists
+   - a matching `ToolCallResult` exists
    - no longer inflight
 
 The important crash-recovery distinction is between `requested`, `resolving`, and
@@ -382,10 +401,13 @@ Current internal shape:
 
 ```go
 type pendingToolCall struct {
-    call    ToolCall
-    load    json.RawMessage
-    started bool
-    bound   bool
+    call         ToolCall
+    load         json.RawMessage
+    resolving    bool
+    started      bool
+    bound        bool
+    recovery     ToolRecovery
+    continueMode ToolContinue
 }
 
 func (cb *controlBlock) pendingToolCalls(items cbItems) []pendingToolCall
@@ -394,14 +416,14 @@ func (cb *controlBlock) pendingToolCalls(items cbItems) []pendingToolCall
 What this already gives us:
 
 - which tool calls are currently outstanding
-- whether each call is requested vs started
+- whether each call is requested, resolving, or started
 - the nearest bound handler load data
 - whether the call is currently bound at all
+- durable recovery metadata for started calls
+- continuation mode for started calls
 
 What is still missing from this derived view for recovery:
 
-- durable per-call recovery metadata for started calls
-- continuation mode in the derived view
 - an explicit recovery-facing API if attach-time recovery should live outside
   `thread.go`
 
@@ -440,10 +462,15 @@ The useful boundaries are:
 
 Current status:
 
-- not implemented
-- today there is no rollback API at all
-- restore-time trimming in `RestoreFromCheckpointAndWAL(...)` is a coarse durability
-  default, not a recovery-policy implementation
+- partially implemented for interrupted stream recovery
+- there is no general public rollback API or `ApplyRecoveryPolicy(...)`
+- `AttachExecutorForRecoveryWithOptions(...)` can internally drop an interrupted
+  `receiving_stream` tail back to the retained `SendItem`
+- it can also keep assistant text before the first retained tool-call stream
+  item when `ToolChunkRecoveryKeepAssistantPrefix` is selected and
+  `AssistantPrefix=true`
+- restore-time trimming in `RestoreFromCheckpointAndWAL(...)` remains a coarse
+  durability default, not a general recovery-policy implementation
 
 ### Outstanding Tool Call Handling
 
@@ -466,10 +493,14 @@ The useful modes are:
 
 Current status:
 
-- not implemented
+- partially implemented
 - current tool resolution only runs `requested` calls
 - current tool resolution always skips `started` calls
-- there is no cancellation-result path for either case
+- the zero-value policy fails closed for resolving/started calls
+- `ToolCallRecoveryCancelAll` appends recovered status `ToolCallResult` items
+  for resolving/started calls
+- `ToolCallRecoveryRunSafeUnimplemented` and
+  `ToolCallRecoveryCancelUnsafeUnimplemented` currently panic if selected
 
 ## Recovery Result Items
 
@@ -487,61 +518,59 @@ There is still a real semantic need for the ambiguous case:
 - no durable tool result exists
 - it is unknown whether the tool finished or caused side effects before interruption
 
-The runtime needs a canonical result shape that tells the model:
+The runtime needs canonical result text that tells the model:
 
 - the requested tool call is no longer going to be executed by the runtime
 - the runtime cannot guarantee whether the earlier execution already happened
 - the model should reason about the safest next step
 
-Suggested structured data:
-
-```json
-{
-  "status": "unknown_recovery",
-  "execution_status": "unknown",
-  "side_effects_status": "unknown"
-}
-```
+Current implementation uses an ordinary concrete `ToolCallResult` with
+`Recovered: true` and human-readable `Output`. It does not put runtime recovery
+metadata in `Data`; `Data` is caller/application-owned.
 
 ### Definite Non-Execution
 
 If no `ToolCallStarted` exists, the runtime knows the tool did not begin.
 
-That case can use a normal tool result payload that clearly communicates:
+That case can use normal tool result text that clearly communicates:
 
 - the call was not executed
 - no side effects occurred
 
-Suggested structured data:
+Current implementation again uses `ToolCallResult{Recovered: true}` with
+model-visible `Output` text.
 
-```json
-{
-  "status": "canceled_recovery",
-  "execution_status": "not_started",
-  "side_effects_status": "none"
+### Current Concrete Result Shape
+
+The older note proposed a dedicated `ToolUnknownRecoveryResult` item type. That
+is no longer the intended shape.
+
+Current durable/request IR uses the concrete `ToolCallResult` shape:
+
+```go
+type ToolCallResult struct {
+    CallID        string
+    Output        string
+    Recovered     bool
+    Data          map[string]any
+    SafeRollback  *ToolCallSafeRollback
 }
 ```
 
-### Current Durability Constraint
+For executor recovery, the relevant fields are:
 
-The older note proposed a dedicated `ToolUnknownRecoveryResult` item type. That is
-not obviously required anymore.
+- `CallID`
+- `Output`
+- `Recovered`
 
-Current durability and request building already canonicalize every
-`ToolCallResultable` to a generic `ToolCallResult` shape on snapshot/WAL restore.
+`Data` remains available to callers for UI/debug/application data, but runtime
+recovery should not use magic `Data` keys for control flow. `SafeRollback` is a
+separate request-projection feature for model-correctable failed tool results;
+it is not the executor-recovery cancellation mechanism described in this note.
 
-That means there are two viable approaches:
-
-- simplest:
-  - emit ordinary `ToolCallResult` values with structured `Data`
-  - rely on the structured data contract rather than concrete Go type identity
-- richer:
-  - introduce dedicated in-memory result types for convenience or UI purposes
-  - accept that snapshot/WAL formats must widen if concrete type identity needs to
-    survive restore
-
-For recovery semantics, the structured result contract matters more than the
-concrete item type.
+For recovery semantics, clear model-visible `Output` and the concrete
+`Recovered` marker matter more than concrete subtype identity or structured
+runtime metadata.
 
 ## Late Tool Results After Recovery Cancellation
 
@@ -567,20 +596,28 @@ That would produce contradictory durable history:
 - the thread history would first say "this call was canceled/unknown during recovery"
 - then later say "this call completed normally"
 
-The final policy is still open, but it must be explicit. Plausible options are:
+The current policy is intentionally minimal:
 
-- drop the late result
-- reject it as a runtime error
-- record it only as conflict/audit metadata outside the normal tool-result flow
+- `Thread.QueueItem` drops an ordinary `ToolCallResult` if a matching recovered
+  result already exists
+- `ReturnAsyncToolItem` routes through the event loop and validates that the call
+  is still outstanding before queuing the async result
 
-What matters for this note is the requirement, not the chosen mechanism:
+A richer policy is still future work. Plausible additions include:
+
+- rejecting the late result as a runtime error visible to the application
+- recording it as conflict/audit metadata outside the normal tool-result flow
+- providing attempt handles so old async completions can be identified precisely
+
+What matters for this note is the remaining requirement:
 
 - recovery cancellation is not the end of the problem unless late completions are
-  also handled
+  also handled deliberately
 
 ## Executor Attach Algorithm
 
-This section describes the target attach algorithm. It is not implemented today.
+This section describes the target attach algorithm. It is only partially
+implemented today by `AttachExecutorForRecoveryWithOptions(...)`.
 
 When `SetExecutor(x)` attaches a non-nil executor to a non-idle thread:
 
@@ -611,6 +648,8 @@ These are target recovery semantics, not current behavior.
 | `idle` | none | any | Attach executor only; no recovery work. |
 | `idle` | requested but not started | any | Apply requested-tool policy; the call is known not to have run. |
 | `idle` | started without result | any | Apply started-tool policy using durable recovery metadata. |
+| `awaiting_tool_results` | requested but not started | any | Apply requested-tool policy, then continue normal tool-result flow. Current implementation can recover resolving/started calls only with `CancelAll`; otherwise it leaves requested calls to normal resolution. |
+| `awaiting_tool_results` | resolving/started without result | any | Apply started/resolving policy. Current implementation supports fail-closed or `CancelAll` recovered status results. |
 | `construct_llm_request` | none | any | Rebuild and resend the retained request. This is partially implemented by `AttachExecutorForRecovery`. |
 | `construct_llm_request` | requested but not started | any | Apply requested-tool policy first if the retained history exposes such calls, then continue request flow. |
 | `construct_llm_request` | started without result | any | Do not blindly resend; apply started-tool policy or reject exact recovery. Current implementation rejects this. |
@@ -710,7 +749,9 @@ Current status:
 
 - still design work
 - streamer capability reporting exists now
-- there is still no attach-time recovery flow yet
+- explicit attach recovery exists via `AttachExecutorForRecoveryWithOptions(...)`
+- automatic recovery through `SetExecutor(...)` and full policy selection remain
+  future work
 
 ## Examples
 
@@ -780,14 +821,13 @@ The implementation now likely needs these additions:
 - a recovery-facing outstanding-call view that includes any fields attach-time
   recovery needs beyond the current internal `pendingToolCalls(...)` shape
 - `Thread.ApplyRecoveryPolicy(...)`
-- rollback operations for retained thread history/control-block state
-- executor recovery policy
+- general rollback operations for retained thread history/control-block state
+- a full executor recovery policy engine
 - live-request cancellation support so replacing an executor on an active thread
   really behaves like interruption
-- a late-result conflict policy for calls already canceled by recovery
-- recovery-result conventions for:
-  - unknown prior execution
-  - definite non-execution
+- a richer late-result conflict policy for calls already canceled by recovery
+- richer recovery-result conventions if plain `Recovered: true` output text is
+  not enough for applications
 
 Notable items that are no longer "new concepts":
 
@@ -798,6 +838,10 @@ Notable items that are no longer "new concepts":
 - recovery metadata on `ToolDispatch`
 - durable persistence of recovery metadata on `ToolCallStarted`
 - streamer capability reporting such as `AssistantPrefix`
+- limited explicit attach recovery via `AttachExecutorForRecoveryWithOptions`
+- stream-tail rollback for `receiving_stream` recovery
+- `CancelAll` recovered status results for resolving/started tool calls
+- minimal late-result dropping for calls that already have recovered results
 
 ## Implementation Order
 
@@ -812,10 +856,10 @@ Recommended order from the current codebase:
    - add dispatch-owned recovery metadata
    - persist that metadata on `ToolCallStarted`
 4. next:
-   - define executor recovery policy
-   - define exact-resume eligibility using streamer capabilities
+   - expand executor recovery policy beyond the current explicit options
+   - finish exact-resume eligibility using streamer capabilities
 5. next:
-   - add rollback and recovery-policy application on `Thread`
+   - add general rollback and recovery-policy application on `Thread`
    - ensure dispatch classification happens before side effects
 6. next:
    - move unsafe recovery decisions out of restore defaults and into executor attach
@@ -831,49 +875,3 @@ Recommended order from the current codebase:
 
 This keeps the already-landed prerequisites explicit while preserving the remaining
 direction of the design.
-
-## Implementation Audit Notes (2026-05-13)
-
-- Current state lists in this document should include the implemented
-  `awaiting_tool_results` state. `AttachExecutorForRecoveryWithOptions` accepts
-  it, and normal execution can enter it when a streamer requires complete tool
-  results before a follow-up send. Decision: doc update.
-- Some "still missing" text underreports current limited recovery attach
-  behavior. `SetExecutor` itself still only assigns the executor, but
-  `AttachExecutorForRecoveryWithOptions` accepts `idle`,
-  `awaiting_tool_results`, `construct_llm_request`, and `receiving_stream`
-  states; normalizes `stream_complete` to `idle`; can resume retained
-  `construct_llm_request`; and can recover `receiving_stream` by failing,
-  rolling back to retry, or keeping an assistant prefix depending on
-  `ToolChunkRecoveryPolicy` and streamer `AssistantPrefix`. Decision: doc
-  update.
-- Tool-call recovery policy is only partially implemented. The zero-value policy
-  fails closed for resolving/started calls, and `ToolCallRecoveryCancelAll`
-  appends recovered `ToolCallResult` status text. `ToolCallRecoveryRunSafe` and
-  `ToolCallRecoveryCancelUnsafe` are represented only by constants named
-  `ToolCallRecoveryRunSafeUnimplemented` and
-  `ToolCallRecoveryCancelUnsafeUnimplemented`, and currently panic if selected.
-  Decision: doc update plus future for safe retry/cancel-unsafe modes.
-- The outstanding-call derivation section is stale where it says recovery
-  metadata and continuation mode are missing from the derived view. The current
-  internal `pendingToolCall` also tracks `resolving`, `recovery`, and
-  `continueMode`. Decision: doc update.
-- Recovery result representation differs from the suggested structured JSON
-  examples. Current recovery cancellation/status output is an ordinary
-  `ToolCallResult` with `Recovered: true` and human-readable `Output`; it does
-  not populate structured `Data` with `execution_status` or
-  `side_effects_status`. Decision: doc update.
-- Late-result policy is no longer completely open, but it is still minimal. A
-  normal queued result for a call that already has a recovered result is dropped,
-  and `ReturnAsyncToolItem` validates that the call is still outstanding through
-  the event loop. There is still no explicit conflict/audit item or attempt
-  handle. Decision: doc update plus future for richer late-result policy.
-- The "rollback operations are not implemented" wording is stale for
-  `receiving_stream` recovery. Internal stream-tail rollback exists via
-  `dropStreamTail` and `replaceDurableSnapshot`; a general public
-  `ApplyRecoveryPolicy`/rollback API remains future work. Decision: doc update
-  plus future.
-- Live replacement remains incomplete. `CancelCurrentTurn` can cancel the active
-  model stream and tool contexts and suppress automatic sends, but replacing an
-  executor with `SetExecutor` does not automatically cancel the old live
-  execution or run recovery policy. Decision: future.

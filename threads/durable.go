@@ -92,6 +92,7 @@ type SnapshotItem struct {
 	Output    string         `json:"output,omitempty"`
 	Data      string         `json:"data,omitempty"`
 	Tools     *ToolsSnapshot `json:"tools,omitempty"`
+	SafeRollback *ToolCallSafeRollback `json:"safe_rollback,omitempty"`
 }
 
 func (t *Thread) Snapshot() (ThreadSnapshot, error) {
@@ -317,18 +318,23 @@ func itemToSnapshotItem(v Item) (SnapshotItem, error) {
 			Mode:     string(x.Continue),
 			Recovery: string(x.Recovery),
 		}, nil
-	case ToolCallResultable:
-		data, err := encodeToolData(x.ToolData())
+	case ToolCallResult:
+		data, err := encodeToolData(x.Data)
 		if err != nil {
 			return SnapshotItem{}, err
 		}
-		return SnapshotItem{
+		out := SnapshotItem{
 			Type:      "tool_result",
-			ID:        x.ToolCallID(),
-			Output:    x.ToolOutput(),
+			ID:        x.CallID,
+			Output:    x.Output,
 			Data:      data,
-			Recovered: x.ToolRecovered(),
-		}, nil
+			Recovered: x.Recovered,
+		}
+		if x.SafeRollback != nil {
+			rb := *x.SafeRollback
+			out.SafeRollback = &rb
+		}
+		return out, nil
 	case ToolsSnapshot:
 		snap := cloneToolsSnapshot(x)
 		return SnapshotItem{Type: "tool_snapshot", Tools: &snap}, nil
@@ -370,7 +376,12 @@ func snapshotItemToItem(raw SnapshotItem) (Item, error) {
 		if err != nil {
 			return nil, fmt.Errorf("tool result data: %w", err)
 		}
-		return ToolCallResult{CallID: raw.ID, Output: raw.Output, Data: data, Recovered: raw.Recovered}, nil
+		var safeRollback *ToolCallSafeRollback
+		if raw.SafeRollback != nil {
+			rb := *raw.SafeRollback
+			safeRollback = &rb
+		}
+		return ToolCallResult{CallID: raw.ID, Output: raw.Output, Data: data, Recovered: raw.Recovered, SafeRollback: safeRollback}, nil
 	case "tool_snapshot":
 		if raw.Tools == nil {
 			return ToolsSnapshot{}, nil

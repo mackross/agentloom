@@ -199,9 +199,9 @@ func (t *Thread) advanceWhilePossible() error {
 }
 
 func (t *Thread) QueueItem(v Item) {
-	if r, ok := v.(ToolCallResultable); ok {
-		t.clearToolCallContextForResult(r.ToolCallID())
-		if t.hasRecoveryResultForToolCall(r.ToolCallID()) {
+	if r, ok := v.(ToolCallResult); ok {
+		t.clearToolCallContextForResult(r.CallID)
+		if t.hasRecoveryResultForToolCall(r.CallID) {
 			return
 		}
 	}
@@ -210,12 +210,13 @@ func (t *Thread) QueueItem(v Item) {
 		t.cancelAutoSend.Store(false)
 	}
 	lateAutoSend := false
-	if r, ok := v.(ToolCallResultable); ok && !t.resolvingTools && !t.replayingWAL && !t.cancelAutoSend.Load() {
+	if r, ok := v.(ToolCallResult); ok && !t.resolvingTools && !t.replayingWAL && !t.cancelAutoSend.Load() {
 		for _, p := range t.cb.pendingToolCalls(&t.items) {
-			lateAutoSend = lateAutoSend || p.call.CallID == r.ToolCallID() && p.started && p.continueMode != ToolContinueManual && !t.cb.hasPendingSend(&t.items)
+			lateAutoSend = lateAutoSend || p.call.CallID == r.CallID && p.started && p.continueMode != ToolContinueManual && !t.cb.hasPendingSend(&t.items)
 		}
 	}
 	if err := t.cb.queueItem(&t.items, v); err != nil {
+		t.onExecutorError(err)
 		return
 	}
 	t.appendWAL(walOpQueueItem, v)
@@ -223,7 +224,9 @@ func (t *Thread) QueueItem(v Item) {
 		t.QueueItem(SendItem{})
 		return
 	}
-	_ = t.advanceWhilePossible()
+	if err := t.advanceWhilePossible(); err != nil {
+		t.onExecutorError(err)
+	}
 	t.captureSafeIfIdle()
 }
 
@@ -232,11 +235,11 @@ func (t *Thread) hasRecoveryResultForToolCall(callID string) bool {
 		return false
 	}
 	for _, item := range t.items.Slice() {
-		r, ok := item.(ToolCallResultable)
-		if !ok || r.ToolCallID() != callID {
+		r, ok := item.(ToolCallResult)
+		if !ok || r.CallID != callID {
 			continue
 		}
-		if r.ToolRecovered() {
+		if r.Recovered {
 			return true
 		}
 	}
@@ -346,7 +349,7 @@ func (t *Thread) resolvePendingToolCalls() (bool, error) {
 			if out == nil {
 				return resolved, fmt.Errorf("threads tool resolver returned nil item for %q", p.call.Name)
 			}
-			if _, ok := out.(ToolCallResultable); ok && dispatch.Continue != ToolContinueManual {
+			if _, ok := out.(ToolCallResult); ok && dispatch.Continue != ToolContinueManual {
 				autoSend = true
 			}
 			t.queueToolResolutionItem(hasPendingSend, out)
@@ -354,7 +357,9 @@ func (t *Thread) resolvePendingToolCalls() (bool, error) {
 		}
 	}
 	if hasPendingSend && resolved {
-		_ = t.advanceWhilePossible()
+		if err := t.advanceWhilePossible(); err != nil {
+			t.onExecutorError(err)
+		}
 	}
 	if autoSend && !hasPendingSend && !t.cb.hasPendingSend(&t.items) && !t.cancelAutoSend.Load() {
 		t.QueueItem(SendItem{})
@@ -380,8 +385,8 @@ func (t *Thread) queueBeforePendingSend(v Item) bool {
 
 func dispatchHasResultForCall(dispatch ToolDispatch, callID string) bool {
 	for _, item := range dispatch.Items {
-		result, ok := item.(ToolCallResultable)
-		if ok && result.ToolCallID() == callID {
+		result, ok := item.(ToolCallResult)
+		if ok && result.CallID == callID {
 			return true
 		}
 	}
@@ -417,6 +422,13 @@ type ThreadStreamItemAppendedDelegate interface {
 	OnThreadStreamItemAppended(t *Thread, item Item)
 }
 
+// ThreadExecutorErrorDelegate observes errors returned while QueueItem drives
+// executor and tool state transitions. QueueItem remains fire-and-forget, so
+// this hook is the way to observe those otherwise dropped errors.
+type ThreadExecutorErrorDelegate interface {
+	OnThreadExecutorError(t *Thread, err error)
+}
+
 type ThreadDelegateFunc func(t *Thread)
 
 func (f ThreadDelegateFunc) OnThreadIdle(t *Thread) {
@@ -429,6 +441,7 @@ type ThreadDelegateFuncs struct {
 	OnIdle               func(t *Thread)
 	OnRequest            func(t *Thread)
 	OnStreamItemAppended func(t *Thread, item Item)
+	OnExecutorError      func(t *Thread, err error)
 }
 
 func (d ThreadDelegateFuncs) OnThreadIdle(t *Thread) {
@@ -446,5 +459,20 @@ func (d ThreadDelegateFuncs) OnThreadRequest(t *Thread) {
 func (d ThreadDelegateFuncs) OnThreadStreamItemAppended(t *Thread, item Item) {
 	if d.OnStreamItemAppended != nil {
 		d.OnStreamItemAppended(t, item)
+	}
+}
+
+func (d ThreadDelegateFuncs) OnThreadExecutorError(t *Thread, err error) {
+	if d.OnExecutorError != nil {
+		d.OnExecutorError(t, err)
+	}
+}
+
+func (t *Thread) onExecutorError(err error) {
+	if err == nil || t.delegate == nil {
+		return
+	}
+	if d, ok := t.delegate.(ThreadExecutorErrorDelegate); ok {
+		d.OnThreadExecutorError(t, err)
 	}
 }

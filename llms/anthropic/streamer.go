@@ -280,10 +280,10 @@ func requestMessages(req threads.Req) ([]anthropicapi.MessageParam, error) {
 			}
 			appendBlock(messageRoleAssistant, anthropicapi.NewToolUseBlock(v.CallID, input, v.Name))
 			outstanding = append(outstanding, v.CallID)
-		case threads.ToolCallResultable:
-			b := anthropicapi.NewToolResultBlock(v.ToolCallID(), v.ToolOutput(), toolDataIsError(v.ToolData()))
+		case threads.ToolCallResult:
+			b := anthropicapi.NewToolResultBlock(v.CallID, v.Output, false)
 			if len(outstanding) > 0 {
-				results[v.ToolCallID()] = b
+				results[v.CallID] = b
 				flushUser(false)
 				continue
 			}
@@ -329,14 +329,6 @@ func decodeToolInput(payload string) (any, error) {
 		return nil, err
 	}
 	return input, nil
-}
-
-func toolDataIsError(data map[string]any) bool {
-	if len(data) == 0 {
-		return false
-	}
-	_, ok := data["error"]
-	return ok
 }
 
 func requestTools(snap threads.ToolOfferSnapshot, eagerInputStreaming bool) ([]anthropicapi.ToolUnionParam, error) {

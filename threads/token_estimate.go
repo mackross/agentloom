@@ -47,14 +47,18 @@ func (t *Thread) EstimateTextTokens(ctx context.Context, text string) (int, erro
 }
 
 func (t *Thread) requestSnapshot() Req {
-	return t.requestSnapshotWithBuilder(nil)
+	caps := StreamerCapabilities{}
+	if e, ok := t.executor.(interface{ StreamerCapabilities() StreamerCapabilities }); ok {
+		caps = e.StreamerCapabilities()
+	}
+	return t.requestSnapshotWithBuilder(nil, caps)
 }
 
-func (t *Thread) requestSnapshotWithBuilder(b RequestBuilder) Req {
+func (t *Thread) requestSnapshotWithBuilder(b RequestBuilder, caps StreamerCapabilities) Req {
 	if b == nil {
 		b = DefaultRequestBuilder
 	}
-	return cloneReq(b.Build(t.items.SliceThrough(t.cb.IP())))
+	return cloneReq(b.Build(t.items.SliceThrough(t.cb.IP()), caps))
 }
 
 // EstimateRequestTokensApprox returns a conservative tokenizer-free estimate for req.

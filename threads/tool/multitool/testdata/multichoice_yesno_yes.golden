@@ -1,0 +1,9 @@
+SETUP: multitool.setupView{Name:"answer", Description:"Answer the multiple choice question.", Mode:"lark", CommandDescription:"Shell-like command line. The first word selects the command; remaining words are arguments. Quoting is supported, but shell expansion is not.", InputDescription:"Optional freeform input for the command. For process-like commands this is treated like stdin.", Required:true}
+CONFIG: multitool.configView{Subtools:[]multitool.subtoolSpecView{multitool.subtoolSpecView{Command:"yes", Description:"the answer is yes", Usage:""}, multitool.subtoolSpecView{Command:"no", Description:"the answer is no", Usage:""}}, Fallback:"custom"}
+SNAPSHOT: offered=1 name="answer" description="Answer the multiple choice question." payload=threads.ToolPayloadLark required=true handlers=1
+
+CASE yes
+payload: "yes"
+started: true items: 1
+result call_id="call-1":
+choice: yes

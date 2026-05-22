@@ -1,11 +1,33 @@
 package threads
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 
 	gschema "github.com/google/jsonschema-go/jsonschema"
 )
+
+type errorObserver struct{ err error }
+
+func (o errorObserver) OnControlBlockStateChange(*Thread, State, State) error { return o.err }
+
+func TestQueueItemReportsExecutorErrorToDelegate(t *testing.T) {
+	want := errors.New("boom")
+	thread := New()
+	thread.SetExecutor(errorObserver{err: want})
+	var got error
+	thread.SetDelegate(ThreadDelegateFuncs{
+		OnExecutorError: func(_ *Thread, err error) {
+			got = err
+		},
+	})
+	thread.QueueItem(UserText("hello"))
+	thread.QueueItem(SendItem{})
+	if !errors.Is(got, want) {
+		t.Fatalf("expected executor error %v, got %v", want, got)
+	}
+}
 
 func TestNewHeadStartsEmpty(t *testing.T) {
 	thread := newTestThread(t)

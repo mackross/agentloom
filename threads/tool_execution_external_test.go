@@ -115,6 +115,85 @@ func TestToolProviderAndResolverExecuteToolCallsEndToEnd(t *testing.T) {
 	streamer.AssertCallCount(t)
 }
 
+func TestRollbackableToolFailureRequestProjection(t *testing.T) {
+	steeringHint := "\n\n<tool_call_hint tool=\"calc\">\nCall calc again with valid JSON.\n</tool_call_hint>"
+	tests := []struct {
+		name         string
+		caps         threads.StreamerCapabilities
+		wantFollowup []threads.Item
+	}{
+		{
+			name: "assistant prefix safely rolls back failed sole tool call",
+			caps: threads.StreamerCapabilities{AssistantPrefix: true},
+			wantFollowup: []threads.Item{
+				threads.UserText("hello" + steeringHint),
+			},
+		},
+		{
+			name: "without assistant prefix falls back to tool result",
+			caps: threads.StreamerCapabilities{},
+			wantFollowup: []threads.Item{
+				threads.UserText("hello"),
+				threads.ToolCall{CallID: "c1", Name: "calc", Payload: `bad`},
+				threads.ToolCallResult{
+					CallID: "c1",
+					Output: "invalid JSON",
+					SafeRollback: &threads.ToolCallSafeRollback{
+						SteeringHint: steeringHint,
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			thread := threads.New()
+			thread.SetToolProvider(simpletool.ProviderFunc(func(_ *threads.Thread) threads.ToolsSnapshot {
+				return testBoundToolsSnapshot("calc", "calculate", `{"function":"tool/calc@v1"}`)
+			}))
+			thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ *threads.Thread, call threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
+				return threads.ToolDispatch{
+					Started: true,
+					Items: []threads.Item{threads.ToolCallResult{
+						CallID: call.CallID,
+						Output: "invalid JSON",
+						SafeRollback: &threads.ToolCallSafeRollback{
+							SteeringHint: steeringHint,
+						},
+					}},
+				}, nil
+			}))
+
+			streamer := newFakeStreamer()
+			streamer.capabilities = tt.caps
+			streamer.
+				Reply(func(b *streamBuilder) {
+					b.AssertRequest(func(req threads.Req) {
+						if got := req.Items; !reflect.DeepEqual(got, []threads.Item{threads.UserText("hello")}) {
+							t.Fatalf("unexpected first request items: %#v", got)
+						}
+					})
+					b.Emit(threads.ToolCall{CallID: "c1", Name: "calc", Payload: `bad`})
+				}).
+				Reply(func(b *streamBuilder) {
+					b.AssertRequest(func(req threads.Req) {
+						if got := req.Items; !reflect.DeepEqual(got, tt.wantFollowup) {
+							t.Fatalf("unexpected follow-up request items:\n got: %#v\nwant: %#v", got, tt.wantFollowup)
+						}
+					})
+					b.Emit(threads.AssistantText("done"))
+				})
+			thread.SetExecutor(threads.NewThreadExecutor(streamer))
+
+			thread.QueueItem(threads.UserText("hello"))
+			thread.QueueItem(threads.SendItem{})
+
+			streamer.AssertCallCount(t)
+		})
+	}
+}
+
 func TestToolResolutionIgnoresOutOfOrderChunksAfterFinalCall(t *testing.T) {
 	thread := threads.New()
 
@@ -474,9 +553,10 @@ func testBoundToolsSnapshot(name, description, handlerLoadData string) threads.T
 }
 
 type fakeStreamer struct {
-	replies  []streamReply
-	calls    int
-	requests []threads.Req
+	capabilities threads.StreamerCapabilities
+	replies      []streamReply
+	calls        int
+	requests     []threads.Req
 }
 
 type streamReply struct {
@@ -493,7 +573,9 @@ type streamBuilder struct {
 	reply *streamReply
 }
 
-func newFakeStreamer() *fakeStreamer { return &fakeStreamer{} }
+func newFakeStreamer() *fakeStreamer {
+	return &fakeStreamer{capabilities: threads.StreamerCapabilities{AssistantPrefix: true}}
+}
 
 func (f *fakeStreamer) Reply(fn func(*streamBuilder)) *fakeStreamer {
 	r := streamReply{}
@@ -515,7 +597,7 @@ func (b *streamBuilder) Emit(v threads.Item) {
 }
 
 func (f *fakeStreamer) Capabilities() threads.StreamerCapabilities {
-	return threads.StreamerCapabilities{AssistantPrefix: true}
+	return f.capabilities
 }
 
 func (f *fakeStreamer) RegisterToolNormalizer(string, threads.ToolNormalizer) {}

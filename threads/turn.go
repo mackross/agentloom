@@ -137,8 +137,8 @@ func completedItemLimit(t *Thread, items []Item) int {
 			if !hasToolResult(items[i+1:limit], item.CallID) {
 				return unbranchableLimit(i, role, turnStart)
 			}
-		case ToolCallResultable:
-			if !hasToolCall(items[:i], item.ToolCallID()) {
+		case ToolCallResult:
+			if !hasToolCall(items[:i], item.CallID) {
 				return unbranchableLimit(i, role, turnStart)
 			}
 		}
@@ -158,7 +158,7 @@ func hasToolResult(items []Item, callID string) bool {
 		if _, ok := item.(UserText); ok {
 			return false
 		}
-		if result, ok := item.(ToolCallResultable); ok && result.ToolCallID() == callID {
+		if result, ok := item.(ToolCallResult); ok && result.CallID == callID {
 			return true
 		}
 	}

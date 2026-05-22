@@ -1,0 +1,34 @@
+SETUP: multitool.setupView{Name:"multi", Description:"Stable multitool for tests.", Mode:"lark", CommandDescription:"Command line for tests.", InputDescription:"Input body for tests.", Required:false}
+CONFIG: multitool.configView{Subtools:[]multitool.subtoolSpecView{multitool.subtoolSpecView{Command:"echo-json", Description:"Echo a JSON value.", Usage:"<json object>"}}, Fallback:"default"}
+SNAPSHOT: offered=1 name="multi" description="Stable multitool for tests." payload=threads.ToolPayloadLark required=false handlers=1
+
+CASE json failure
+payload: "echo-json\n\n{"
+started: true items: 1
+result call_id="call-1":
+invalid JSON input for command "echo-json": unexpected end of JSON input
+safe_rollback: true
+steering_hint:
+
+
+<tool_call_hint tool="multi" command="echo-json">
+invalid JSON input for command "echo-json": unexpected end of JSON input
+
+Echo a JSON value.
+Usage: <json object>
+
+Call the tool again with command "echo-json" and JSON input matching this schema:
+
+{
+  "required": [
+    "value"
+  ],
+  "properties": {
+    "value": {
+      "type": "string",
+      "description": "value to echo"
+    }
+  },
+  "additionalProperties": false
+}
+</tool_call_hint>

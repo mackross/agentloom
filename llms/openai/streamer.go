@@ -526,8 +526,8 @@ func requestInputItems(req threads.Req) (responses.ResponseInputParam, error) {
 			inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(string(v), responses.EasyInputMessageRoleAssistant))
 		case threads.ToolCall:
 			inputItems = append(inputItems, responses.ResponseInputItemParamOfFunctionCall(v.Payload, v.CallID, v.Name))
-		case threads.ToolCallResultable:
-			inputItems = append(inputItems, responses.ResponseInputItemParamOfFunctionCallOutput(v.ToolCallID(), v.ToolOutput()))
+		case threads.ToolCallResult:
+			inputItems = append(inputItems, responses.ResponseInputItemParamOfFunctionCallOutput(v.CallID, v.Output))
 		default:
 			return nil, fmt.Errorf("openai request item not supported: %T", it)
 		}

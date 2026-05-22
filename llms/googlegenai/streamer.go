@@ -167,19 +167,14 @@ func requestContents(req threads.Req) ([]*genai.Content, error) {
 				Name: v.Name,
 				Args: args,
 			}})
-		case threads.ToolCallResultable:
-			name := callNames[v.ToolCallID()]
+		case threads.ToolCallResult:
+			name := callNames[v.CallID]
 			if name == "" {
-				name = v.ToolCallID()
+				name = v.CallID
 			}
-			response := map[string]any{"output": v.ToolOutput()}
-			if data := v.ToolData(); data != nil {
-				if isErr, _ := data["error"].(bool); isErr {
-					response = map[string]any{"error": v.ToolOutput()}
-				}
-			}
+			response := map[string]any{"output": v.Output}
 			appendPart(genai.RoleUser, &genai.Part{FunctionResponse: &genai.FunctionResponse{
-				ID:       v.ToolCallID(),
+				ID:       v.CallID,
 				Name:     name,
 				Response: response,
 			}})

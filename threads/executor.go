@@ -82,8 +82,9 @@ func (x *ThreadExecutor) OnControlBlockStateChange(t *Thread, _, to State) error
 	if to != StateConstructLLMRequest || x.streamer == nil {
 		return nil
 	}
-	t.policy = x.StreamerCapabilities().ToolResultSendPolicy
-	in := t.requestSnapshotWithBuilder(x.requestBuilder)
+	caps := x.StreamerCapabilities()
+	t.policy = caps.ToolResultSendPolicy
+	in := t.requestSnapshotWithBuilder(x.requestBuilder, caps)
 	if err := t.beginStreaming(); err != nil {
 		return err
 	}

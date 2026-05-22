@@ -75,3 +75,13 @@ func (s *StructTool[T]) ResolveTool(ctx context.Context, thread *threads.Thread,
 		Items:    []threads.Item{item},
 	}, nil
 }
+
+func (s *StructTool[T]) HandleToolCall(ctx context.Context, thread *threads.Thread, call Call, ret ReturnItem) (Handling, error) {
+	dispatch, err := s.ResolveTool(ctx, thread, threads.ToolCall(call), nil)
+	for _, item := range dispatch.Items {
+		if retErr := ret(item); retErr != nil && err == nil {
+			err = retErr
+		}
+	}
+	return Handling{Continue: dispatch.Continue, Recovery: dispatch.Recovery}, err
+}

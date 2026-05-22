@@ -46,10 +46,3 @@ type ToolResolver interface {
 	// canceled LLM streamer turn produced this tool call.
 	ResolveTool(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error)
 }
-
-type ToolCallResultable interface {
-	ToolCallID() string
-	ToolOutput() string
-	ToolData() map[string]any
-	ToolRecovered() bool
-}

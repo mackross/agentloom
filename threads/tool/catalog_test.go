@@ -9,12 +9,6 @@ import (
 	"github.com/mackross/agentloom/threads"
 )
 
-type resultView interface {
-	ToolCallID() string
-	ToolOutput() string
-	ToolData() map[string]any
-}
-
 func TestCatalogSnapshotUsesPolicyAndPreservesAddOrder(t *testing.T) {
 	cat := NewCatalog().
 		AddFunc(Spec{Name: "first", Payload: PayloadText()}, func(_ context.Context, _ *threads.Thread, _ Call, ret ReturnItem) (Handling, error) {
@@ -87,14 +81,14 @@ func TestJSONHandlerReturnsModelVisibleErrorItemOnBadPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handle tool call: %v", err)
 	}
-	view, ok := item.(resultView)
+	view, ok := item.(threads.ToolCallResult)
 	if !ok {
 		t.Fatalf("expected result item view, got %T", item)
 	}
-	if got := view.ToolCallID(); got != "c1" {
+	if got := view.CallID; got != "c1" {
 		t.Fatalf("unexpected call id: %q", got)
 	}
-	if got := view.ToolOutput(); got == "" {
+	if got := view.Output; got == "" {
 		t.Fatal("expected non-empty error result")
 	}
 }
@@ -184,19 +178,19 @@ func TestCatalogDispatchRoutesLateReturnThroughThreadEventLoop(t *testing.T) {
 	}
 }
 
-func TestResultJSONBuildsToolCallResultableItem(t *testing.T) {
+func TestResultJSONBuildsToolCallResultItem(t *testing.T) {
 	item := ResultJSON(Call{CallID: "c42", Name: "sum"}, map[string]any{"sum": 3})
-	view, ok := item.(resultView)
+	view, ok := item.(threads.ToolCallResult)
 	if !ok {
 		t.Fatalf("expected result item view, got %T", item)
 	}
-	if got := view.ToolCallID(); got != "c42" {
+	if got := view.CallID; got != "c42" {
 		t.Fatalf("unexpected call id: %q", got)
 	}
-	if got := view.ToolOutput(); got != `{"sum":3}` {
+	if got := view.Output; got != `{"sum":3}` {
 		t.Fatalf("unexpected result: %q", got)
 	}
-	meta := view.ToolData()
+	meta := view.Data
 	if got := meta["json"]; !reflect.DeepEqual(got, map[string]any{"sum": 3}) {
 		t.Fatalf("unexpected meta payload: %#v", got)
 	}
