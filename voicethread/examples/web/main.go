@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,7 @@ import (
 	kopus "github.com/kazzmir/opus-go/opus"
 	"github.com/mackross/agentloom/threads"
 	"github.com/mackross/agentloom/threads/tool"
+	"github.com/mackross/agentloom/voicethread/smartturn"
 	"github.com/mackross/agentloom/voicethread"
 	pionopus "github.com/pion/opus"
 	resampling "github.com/tphakala/go-audio-resampler"
@@ -224,7 +227,7 @@ func serveRTC(w http.ResponseWriter, r *http.Request) {
 		_ = pc.Close()
 		return
 	}
-	bridge.Start(ctx, session, writeEvent)
+	bridge.Start(ctx, session, writeEvent, itemStates, &itemStatesMu, assistantAudio, &assistantAudioMu)
 
 	outCap := webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypePCMU, ClockRate: 8000, Channels: 1}
 	if outputCodec == "opus" {
@@ -330,30 +333,12 @@ func handleClientMessage(ctx context.Context, session *voicethread.VoiceSession,
 			writeEvent(voicethread.Event{Type: "error", Message: err.Error()})
 		}
 	case "interrupt":
-		stop := bridge.StopOutput(ctx)
-		if stop.ok {
-			log.Printf("stopped-output interrupt truncate item_id=%q content_index=%d audio_end_ms=%d", stop.itemID, stop.contentIndex, stop.audioEndMS)
-			if err := session.TruncateAssistantAudio(ctx, stop.itemID, stop.contentIndex, stop.audioEndMS); err != nil {
-				writeEvent(voicethread.Event{Type: "error", Message: err.Error()})
-			} else {
-				writeEvent(voicethread.Event{
-					Type:         "truncate.sent",
-					ItemID:       stop.itemID,
-					ContentIndex: &stop.contentIndex,
-					AudioEndMS:   stop.audioEndMS,
-				})
-				// HACK1: post-response.done truncate workaround. Undo: remove this delete+insert workaround call.
-				maybeReplaceCompletedAssistantItem(ctx, session, writeEvent, itemStates, itemStatesMu, assistantAudio, assistantAudioMu, stop.itemID, stop.contentIndex, stop.audioEndMS)
-			}
-		}
+		interruptAssistant(ctx, session, bridge, writeEvent, itemStates, itemStatesMu, assistantAudio, assistantAudioMu)
 		if msg.ItemID != "" && msg.ContentIndex != nil {
 			log.Printf("browser interrupt truncate item_id=%q content_index=%d audio_end_ms=%d", msg.ItemID, *msg.ContentIndex, msg.AudioEndMS)
 			if err := session.TruncateAssistantAudio(ctx, msg.ItemID, *msg.ContentIndex, msg.AudioEndMS); err != nil {
 				writeEvent(voicethread.Event{Type: "error", Message: err.Error()})
 			}
-		}
-		if err := session.Interrupt(ctx); err != nil {
-			writeEvent(voicethread.Event{Type: "error", Message: err.Error()})
 		}
 	case "truncate":
 		if msg.ItemID != "" && msg.ContentIndex != nil {
@@ -368,6 +353,28 @@ func handleClientMessage(ctx context.Context, session *voicethread.VoiceSession,
 		writeEvent(voicethread.Event{Type: "pong", ClientTimeMS: msg.ClientTimeMS, ServerTimeMS: time.Now().UnixMilli()})
 	default:
 		writeEvent(voicethread.Event{Type: "error", Message: "unknown browser message type: " + msg.Type})
+	}
+}
+
+// HACK1: post-response.done truncate workaround. Undo: remove itemStates/assistantAudio params and maybeReplaceCompletedAssistantItem call.
+func interruptAssistant(ctx context.Context, session *voicethread.VoiceSession, bridge *audioBridge, writeEvent func(voicethread.Event), itemStates map[string]assistantItemState, itemStatesMu *sync.Mutex, assistantAudio map[string]assistantAudioState, assistantAudioMu *sync.Mutex) {
+	stop := bridge.StopOutput(ctx)
+	if stop.ok {
+		log.Printf("stopped-output interrupt truncate item_id=%q content_index=%d audio_end_ms=%d", stop.itemID, stop.contentIndex, stop.audioEndMS)
+		if err := session.TruncateAssistantAudio(ctx, stop.itemID, stop.contentIndex, stop.audioEndMS); err != nil {
+			writeEvent(voicethread.Event{Type: "error", Message: err.Error()})
+		} else {
+			writeEvent(voicethread.Event{
+				Type:         "truncate.sent",
+				ItemID:       stop.itemID,
+				ContentIndex: &stop.contentIndex,
+				AudioEndMS:   stop.audioEndMS,
+			})
+			maybeReplaceCompletedAssistantItem(ctx, session, writeEvent, itemStates, itemStatesMu, assistantAudio, assistantAudioMu, stop.itemID, stop.contentIndex, stop.audioEndMS)
+		}
+	}
+	if err := session.Interrupt(ctx); err != nil {
+		writeEvent(voicethread.Event{Type: "error", Message: err.Error()})
 	}
 }
 
@@ -610,6 +617,7 @@ type outputPlayhead struct {
 
 type encodedOutputFrame struct {
 	data         []byte
+	pcm24        []int16
 	itemID       string
 	contentIndex int
 	audioEndMS   int
@@ -634,6 +642,10 @@ type audioBridge struct {
 	outTrack *webrtc.TrackLocalStaticSample
 	playhead outputPlayhead
 	dropOut  bool
+	// Recent assistant audio at 24 kHz, recorded at the point we actually write
+	// frames to the browser. This is only a cheap echo-reference gate for local
+	// auto-interrupts; browser WebRTC AEC is still the primary echo canceller.
+	recentOutputPCM24 []int16
 
 	outputCodec string
 }
@@ -643,8 +655,8 @@ func newAudioBridge(outputCodec string) *audioBridge {
 		browserIn: make(chan []int16, 256),
 		openAIOut: make(chan outputAudioChunk, 128),
 		clearOut:  make(chan struct{}, 8),
-		stopOut:   make(chan chan outputStopResult, 8),
-		closed:    make(chan struct{}),
+		stopOut:     make(chan chan outputStopResult, 8),
+		closed:      make(chan struct{}),
 		outputCodec: outputCodec,
 	}
 }
@@ -722,6 +734,38 @@ func (b *audioBridge) EstimatedHeard() (itemID string, contentIndex int, audioEn
 	return res.itemID, res.contentIndex, res.audioEndMS, res.ok
 }
 
+func (b *audioBridge) AssistantRecentlyEmitting() bool {
+	b.mu.RLock()
+	ph := b.playhead
+	drop := b.dropOut
+	b.mu.RUnlock()
+	return !drop && !ph.lastWrite.IsZero() && time.Since(ph.lastWrite) <= time.Duration(envInt("LOCAL_TURN_ASSISTANT_ACTIVE_MS", 250))*time.Millisecond
+}
+
+func (b *audioBridge) MicLikelyEcho(pcm24 []int16) (bool, string) {
+	if envInt("LOCAL_TURN_ECHO_SUPPRESS", 1) == 0 || len(pcm24) < 120 {
+		return false, ""
+	}
+	b.mu.RLock()
+	ref := append([]int16(nil), b.recentOutputPCM24...)
+	lastWrite := b.playhead.lastWrite
+	b.mu.RUnlock()
+	if len(ref) < len(pcm24) || lastWrite.IsZero() ||
+		time.Since(lastWrite) > time.Duration(envInt("LOCAL_TURN_ECHO_REF_ACTIVE_MS", 700))*time.Millisecond {
+		return false, ""
+	}
+	micRMS := pcmRMS(pcm24)
+	if micRMS < envFloat("LOCAL_TURN_ECHO_MIC_MIN_RMS", 0.002) {
+		return true, fmt.Sprintf("local_turn.interrupt_suppressed_echo mic_rms=%.4f reason=quiet", micRMS)
+	}
+	bestCorr, bestRefRMS := bestAbsCorrelation(pcm24, ref, envFloat("LOCAL_TURN_ECHO_REF_MIN_RMS", 0.002))
+	threshold := envFloat("LOCAL_TURN_ECHO_CORR_THRESHOLD", 0.68)
+	if bestCorr >= threshold {
+		return true, fmt.Sprintf("local_turn.interrupt_suppressed_echo corr=%.2f threshold=%.2f mic_rms=%.4f ref_rms=%.4f", bestCorr, threshold, micRMS, bestRefRMS)
+	}
+	return false, fmt.Sprintf("echo_check corr=%.2f threshold=%.2f mic_rms=%.4f ref_rms=%.4f", bestCorr, threshold, micRMS, bestRefRMS)
+}
+
 func (b *audioBridge) outputStopResult() outputStopResult {
 	b.mu.RLock()
 	ph := b.playhead
@@ -739,10 +783,11 @@ func (b *audioBridge) outputStopResult() outputStopResult {
 func (b *audioBridge) resetOutputPlayhead() {
 	b.mu.Lock()
 	b.playhead = outputPlayhead{}
+	b.recentOutputPCM24 = b.recentOutputPCM24[:0]
 	b.mu.Unlock()
 }
 
-func (b *audioBridge) noteOutputFrame(itemID string, contentIndex int, audioEndMS int) {
+func (b *audioBridge) noteOutputFrame(itemID string, contentIndex int, audioEndMS int, pcm24 []int16) {
 	if itemID == "" {
 		return
 	}
@@ -758,10 +803,22 @@ func (b *audioBridge) noteOutputFrame(itemID string, contentIndex int, audioEndM
 	}
 	b.playhead.writtenMS = audioEndMS
 	b.playhead.lastWrite = now
+	if len(pcm24) > 0 {
+		b.recentOutputPCM24 = append(b.recentOutputPCM24, pcm24...)
+		maxSamples := envInt("LOCAL_TURN_ECHO_REF_MS", 1000) * 24
+		if maxSamples <= 0 {
+			maxSamples = 24000
+		}
+		if len(b.recentOutputPCM24) > maxSamples {
+			copy(b.recentOutputPCM24, b.recentOutputPCM24[len(b.recentOutputPCM24)-maxSamples:])
+			b.recentOutputPCM24 = b.recentOutputPCM24[:maxSamples]
+		}
+	}
 }
 
-func (b *audioBridge) Start(ctx context.Context, session *voicethread.VoiceSession, emit func(voicethread.Event)) {
-	go b.writeOpenAIInputLoop(ctx, session, emit)
+// HACK1: post-response.done truncate workaround. Undo: remove itemStates/assistantAudio params.
+func (b *audioBridge) Start(ctx context.Context, session *voicethread.VoiceSession, emit func(voicethread.Event), itemStates map[string]assistantItemState, itemStatesMu *sync.Mutex, assistantAudio map[string]assistantAudioState, assistantAudioMu *sync.Mutex) {
+	go b.writeOpenAIInputLoop(ctx, session, emit, itemStates, itemStatesMu, assistantAudio, assistantAudioMu)
 	go b.writeBrowserOutputLoop(ctx, emit)
 }
 
@@ -837,13 +894,242 @@ func (b *audioBridge) readBrowserPCMU(ctx context.Context, track *webrtc.TrackRe
 	}
 }
 
-func (b *audioBridge) writeOpenAIInputLoop(ctx context.Context, session *voicethread.VoiceSession, emit func(voicethread.Event)) {
+type localTurnDetector struct {
+	smart          *smartturn.Detector
+	vad            *smartturn.SileroVAD
+	threshold      float64
+	speechStartMS  int
+	checkpoints    []turnCheckpoint
+	inSpeech       bool
+	currentlySpeech bool
+	committed      bool
+	speechMS       int
+	silenceMS      int
+	nextCheckpoint int
+	vadPCM16       []int16
+	turnPCM16      []int16
+	lastSpeechLog  time.Time
+	lastStopAt      time.Time
+	interruptSpeechMS int
+}
+
+type turnCheckpoint struct {
+	silenceMS int
+	threshold float64
+}
+
+type localTurnDecision struct {
+	stop      bool
+	interrupt bool
+	message   string
+}
+
+func newLocalTurnDetector() (*localTurnDetector, error) {
+	modelPath := envDefault("SMART_TURN_MODEL", "voicethread/models/smart-turn-v3/smart-turn-v3.2-cpu.onnx")
+	det, err := smartturn.NewDetector(smartturn.DetectorConfig{ModelPath: modelPath, Threads: envInt("SMART_TURN_THREADS", 1)})
+	if err != nil {
+		return nil, err
+	}
+	vad, err := smartturn.NewSileroVAD(smartturn.SileroVADConfig{Threads: envInt("SMART_TURN_THREADS", 1)})
+	if err != nil {
+		det.Close()
+		return nil, err
+	}
+	return &localTurnDetector{
+		smart:         det,
+		vad:           vad,
+		threshold:     envFloat("LOCAL_VAD_THRESHOLD", 0.5),
+		speechStartMS: envInt("LOCAL_VAD_SPEECH_START_MS", 80),
+		checkpoints: []turnCheckpoint{
+			{silenceMS: envInt("SMART_TURN_CHECK_1_MS", 250), threshold: envFloat("SMART_TURN_CHECK_1_THRESHOLD", 0.98250)},
+			{silenceMS: envInt("SMART_TURN_CHECK_2_MS", 500), threshold: envFloat("SMART_TURN_CHECK_2_THRESHOLD", 0.970)},
+			{silenceMS: envInt("SMART_TURN_CHECK_3_MS", 800), threshold: envFloat("SMART_TURN_CHECK_3_THRESHOLD", 0.900)},
+			{silenceMS: envInt("SMART_TURN_CHECK_4_MS", 1000), threshold: envFloat("SMART_TURN_CHECK_4_THRESHOLD", 0.850)},
+			{silenceMS: envInt("SMART_TURN_CHECK_5_MS", 2000), threshold: envFloat("SMART_TURN_CHECK_5_THRESHOLD", 0.940)},
+			{silenceMS: envInt("SMART_TURN_CHECK_6_MS", 3000), threshold: envFloat("SMART_TURN_CHECK_6_THRESHOLD", 0.920)},
+			{silenceMS: envInt("SMART_TURN_CHECK_7_MS", 4500), threshold: envFloat("SMART_TURN_CHECK_7_THRESHOLD", 0.900)},
+		},
+	}, nil
+}
+
+func (d *localTurnDetector) Close() {
+	if d != nil && d.smart != nil {
+		d.smart.Close()
+	}
+	if d != nil && d.vad != nil {
+		d.vad.Close()
+	}
+}
+
+func (d *localTurnDetector) Observe(ctx context.Context, pcm24 []int16, assistantActive bool, suppressInterrupt bool, emit func(voicethread.Event)) localTurnDecision {
+	if d == nil || len(pcm24) == 0 {
+		return localTurnDecision{}
+	}
+	d.vadPCM16 = append(d.vadPCM16, downsample24To16(pcm24)...)
+	var decision localTurnDecision
+	for len(d.vadPCM16) >= smartturn.SileroChunkSamples {
+		chunk := d.vadPCM16[:smartturn.SileroChunkSamples]
+		if dec := d.observeVADChunk(ctx, chunk, assistantActive, suppressInterrupt, emit); dec.stop || dec.interrupt {
+			decision = dec
+		}
+		copy(d.vadPCM16, d.vadPCM16[smartturn.SileroChunkSamples:])
+		d.vadPCM16 = d.vadPCM16[:len(d.vadPCM16)-smartturn.SileroChunkSamples]
+	}
+	return decision
+}
+
+func (d *localTurnDetector) observeVADChunk(ctx context.Context, pcm16 []int16, assistantActive bool, suppressInterrupt bool, emit func(voicethread.Event)) localTurnDecision {
+	const chunkMS = smartturn.SileroChunkSamples * 1000 / smartturn.SampleRate
+	// Cheap wake gate: avoid running Silero continuously on room silence. While
+	// already inside a turn, always run Silero so trailing silence is measured
+	// by the model. Outside a turn, only call Silero if there is enough raw
+	// energy that speech might be starting.
+	if !d.inSpeech && pcmRMS(pcm16) < envFloat("LOCAL_VAD_WAKE_RMS", 0.003) {
+		return localTurnDecision{}
+	}
+	prob, _, err := d.vad.ProbabilityPCM16(ctx, pcm16, smartturn.SampleRate)
+	if err != nil {
+		emit(voicethread.Event{Type: "error", Message: "silero vad: " + err.Error()})
+		return localTurnDecision{}
+	}
+	isSpeech := float64(prob) >= d.threshold
+	if isSpeech {
+		var decision localTurnDecision
+		if d.silenceMS > 0 {
+			d.nextCheckpoint = 0
+		}
+		d.turnPCM16 = append(d.turnPCM16, pcm16...)
+		d.speechMS += chunkMS
+		d.silenceMS = 0
+		if assistantActive && !suppressInterrupt && float64(prob) >= envFloat("LOCAL_TURN_INTERRUPT_VAD_THRESHOLD", 0.98) {
+			d.interruptSpeechMS += chunkMS
+			sustainMS := envInt("LOCAL_TURN_INTERRUPT_SUSTAIN_MS", 250)
+			elapsedMS := int64(-1)
+			if !d.lastStopAt.IsZero() {
+				elapsedMS = time.Since(d.lastStopAt).Milliseconds()
+			}
+			if d.interruptSpeechMS >= sustainMS {
+				msg := fmt.Sprintf("local_turn.interrupt_after_stop elapsed_ms=%d p=%.3f sustain_ms=%d", elapsedMS, prob, d.interruptSpeechMS)
+				log.Print(msg)
+				decision = localTurnDecision{interrupt: true, message: msg}
+				d.interruptSpeechMS = 0
+			} else if d.interruptSpeechMS == chunkMS {
+				msg := fmt.Sprintf("local_turn.interrupt_candidate elapsed_ms=%d p=%.3f sustain_ms=%d/%d", elapsedMS, prob, d.interruptSpeechMS, sustainMS)
+				log.Print(msg)
+				emit(voicethread.Event{Type: "debug", Message: msg})
+			}
+		} else {
+			d.interruptSpeechMS = 0
+		}
+		if !d.currentlySpeech && d.speechMS >= d.speechStartMS {
+			d.currentlySpeech = true
+			d.inSpeech = true
+			d.committed = false
+			d.nextCheckpoint = 0
+			msg := fmt.Sprintf("local_vad.speech_started p=%.3f", prob)
+			log.Print(msg)
+			emit(voicethread.Event{Type: "debug", Message: msg})
+		}
+		return decision
+	}
+
+	d.speechMS = 0
+	d.interruptSpeechMS = 0
+	if !d.inSpeech {
+		return localTurnDecision{}
+	}
+	if d.currentlySpeech {
+		d.currentlySpeech = false
+		msg := fmt.Sprintf("local_vad.speech_stopped p=%.3f", prob)
+		log.Print(msg)
+		emit(voicethread.Event{Type: "debug", Message: msg})
+	}
+	d.turnPCM16 = append(d.turnPCM16, pcm16...)
+	d.silenceMS += chunkMS
+	if d.committed || d.nextCheckpoint >= len(d.checkpoints) {
+		return localTurnDecision{}
+	}
+	cp := d.checkpoints[d.nextCheckpoint]
+	if d.silenceMS < cp.silenceMS {
+		return localTurnDecision{}
+	}
+	d.nextCheckpoint++
+	start := time.Now()
+	result, err := d.smart.PredictPCM16(ctx, d.turnPCM16, smartturn.SampleRate)
+	if err != nil {
+		emit(voicethread.Event{Type: "error", Message: "smartturn: " + err.Error()})
+		return localTurnDecision{}
+	}
+	totalAudioMS := len(d.turnPCM16) * 1000 / smartturn.SampleRate
+	msg := fmt.Sprintf("smartturn silence_ms=%d audio_ms=%d p=%.3f threshold=%.2f complete=%v inference_ms=%d wall_ms=%d",
+		d.silenceMS, totalAudioMS, result.Probability, cp.threshold, result.Probability >= float32(cp.threshold), result.Duration.Milliseconds(), time.Since(start).Milliseconds())
+	log.Print(msg)
+	emit(voicethread.Event{Type: "debug", Message: msg})
+	if result.Probability >= float32(cp.threshold) {
+		d.lastStopAt = time.Now()
+		emit(voicethread.Event{Type: "local.turn.stop", Message: msg})
+		emit(voicethread.Event{Type: "debug", Message: "smartturn.detected_stop"})
+		d.resetTurn()
+		return localTurnDecision{stop: true, message: msg}
+	}
+	return localTurnDecision{}
+}
+
+func (d *localTurnDetector) resetTurn() {
+	d.inSpeech = false
+	d.currentlySpeech = false
+	d.committed = false
+	d.speechMS = 0
+	d.silenceMS = 0
+	d.nextCheckpoint = 0
+	d.turnPCM16 = d.turnPCM16[:0]
+	d.interruptSpeechMS = 0
+}
+
+// HACK1: post-response.done truncate workaround. Undo: remove itemStates/assistantAudio params and interruptAssistant call.
+func (b *audioBridge) writeOpenAIInputLoop(ctx context.Context, session *voicethread.VoiceSession, emit func(voicethread.Event), itemStates map[string]assistantItemState, itemStatesMu *sync.Mutex, assistantAudio map[string]assistantAudioState, assistantAudioMu *sync.Mutex) {
+	det, err := newLocalTurnDetector()
+	if err != nil {
+		emit(voicethread.Event{Type: "error", Message: "smartturn init: " + err.Error()})
+		return
+	}
+	defer det.Close()
+	emit(voicethread.Event{Type: "debug", Message: "smartturn local detection enabled; sending mic audio to OpenAI"})
 	for {
 		select {
 		case pcm := <-b.browserIn:
+			assistantActive := b.AssistantRecentlyEmitting()
+			suppressInterrupt := false
+			if assistantActive {
+				if echo, msg := b.MicLikelyEcho(pcm); echo {
+					suppressInterrupt = true
+					log.Print(msg)
+					emit(voicethread.Event{Type: "debug", Message: msg})
+				}
+			}
 			if err := session.AppendAudio(ctx, pcm16Base64(pcm)); err != nil {
 				emit(voicethread.Event{Type: "error", Message: "append browser audio: " + err.Error()})
 				return
+			}
+			decision := det.Observe(ctx, pcm, assistantActive, suppressInterrupt, emit)
+			if decision.interrupt && assistantActive {
+				if echo, msg := b.MicLikelyEcho(pcm); echo {
+					log.Print(msg)
+					emit(voicethread.Event{Type: "debug", Message: msg})
+				} else {
+					if msg != "" {
+						emit(voicethread.Event{Type: "debug", Message: msg})
+					}
+					emit(voicethread.Event{Type: "local.turn.interrupt", Message: decision.message})
+					interruptAssistant(ctx, session, b, emit, itemStates, itemStatesMu, assistantAudio, assistantAudioMu)
+				}
+			}
+			if decision.stop {
+				if err := session.CommitAudio(ctx); err != nil {
+					emit(voicethread.Event{Type: "error", Message: "smartturn commit: " + err.Error()})
+				} else {
+					emit(voicethread.Event{Type: "debug", Message: "smartturn committed audio"})
+				}
 			}
 		case <-ctx.Done():
 			return
@@ -955,6 +1241,7 @@ func (b *audioBridge) writeBrowserOpusOutputLoop(ctx context.Context, emit func(
 			}
 			encodedQ = append(encodedQ, encodedOutputFrame{
 				data:         packet,
+				pcm24:        downsample48To24(frame48),
 				itemID:       chunk.itemID,
 				contentIndex: chunk.contentIndex,
 				audioEndMS:   sourceAudioMS + 20,
@@ -1063,7 +1350,7 @@ func (b *audioBridge) writeBrowserOpusOutputLoop(ctx context.Context, emit func(
 				emit(voicethread.Event{Type: "error", Message: "write browser audio: " + err.Error()})
 				return
 			}
-			b.noteOutputFrame(frame.itemID, frame.contentIndex, frame.audioEndMS)
+			b.noteOutputFrame(frame.itemID, frame.contentIndex, frame.audioEndMS, frame.pcm24)
 			if frame.itemID != "" {
 				silenceFrames = 0
 			}
@@ -1123,6 +1410,7 @@ func (b *audioBridge) writeBrowserPCMUOutputLoop(ctx context.Context, emit func(
 			pcm24Buf = pcm24Buf[480:]
 			encodedQ = append(encodedQ, encodedOutputFrame{
 				data:         pcmuBytes(downsample24To8(frame24)),
+				pcm24:        append([]int16(nil), frame24...),
 				itemID:       chunk.itemID,
 				contentIndex: chunk.contentIndex,
 				audioEndMS:   sourceAudioMS + 20,
@@ -1214,7 +1502,7 @@ func (b *audioBridge) writeBrowserPCMUOutputLoop(ctx context.Context, emit func(
 				emit(voicethread.Event{Type: "error", Message: "write browser audio: " + err.Error()})
 				return
 			}
-			b.noteOutputFrame(frame.itemID, frame.contentIndex, frame.audioEndMS)
+			b.noteOutputFrame(frame.itemID, frame.contentIndex, frame.audioEndMS, frame.pcm24)
 		case <-b.clearOut:
 			clear()
 		case reply := <-b.stopOut:
@@ -1292,6 +1580,76 @@ func downsample24To8(in []int16) []int16 {
 		out[i] = in[i*3]
 	}
 	return out
+}
+
+func downsample24To16(in []int16) []int16 {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]int16, len(in)*2/3)
+	for i := range out {
+		// Linear interpolation at positions 0, 1.5, 3.0, 4.5, ...
+		pos2 := i * 3 // position * 2 in input-sample units
+		j := pos2 / 2
+		if pos2%2 == 0 || j+1 >= len(in) {
+			out[i] = in[j]
+		} else {
+			out[i] = int16((int(in[j]) + int(in[j+1])) / 2)
+		}
+	}
+	return out
+}
+
+func pcmRMS(pcm []int16) float64 {
+	if len(pcm) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, s := range pcm {
+		v := float64(s) / 32768.0
+		sum += v * v
+	}
+	return math.Sqrt(sum / float64(len(pcm)))
+}
+
+func bestAbsCorrelation(needle, haystack []int16, minRefRMS float64) (bestCorr float64, bestRefRMS float64) {
+	if len(needle) == 0 || len(haystack) < len(needle) {
+		return 0, 0
+	}
+	var needleEnergy float64
+	for _, s := range needle {
+		v := float64(s) / 32768.0
+		needleEnergy += v * v
+	}
+	if needleEnergy <= 0 {
+		return 0, 0
+	}
+	step := len(needle) / 4
+	if step < 120 {
+		step = 120
+	}
+	for start := 0; start+len(needle) <= len(haystack); start += step {
+		var dot, refEnergy float64
+		for i, s := range needle {
+			a := float64(s) / 32768.0
+			b := float64(haystack[start+i]) / 32768.0
+			dot += a * b
+			refEnergy += b * b
+		}
+		if refEnergy <= 0 {
+			continue
+		}
+		refRMS := math.Sqrt(refEnergy / float64(len(needle)))
+		if refRMS < minRefRMS {
+			continue
+		}
+		corr := math.Abs(dot) / math.Sqrt(needleEnergy*refEnergy)
+		if corr > bestCorr {
+			bestCorr = corr
+			bestRefRMS = refRMS
+		}
+	}
+	return bestCorr, bestRefRMS
 }
 
 func resample24To48(in []int16) []int16 {
@@ -1434,6 +1792,32 @@ func envDefault(name, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envInt(name string, fallback int) int {
+	v := os.Getenv(name)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		log.Printf("invalid %s=%q: %v", name, v, err)
+		return fallback
+	}
+	return n
+}
+
+func envFloat(name string, fallback float64) float64 {
+	v := os.Getenv(name)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		log.Printf("invalid %s=%q: %v", name, v, err)
+		return fallback
+	}
+	return n
 }
 
 func logVoiceEvent(ev voicethread.Event) {

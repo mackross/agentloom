@@ -272,13 +272,9 @@ func (s *VoiceSession) sendSessionUpdate(ctx context.Context) error {
 		"output_modalities": []string{"audio"},
 		"audio": map[string]any{
 			"input": map[string]any{
-				"format": map[string]any{"type": "audio/pcm", "rate": 24000},
-				"turn_detection": map[string]any{
-					"type":               "semantic_vad",
-					"create_response":    true,
-					"interrupt_response": false,
-				},
-				"transcription": transcriptionConfig(s.opts),
+				"format":         map[string]any{"type": "audio/pcm", "rate": 24000},
+				"turn_detection": nil,
+				"transcription":  nil,
 			},
 			"output": map[string]any{
 				"format": map[string]any{"type": "audio/pcm", "rate": 24000},

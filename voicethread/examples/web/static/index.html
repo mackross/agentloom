@@ -14,6 +14,13 @@
     .metric { padding: 0.6rem; border: 1px solid #ddd; border-radius: 0.5rem; background: #fafafa; }
     .metric .label { color: #666; font-size: 0.85rem; }
     .metric .value { font-size: 1.25rem; font-weight: 700; }
+    #turnViz { display: grid; grid-template-columns: 7rem 1fr; align-items: center; gap: 0.75rem; margin: 1rem 0; padding: 0.85rem; border-radius: 0.75rem; border: 1px solid #ddd; background: #f5f5f5; transition: background 120ms ease, box-shadow 120ms ease; }
+    #turnVizDot { width: 4rem; height: 4rem; border-radius: 50%; background: #999; box-shadow: 0 0 0 rgba(0,0,0,0); transition: background 80ms ease, box-shadow 80ms ease, transform 80ms ease; }
+    #turnViz.speech #turnVizDot { background: #22c55e; box-shadow: 0 0 1.25rem #22c55eaa; transform: scale(1.05); }
+    #turnViz.stop #turnVizDot { background: #3b82f6; box-shadow: 0 0 1.5rem #3b82f6aa; transform: scale(1.1); }
+    #turnViz.interrupt #turnVizDot { background: #ef4444; box-shadow: 0 0 1.5rem #ef4444aa; transform: scale(1.12); }
+    #turnVizText { font-weight: 700; }
+    #turnVizDetail { color: #555; margin-top: 0.2rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9rem; }
   </style>
 </head>
 <body>
@@ -33,6 +40,13 @@
     <button id="sendText" disabled>Send Text</button>
   </div>
   <div class="status" id="status">disconnected</div>
+  <div id="turnViz">
+    <div id="turnVizDot"></div>
+    <div>
+      <div id="turnVizText">Local turn detector idle</div>
+      <div id="turnVizDetail">Speak to see speech / Smart Turn checks here.</div>
+    </div>
+  </div>
   <audio id="remoteAudio" autoplay></audio>
   <div id="metrics">
     <div class="metric"><div class="label">DataChannel RTT</div><div class="value" id="metric-rtt">—</div></div>
@@ -45,6 +59,6 @@
   <div id="summaryBox" style="padding: 1rem; border: 1px solid #ddd; border-radius: 0.5rem; min-height: 5rem; white-space: pre-wrap;"></div>
   <div id="log"></div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=smartturn-ui-5"></script>
 </body>
 </html>

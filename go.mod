@@ -7,13 +7,18 @@ require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/coder/websocket v1.8.13
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
+	github.com/gomlx/gomlx v0.27.3
+	github.com/gomlx/onnx-gomlx v0.4.2
 	github.com/google/jsonschema-go v0.4.2
 	github.com/kazzmir/opus-go v1.3.0
 	github.com/openai/openai-go/v3 v3.33.0
 	github.com/pion/opus v0.0.0-20260521201147-ee1d1deea2f6
 	github.com/pion/webrtc/v4 v4.2.13
+	github.com/shota3506/onnxruntime-purego v0.0.0-20260315223538-8db8bd7424b2
+	github.com/tphakala/go-audio-resampler v1.3.0
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	golang.org/x/tools v0.42.0
+	gonum.org/v1/gonum v0.17.0
 	google.golang.org/genai v1.57.0
 	modernc.org/sqlite v1.50.0
 )
@@ -24,8 +29,11 @@ require (
 	cloud.google.com/go/compute/metadata v0.5.0 // indirect
 	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/ebitengine/purego v0.9.0 // indirect
+	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
+	github.com/gomlx/exceptions v0.0.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e // indirect
 	github.com/google/s2a-go v0.1.8 // indirect
@@ -49,30 +57,34 @@ require (
 	github.com/pion/stun/v3 v3.1.2 // indirect
 	github.com/pion/transport/v4 v4.0.1 // indirect
 	github.com/pion/turn/v5 v5.0.4 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	github.com/tphakala/go-audio-resampler v1.3.0 // indirect
 	github.com/tphakala/simd v1.0.22 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/mod v0.33.0 // indirect
+	golang.org/x/exp v0.0.0-20260312153236-7ab1446f8b90 // indirect
 	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/text v0.35.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
-	gonum.org/v1/gonum v0.17.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240903143218-8af14fe29dc1 // indirect
 	google.golang.org/grpc v1.66.2 // indirect
-	google.golang.org/protobuf v1.34.2 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
+	k8s.io/klog/v2 v2.140.0 // indirect
 	modernc.org/libc v1.72.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
 
 replace github.com/openai/openai-go/v3 => github.com/mackross/openai-go/v3 v3.33.1-0.20260502151956-b6b6d1dae839
+
+replace github.com/gomlx/onnx-gomlx => ./third_party/onnx-gomlx

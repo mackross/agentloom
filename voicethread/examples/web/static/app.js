@@ -12,6 +12,9 @@ const statusEl = $('status');
 const logEl = $('log');
 const summaryBox = $('summaryBox');
 const remoteAudio = $('remoteAudio');
+const turnViz = $('turnViz');
+const turnVizText = $('turnVizText');
+const turnVizDetail = $('turnVizDetail');
 const metricEls = {
   rtt: $('metric-rtt'),
   vadStart: $('metric-vad-start'),
@@ -31,6 +34,7 @@ let lastSpeechStoppedAt = 0;
 let lastResponseCreatedAt = 0;
 let awaitingFirstAudio = false;
 let summaryResponseIDs = new Set();
+let turnVizTimer = null;
 
 connectButton.onclick = connect;
 micButton.onclick = toggleMic;
@@ -55,8 +59,10 @@ async function connect() {
     setStatus('opening microphone...');
     if (!window.isSecureContext) throw new Error('microphone capture requires HTTPS or localhost');
     micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false },
     });
+    const micTrack = micStream.getAudioTracks()[0];
+    if (micTrack) log(`mic settings ${JSON.stringify(micTrack.getSettings())}`);
 
     pc = new RTCPeerConnection();
     pc.ontrack = (event) => {
@@ -235,13 +241,96 @@ function handleServerEvent(msg) {
       appendSummary('\n');
       break;
     case 'debug':
+      handleTurnVizDebug(msg.message || '');
       if (msg.message && !String(msg.message).includes('audio.delta')) log(`debug: ${msg.message}`);
+      break;
+    case 'local.turn.stop':
+      showSmartTurnStop(msg.message || '');
+      log(`turn stop: ${msg.message || ''}`);
+      break;
+    case 'local.turn.interrupt':
+      setTurnViz('interrupt', 'Interrupted after turn end', msg.message || '', 300);
+      log(`turn interrupt: ${msg.message || ''}`);
       break;
     case 'error':
       log(`ERROR: ${msg.message || JSON.stringify(msg)}`);
       break;
     default:
       log(`${msg.type}${msg.text ? `: ${msg.text}` : ''}`);
+      break;
+  }
+}
+
+function handleTurnVizDebug(message) {
+  if (!message) return;
+  if (message.startsWith('local_vad.speech_started')) {
+    setTurnViz('speech', 'Talking', message);
+    return;
+  }
+  if (message.startsWith('local_vad.speech_stopped')) {
+    setTurnViz('', 'Listening', message);
+    return;
+  }
+  if (message.startsWith('smartturn.detected_stop')) {
+    showSmartTurnStop(message);
+    return;
+  }
+  if (message.startsWith('smartturn silence_ms=')) {
+    const parsed = parseSmartTurnLine(message);
+    if (parsed) {
+      lastSmartTurnLabel = `Turn ended? ${parsed.silenceMS}ms @ ${parsed.threshold}`;
+      lastSmartTurnDetail = `p=${parsed.prob} threshold=${parsed.threshold} audio=${parsed.audioMS}ms`;
+      turnVizDetail.textContent = lastSmartTurnDetail;
+      if (message.includes('complete=true')) showSmartTurnStop(message);
+    } else {
+      turnVizDetail.textContent = message;
+    }
+  }
+}
+
+function showSmartTurnStop(message) {
+  if (message && message.startsWith('smartturn silence_ms=')) {
+    const parsed = parseSmartTurnLine(message);
+    if (parsed) {
+      lastSmartTurnLabel = `Turn ended ${parsed.silenceMS}ms @ ${parsed.threshold}`;
+      lastSmartTurnDetail = `p=${parsed.prob} threshold=${parsed.threshold} audio=${parsed.audioMS}ms`;
+    }
+  }
+  setTurnViz('stop', lastSmartTurnLabel || 'Turn ended', lastSmartTurnDetail || message, 3000);
+}
+
+let lastSmartTurnLabel = '';
+let lastSmartTurnDetail = '';
+
+function parseSmartTurnLine(message) {
+  const silence = message.match(/silence_ms=(\d+)/);
+  const audio = message.match(/audio_ms=(\d+)/);
+  const prob = message.match(/\bp=([0-9.]+)/);
+  const threshold = message.match(/threshold=([0-9.]+)/);
+  if (!silence || !prob || !threshold) return null;
+  return {
+    silenceMS: silence[1],
+    audioMS: audio ? audio[1] : '?',
+    prob: prob[1],
+    threshold: threshold[1],
+  };
+}
+
+function setTurnViz(state, text, detail, timeoutMS = 0) {
+  if (!turnViz) return;
+  if (turnVizTimer) {
+    clearTimeout(turnVizTimer);
+    turnVizTimer = null;
+  }
+  turnViz.className = state;
+  turnVizText.textContent = text;
+  turnVizDetail.textContent = detail || '';
+  if (timeoutMS > 0) {
+    turnVizTimer = setTimeout(() => {
+      turnViz.className = '';
+      turnVizText.textContent = 'Local turn detector idle';
+      turnVizDetail.textContent = 'Speak to see speech / Smart Turn checks here.';
+    }, timeoutMS);
   }
 }
 
