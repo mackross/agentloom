@@ -69,6 +69,14 @@ func (s *VoiceSession) handleRealtimeEvent(raw []byte) {
 	case "conversation.item.done":
 		s.rememberConversationItem(ev)
 		s.emit(Event{Type: "debug", Message: typeName, Raw: cloneRaw(raw)})
+	case "conversation.item.truncated":
+		s.emit(Event{
+			Type:         "assistant.audio.truncated",
+			ItemID:       jsonString(ev, "item_id"),
+			ContentIndex: jsonIntPtr(ev, "content_index"),
+			AudioEndMS:   jsonInt(ev, "audio_end_ms"),
+			Raw:          cloneRaw(raw),
+		})
 	case "response.done":
 		responseID := responseIDFromDone(ev)
 		if s.responseKind(responseID) == "summary" {
@@ -404,6 +412,13 @@ func jsonIntPtr(obj map[string]json.RawMessage, key string) *int {
 		}
 	}
 	return nil
+}
+
+func jsonInt(obj map[string]json.RawMessage, key string) int {
+	if p := jsonIntPtr(obj, key); p != nil {
+		return *p
+	}
+	return 0
 }
 
 func cloneRaw(raw []byte) json.RawMessage {
