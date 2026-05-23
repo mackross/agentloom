@@ -20,6 +20,7 @@ type Event struct {
 	Message      string          `json:"message,omitempty"`
 	ItemID       string          `json:"item_id,omitempty"`
 	ContentIndex *int            `json:"content_index,omitempty"`
+	AudioEndMS   int             `json:"audio_end_ms,omitempty"`
 	ResponseID   string          `json:"response_id,omitempty"`
 	ClientTimeMS int64           `json:"client_time_ms,omitempty"`
 	ServerTimeMS int64           `json:"server_time_ms,omitempty"`
@@ -219,6 +220,45 @@ func (s *VoiceSession) TruncateAssistantAudio(ctx context.Context, itemID string
 	})
 }
 
+// HACK1: post-response.done truncate workaround. Undo: delete DeleteConversationItem and CreateAssistantTextItem, and remove calls from voicethread/examples/web/main.go.
+// DeleteConversationItem removes an item from the Realtime conversation.
+func (s *VoiceSession) DeleteConversationItem(ctx context.Context, itemID string) error {
+	if itemID == "" {
+		return fmt.Errorf("voicethread: delete requires item id")
+	}
+	return s.sendJSON(ctx, map[string]any{
+		"type":    "conversation.item.delete",
+		"item_id": itemID,
+	})
+}
+
+// HACK1: post-response.done truncate workaround. Undo: delete this method and use only TruncateAssistantAudio once OpenAI truncates completed items reliably.
+// CreateAssistantTextItem inserts an assistant text item into the Realtime
+// conversation after previousItemID. This is a pragmatic workaround for cases
+// where post-completion audio truncation is acknowledged but does not appear to
+// rewrite the stored assistant item context.
+func (s *VoiceSession) CreateAssistantTextItem(ctx context.Context, previousItemID, text string) error {
+	if text == "" {
+		text = "[Assistant response was interrupted.]"
+	}
+	item := map[string]any{
+		"type": "message",
+		"role": "assistant",
+		"content": []map[string]any{{
+			"type": "output_text",
+			"text": text,
+		}},
+	}
+	req := map[string]any{
+		"type": "conversation.item.create",
+		"item": item,
+	}
+	if previousItemID != "" {
+		req["previous_item_id"] = previousItemID
+	}
+	return s.sendJSON(ctx, req)
+}
+
 // CreateResponse asks OpenAI Realtime to continue/respond.
 func (s *VoiceSession) CreateResponse(ctx context.Context) error {
 	return s.sendJSON(ctx, map[string]any{"type": "response.create"})
@@ -234,8 +274,9 @@ func (s *VoiceSession) sendSessionUpdate(ctx context.Context) error {
 			"input": map[string]any{
 				"format": map[string]any{"type": "audio/pcm", "rate": 24000},
 				"turn_detection": map[string]any{
-					"type":            "semantic_vad",
-					"create_response": true,
+					"type":               "semantic_vad",
+					"create_response":    true,
+					"interrupt_response": false,
 				},
 				"transcription": transcriptionConfig(s.opts),
 			},
