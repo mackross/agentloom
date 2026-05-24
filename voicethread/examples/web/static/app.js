@@ -15,6 +15,12 @@ const remoteAudio = $('remoteAudio');
 const turnViz = $('turnViz');
 const turnVizText = $('turnVizText');
 const turnVizDetail = $('turnVizDetail');
+const turnSensitivityInput = $('turnSensitivity');
+const turnSensitivityValue = $('turnSensitivityValue');
+const turnCurveEl = $('turnCurve');
+const echoGuardInput = $('echoGuard');
+const echoGuardValue = $('echoGuardValue');
+const echoGuardDetail = $('echoGuardDetail');
 const metricEls = {
   rtt: $('metric-rtt'),
   vadStart: $('metric-vad-start'),
@@ -51,6 +57,16 @@ summaryButton.onclick = () => {
 sendTextButton.onclick = sendText;
 textInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') sendText();
+});
+turnSensitivityInput.addEventListener('input', () => {
+  const value = Number(turnSensitivityInput.value);
+  turnSensitivityValue.textContent = value.toFixed(2);
+  send({ type: 'turn_sensitivity', value });
+});
+echoGuardInput.addEventListener('input', () => {
+  const value = Number(echoGuardInput.value);
+  echoGuardValue.textContent = value.toFixed(2);
+  send({ type: 'echo_guard_sensitivity', value });
 });
 
 async function connect() {
@@ -143,6 +159,8 @@ function setConnectedUI() {
   continueButton.disabled = false;
   summaryButton.disabled = false;
   sendTextButton.disabled = false;
+  turnSensitivityInput.disabled = false;
+  echoGuardInput.disabled = false;
   setStatus('connected; speak naturally');
 }
 
@@ -154,6 +172,8 @@ function setDisconnectedUI() {
   continueButton.disabled = true;
   summaryButton.disabled = true;
   sendTextButton.disabled = true;
+  turnSensitivityInput.disabled = true;
+  echoGuardInput.disabled = true;
   micButton.textContent = 'Pause Mic';
   setStatus('disconnected');
 }
@@ -252,6 +272,12 @@ function handleServerEvent(msg) {
       setTurnViz('interrupt', 'Interrupted after turn end', msg.message || '', 300);
       log(`turn interrupt: ${msg.message || ''}`);
       break;
+    case 'local.turn.curve':
+      renderTurnCurve(msg.raw || msg);
+      break;
+    case 'local.echo.guard':
+      renderEchoGuard(msg.raw || msg);
+      break;
     case 'error':
       log(`ERROR: ${msg.message || JSON.stringify(msg)}`);
       break;
@@ -299,6 +325,49 @@ function showSmartTurnStop(message) {
   setTurnViz('stop', lastSmartTurnLabel || 'Turn ended', lastSmartTurnDetail || message, 3000);
 }
 
+function renderTurnCurve(curve) {
+  if (!curve || !Array.isArray(curve.thresholds)) return;
+  const sensitivity = Number(curve.sensitivity || 0);
+  turnSensitivityInput.value = String(sensitivity);
+  turnSensitivityValue.textContent = sensitivity.toFixed(2);
+  turnCurveEl.textContent = '';
+  for (const point of curve.thresholds) {
+    const threshold = Number(point.threshold);
+    const ms = Number(point.ms);
+    const wrap = document.createElement('div');
+    wrap.className = 'turnCurvePoint';
+
+    const value = document.createElement('div');
+    value.className = 'turnThresholdValue';
+    value.textContent = threshold.toFixed(3);
+
+    const slider = document.createElement('input');
+    slider.className = 'turnThreshold';
+    slider.type = 'range';
+    slider.min = '0.5';
+    slider.max = '1.0';
+    slider.step = '0.001';
+    slider.value = String(threshold);
+    slider.disabled = true;
+
+    const label = document.createElement('div');
+    label.textContent = ms >= 1000 ? `${(ms / 1000).toFixed(ms % 1000 ? 1 : 0)}s` : `${ms}ms`;
+
+    wrap.append(value, slider, label);
+    turnCurveEl.append(wrap);
+  }
+}
+
+function renderEchoGuard(guard) {
+  if (!guard) return;
+  const sensitivity = Number(guard.sensitivity || 0);
+  const wakeRMS = Number(guard.wake_rms || 0);
+  const wakeVAD = Number(guard.wake_vad || 0);
+  echoGuardInput.value = String(sensitivity);
+  echoGuardValue.textContent = sensitivity.toFixed(2);
+  echoGuardDetail.textContent = `assistant-active wake gate: rms>=${wakeRMS.toFixed(4)} and vad>=${wakeVAD.toFixed(3)}`;
+}
+
 let lastSmartTurnLabel = '';
 let lastSmartTurnDetail = '';
 
@@ -336,7 +405,7 @@ function setTurnViz(state, text, detail, timeoutMS = 0) {
 
 function startPings() {
   stopPings();
-  pingTimer = setInterval(() => send({ type: 'ping', client_time_ms: performance.now() }), 2000);
+  pingTimer = setInterval(() => send({ type: 'ping', client_time_ms: Math.round(performance.now()) }), 2000);
 }
 
 function stopPings() {

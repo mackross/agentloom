@@ -21,6 +21,16 @@
     #turnViz.interrupt #turnVizDot { background: #ef4444; box-shadow: 0 0 1.5rem #ef4444aa; transform: scale(1.12); }
     #turnVizText { font-weight: 700; }
     #turnVizDetail { color: #555; margin-top: 0.2rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9rem; }
+    #turnControls, #echoControls { margin: 1rem 0; padding: 0.85rem; border: 1px solid #ddd; border-radius: 0.75rem; background: #fafafa; }
+    #turnControls input, #echoControls input { min-width: 0; }
+    .turnSensitivityRow { display: grid; grid-template-columns: 5rem 1fr 4.5rem; align-items: center; gap: 0.75rem; }
+    #turnSensitivity, #echoGuard { width: 100%; }
+    #turnSensitivityValue, #echoGuardValue { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; text-align: right; }
+    #echoGuardDetail { color: #555; margin-top: 0.5rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9rem; }
+    #turnCurve { display: flex; align-items: end; gap: 0.7rem; min-height: 10rem; margin-top: 0.75rem; overflow-x: auto; }
+    .turnCurvePoint { display: grid; justify-items: center; gap: 0.25rem; min-width: 3.25rem; color: #555; font-size: 0.85rem; }
+    .turnThreshold { writing-mode: vertical-lr; direction: rtl; height: 7rem; width: 1.5rem; accent-color: #3b82f6; }
+    .turnThresholdValue { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #111; font-weight: 700; }
   </style>
 </head>
 <body>
@@ -40,6 +50,22 @@
     <button id="sendText" disabled>Send Text</button>
   </div>
   <div class="status" id="status">disconnected</div>
+  <div id="turnControls">
+    <div class="turnSensitivityRow">
+      <span>Patient</span>
+      <input id="turnSensitivity" type="range" min="-1" max="1" step="0.01" value="0" disabled />
+      <span>Eager <span id="turnSensitivityValue">0.00</span></span>
+    </div>
+    <div id="turnCurve"></div>
+  </div>
+  <div id="echoControls">
+    <div class="turnSensitivityRow">
+      <span>Barge-in</span>
+      <input id="echoGuard" type="range" min="-1" max="1" step="0.01" value="0" disabled />
+      <span>Echo-safe <span id="echoGuardValue">0.00</span></span>
+    </div>
+    <div id="echoGuardDetail">assistant-active wake gate: default</div>
+  </div>
   <div id="turnViz">
     <div id="turnVizDot"></div>
     <div>
@@ -59,6 +85,6 @@
   <div id="summaryBox" style="padding: 1rem; border: 1px solid #ddd; border-radius: 0.5rem; min-height: 5rem; white-space: pre-wrap;"></div>
   <div id="log"></div>
 
-  <script src="/static/app.js?v=smartturn-ui-5"></script>
+  <script src="/static/app.js?v=smartturn-ui-7"></script>
 </body>
 </html>
