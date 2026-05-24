@@ -139,6 +139,11 @@ func (s *VoiceSession) CommitAudio(ctx context.Context) error {
 	return s.CreateResponse(ctx)
 }
 
+// ClearInputAudio clears uncommitted audio currently buffered by Realtime.
+func (s *VoiceSession) ClearInputAudio(ctx context.Context) error {
+	return s.sendJSON(ctx, map[string]any{"type": "input_audio_buffer.clear"})
+}
+
 // SendText sends a user text item and asks the model to respond.
 func (s *VoiceSession) SendText(ctx context.Context, text string) error {
 	if err := s.sendJSON(ctx, map[string]any{
