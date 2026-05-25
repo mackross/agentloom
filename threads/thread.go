@@ -7,14 +7,41 @@ import (
 	"sync/atomic"
 )
 
-// Thread is a single-owner conversation state machine. Its mutation methods are
+// Thread is the public runtime surface for conversation programs. It exists to
+// make reentrant program, delegate, and tool code independent of whether the
+// backing runtime is direct or event-loop-owned; callbacks can use the supplied
+// Thread without reaching for concrete implementations or re-entering the same
+// event loop.
+type Thread interface {
+	State() State
+	CompletedTurns() []Turn
+	Seq() uint32
+	Snapshot() (ThreadSnapshot, error)
+	Checkpoint(CheckpointOptions) (Checkpoint, error)
+	WALAfter(uint32) []WALEvent
+	QueueItem(Item)
+	QueueSyntheticToolExchange(ToolCall, ToolCallResult)
+	SetDelegate(ThreadDelegate)
+	SetDurableStore(DurableStore)
+	SetExecutor(*ThreadExecutor)
+	SetToolProvider(ToolProvider)
+	SetToolResolver(ToolResolver)
+	AttachExecutorForRecoveryWithOptions(*ThreadExecutor, RecoveryOptions) error
+	CancelCurrentTurn() bool
+	WaitUntilIdle(context.Context) error
+	EstimateRequestTokens(context.Context) (int, error)
+	EstimateTextTokens(context.Context, string) (int, error)
+	ReturnAsyncToolItem(context.Context, string, Item) error
+}
+
+// thread is a single-owner conversation state machine. Its mutation methods are
 // synchronous and are not goroutine-safe.
 //
-// If a Thread is owned by an EventLoop, all access that can observe or mutate
+// If a thread is owned by an EventLoop, all access that can observe or mutate
 // the thread must run through EventLoop.Do. Async tool calling requires
 // EventLoop ownership because tool completions can arrive from other goroutines
 // and must be serialized back onto the thread.
-type Thread struct {
+type thread struct {
 	cb             controlBlock
 	items          itemList[Item]
 	executor       stateObserver
@@ -36,38 +63,53 @@ type Thread struct {
 	replayingWAL bool
 }
 
-func (t *Thread) setEventLoop(loop *EventLoop) {
+func (t *thread) setEventLoop(loop *EventLoop) {
 	if loop != nil && t.loop != nil {
 		panic("threads event loop already owns thread")
 	}
 	t.loop = loop
 }
 
-func New() *Thread {
-	t := &Thread{}
+func New() Thread { return newThread() }
+
+func newThread() *thread {
+	t := &thread{}
 	t.cb.observer = t
 	t.cb.setState(StateIdle)
 	t.captureSafeSnapshot()
 	return t
 }
 
-func (t *Thread) IP() *item[Item] {
+var _ Thread = (*thread)(nil)
+
+func (t *thread) IP() *item[Item] {
 	return t.cb.IP()
 }
 
-func (t *Thread) State() State {
+func (t *thread) State() State {
 	return t.cb.State()
 }
 
-func (t *Thread) SetExecutor(e stateObserver) {
+func (t *thread) WaitUntilIdle(context.Context) error {
+	if t.loop == nil {
+		panic("threads thread WaitUntilIdle requires an event loop")
+	}
+	panic("threads thread WaitUntilIdle must be called through its event-loop-backed owner")
+}
+
+func (t *thread) SetExecutor(e *ThreadExecutor) {
+	t.setExecutor(e)
+}
+
+func (t *thread) setExecutor(e stateObserver) {
 	t.executor = e
 }
 
-func (t *Thread) SetDelegate(d ThreadDelegate) {
+func (t *thread) SetDelegate(d ThreadDelegate) {
 	t.delegate = d
 }
 
-func (t *Thread) SetDurableStore(store DurableStore) {
+func (t *thread) SetDurableStore(store DurableStore) {
 	t.store = store
 	if store == nil {
 		return
@@ -83,7 +125,7 @@ func (t *Thread) SetDurableStore(store DurableStore) {
 	t.wal = nil
 }
 
-func (t *Thread) SetToolProvider(p ToolProvider) {
+func (t *thread) SetToolProvider(p ToolProvider) {
 	t.tools = p
 	snap := ToolsSnapshot{}
 	if p != nil {
@@ -92,7 +134,7 @@ func (t *Thread) SetToolProvider(p ToolProvider) {
 	t.QueueItem(snap)
 }
 
-func (t *Thread) SetToolResolver(r ToolResolver) {
+func (t *thread) SetToolResolver(r ToolResolver) {
 	t.resolver = r
 }
 
@@ -106,7 +148,7 @@ func (t *Thread) SetToolResolver(r ToolResolver) {
 // contexts passed to tool calls produced in that turn. If a streamer can emit
 // tool calls collected from multiple LLM turns (Fireworks-style), calls from
 // earlier turns may not be canceled here; that is likely a bug.
-func (t *Thread) CancelCurrentTurn() bool {
+func (t *thread) CancelCurrentTurn() bool {
 	canceled := false
 	if c, ok := t.executor.(streamCanceler); ok && c.CancelCurrentStream() {
 		canceled = true
@@ -125,7 +167,7 @@ type toolCancel struct {
 	cancel context.CancelFunc
 }
 
-func (t *Thread) beginToolCallContext(callID string) (context.Context, *toolCancel) {
+func (t *thread) beginToolCallContext(callID string) (context.Context, *toolCancel) {
 	ctx, cancel := context.WithCancel(context.Background())
 	tc := &toolCancel{cancel: cancel}
 	if callID == "" {
@@ -140,7 +182,7 @@ func (t *Thread) beginToolCallContext(callID string) (context.Context, *toolCanc
 	return ctx, tc
 }
 
-func (t *Thread) clearToolCallContext(callID string, tc *toolCancel) {
+func (t *thread) clearToolCallContext(callID string, tc *toolCancel) {
 	if callID != "" {
 		t.toolCancelMu.Lock()
 		if t.toolCancels[callID] == tc {
@@ -153,7 +195,7 @@ func (t *Thread) clearToolCallContext(callID string, tc *toolCancel) {
 	}
 }
 
-func (t *Thread) clearToolCallContextForResult(callID string) {
+func (t *thread) clearToolCallContextForResult(callID string) {
 	if callID == "" {
 		return
 	}
@@ -169,7 +211,7 @@ func (t *Thread) clearToolCallContextForResult(callID string) {
 	}
 }
 
-func (t *Thread) cancelToolCalls() bool {
+func (t *thread) cancelToolCalls() bool {
 	t.toolCancelMu.Lock()
 	defer t.toolCancelMu.Unlock()
 	if len(t.toolCancels) == 0 {
@@ -183,11 +225,11 @@ func (t *Thread) cancelToolCalls() bool {
 	return true
 }
 
-func (t *Thread) advanceNext() error {
+func (t *thread) advanceNext() error {
 	return t.cb.advanceNext(&t.items)
 }
 
-func (t *Thread) advanceWhilePossible() error {
+func (t *thread) advanceWhilePossible() error {
 	for {
 		if !t.cb.canAdvance(&t.items) {
 			return nil
@@ -198,7 +240,7 @@ func (t *Thread) advanceWhilePossible() error {
 	}
 }
 
-func (t *Thread) QueueItem(v Item) {
+func (t *thread) QueueItem(v Item) {
 	if r, ok := v.(ToolCallResult); ok {
 		t.clearToolCallContextForResult(r.CallID)
 		if t.hasRecoveryResultForToolCall(r.CallID) {
@@ -230,7 +272,7 @@ func (t *Thread) QueueItem(v Item) {
 	t.captureSafeIfIdle()
 }
 
-func (t *Thread) QueueSyntheticToolExchange(call ToolCall, result ToolCallResult) {
+func (t *thread) QueueSyntheticToolExchange(call ToolCall, result ToolCallResult) {
 	if call.Name == "" || (call.CallID != "" && result.CallID != "" && call.CallID != result.CallID) {
 		panic(fmt.Sprintf("threads invalid synthetic tool exchange: call=%#v result=%#v", call, result))
 	}
@@ -255,7 +297,7 @@ func (t *Thread) QueueSyntheticToolExchange(call ToolCall, result ToolCallResult
 	t.QueueItem(result)
 }
 
-func (t *Thread) hasRecoveryResultForToolCall(callID string) bool {
+func (t *thread) hasRecoveryResultForToolCall(callID string) bool {
 	if callID == "" {
 		return false
 	}
@@ -271,11 +313,11 @@ func (t *Thread) hasRecoveryResultForToolCall(callID string) bool {
 	return false
 }
 
-func (t *Thread) Queued() *itemList[Item] {
+func (t *thread) Queued() *itemList[Item] {
 	return t.cb.Queued(&t.items)
 }
 
-func (t *Thread) beginStreaming() error {
+func (t *thread) beginStreaming() error {
 	t.mutationSeq++
 	if err := t.cb.beginStreaming(); err != nil {
 		return err
@@ -284,7 +326,7 @@ func (t *Thread) beginStreaming() error {
 	return nil
 }
 
-func (t *Thread) appendStreamItem(v Item) error {
+func (t *thread) appendStreamItem(v Item) error {
 	t.mutationSeq++
 	if err := t.cb.appendStreamItem(&t.items, v); err != nil {
 		return err
@@ -298,7 +340,7 @@ func (t *Thread) appendStreamItem(v Item) error {
 	return t.advanceWhilePossible()
 }
 
-func (t *Thread) endStreaming() error {
+func (t *thread) endStreaming() error {
 	t.mutationSeq++
 	if !t.replayingWAL {
 		t.cb.awaitToolResults = t.policy == ToolResultSendRequiresComplete && len(t.cb.pendingToolCalls(&t.items)) > 0
@@ -314,7 +356,7 @@ func (t *Thread) endStreaming() error {
 	return nil
 }
 
-func (t *Thread) OnCBStateChange(from, to State) error {
+func (t *thread) OnCBStateChange(from, to State) error {
 	if to == StateConstructLLMRequest && t.delegate != nil {
 		t.delegate.OnThreadRequest(t)
 	}
@@ -336,7 +378,7 @@ func (t *Thread) OnCBStateChange(from, to State) error {
 	return nil
 }
 
-func (t *Thread) resolvePendingToolCalls() (bool, error) {
+func (t *thread) resolvePendingToolCalls() (bool, error) {
 	if t.resolver == nil {
 		return false, nil
 	}
@@ -392,14 +434,14 @@ func (t *Thread) resolvePendingToolCalls() (bool, error) {
 	return resolved, nil
 }
 
-func (t *Thread) queueToolResolutionItem(beforeSend bool, v Item) {
+func (t *thread) queueToolResolutionItem(beforeSend bool, v Item) {
 	if beforeSend && t.queueBeforePendingSend(v) {
 		return
 	}
 	t.QueueItem(v)
 }
 
-func (t *Thread) queueBeforePendingSend(v Item) bool {
+func (t *thread) queueBeforePendingSend(v Item) bool {
 	if t.cb.queueItemBeforeFirstPendingSend(&t.items, v) {
 		t.mutationSeq++
 		t.appendWAL(walOpQueueItemBeforeSend, v)
@@ -422,78 +464,80 @@ type streamCanceler interface {
 	CancelCurrentStream() bool
 }
 
+// stateObserver observes control-block transitions and is the executor hook
+// used by Thread implementations. Most callers install a *ThreadExecutor.
 type stateObserver interface {
-	OnControlBlockStateChange(t *Thread, from, to State) error
+	OnControlBlockStateChange(t *thread, from, to State) error
 }
 
 // ThreadDelegate observes thread lifecycle events.
 //
 // If the Thread is owned by an EventLoop, delegate methods are called while the
 // event loop is already executing on the thread mutation lane. Delegate
-// implementations may use the supplied *Thread directly for immediate
+// implementations may use the supplied Thread directly for immediate
 // inspection/mutation. They must not synchronously call EventLoop.Do or
 // Branch.RunOnEventLoop for the same thread from inside the callback; doing so
 // waits for the current callback to return and can deadlock. If a delegate needs
 // to schedule follow-up work through the event loop, start a goroutine and call
 // EventLoop.Do/Branch.RunOnEventLoop from there after the callback returns.
 type ThreadDelegate interface {
-	OnThreadIdle(t *Thread)
-	OnThreadRequest(t *Thread)
+	OnThreadIdle(t Thread)
+	OnThreadRequest(t Thread)
 }
 
 // ThreadStreamItemAppendedDelegate observes stream items as they are appended.
 // The same event-loop callback rules described on ThreadDelegate apply.
 type ThreadStreamItemAppendedDelegate interface {
-	OnThreadStreamItemAppended(t *Thread, item Item)
+	OnThreadStreamItemAppended(t Thread, item Item)
 }
 
 // ThreadExecutorErrorDelegate observes errors returned while QueueItem drives
 // executor and tool state transitions. QueueItem remains fire-and-forget, so
 // this hook is the way to observe those otherwise dropped errors.
 type ThreadExecutorErrorDelegate interface {
-	OnThreadExecutorError(t *Thread, err error)
+	OnThreadExecutorError(t Thread, err error)
 }
 
-type ThreadDelegateFunc func(t *Thread)
+type ThreadDelegateFunc func(t Thread)
 
-func (f ThreadDelegateFunc) OnThreadIdle(t *Thread) {
+func (f ThreadDelegateFunc) OnThreadIdle(t Thread) {
 	f(t)
 }
 
-func (ThreadDelegateFunc) OnThreadRequest(*Thread) {}
+func (ThreadDelegateFunc) OnThreadRequest(Thread) {}
 
 type ThreadDelegateFuncs struct {
-	OnIdle               func(t *Thread)
-	OnRequest            func(t *Thread)
-	OnStreamItemAppended func(t *Thread, item Item)
-	OnExecutorError      func(t *Thread, err error)
+	OnIdle               func(t Thread)
+	OnRequest            func(t Thread)
+	OnStreamItemAppended func(t Thread, item Item)
+	OnExecutorError      func(t Thread, err error)
 }
 
-func (d ThreadDelegateFuncs) OnThreadIdle(t *Thread) {
+func (d ThreadDelegateFuncs) OnThreadIdle(t Thread) {
 	if d.OnIdle != nil {
 		d.OnIdle(t)
 	}
 }
 
-func (d ThreadDelegateFuncs) OnThreadRequest(t *Thread) {
+func (d ThreadDelegateFuncs) OnThreadRequest(t Thread) {
 	if d.OnRequest != nil {
 		d.OnRequest(t)
 	}
 }
 
-func (d ThreadDelegateFuncs) OnThreadStreamItemAppended(t *Thread, item Item) {
+func (d ThreadDelegateFuncs) OnThreadStreamItemAppended(t Thread, item Item) {
 	if d.OnStreamItemAppended != nil {
 		d.OnStreamItemAppended(t, item)
 	}
 }
 
-func (d ThreadDelegateFuncs) OnThreadExecutorError(t *Thread, err error) {
+func (d ThreadDelegateFuncs) OnThreadExecutorError(t Thread, err error) {
 	if d.OnExecutorError != nil {
 		d.OnExecutorError(t, err)
 	}
 }
 
-func (t *Thread) onExecutorError(err error) {
+func (t *thread) onExecutorError(err error) {
 	if err == nil || t.delegate == nil {
 		return
 	}

@@ -12,15 +12,15 @@ import (
 
 type errorObserver struct{ err error }
 
-func (o errorObserver) OnControlBlockStateChange(*Thread, State, State) error { return o.err }
+func (o errorObserver) OnControlBlockStateChange(*thread, State, State) error { return o.err }
 
 func TestQueueItemReportsExecutorErrorToDelegate(t *testing.T) {
 	want := errors.New("boom")
-	thread := New()
-	thread.SetExecutor(errorObserver{err: want})
+	thread := newThread()
+	thread.setExecutor(errorObserver{err: want})
 	var got error
 	thread.SetDelegate(ThreadDelegateFuncs{
-		OnExecutorError: func(_ *Thread, err error) {
+		OnExecutorError: func(_ Thread, err error) {
 			got = err
 		},
 	})
@@ -327,7 +327,7 @@ type staticToolProvider struct {
 	snap ToolsSnapshot
 }
 
-func (p staticToolProvider) ToolsSnapshot(*Thread) ToolsSnapshot { return p.snap }
+func (p staticToolProvider) ToolsSnapshot(Thread) ToolsSnapshot { return p.snap }
 
 func TestSetToolProviderQueuesToolOfferSnapshot(t *testing.T) {
 	thread := newTestThread(t)
@@ -422,7 +422,7 @@ func TestStateIsReceivingDuringStreamAndCompleteAfter(t *testing.T) {
 func TestDelegateNotifiedWhenThreadTransitionsToIdle(t *testing.T) {
 	thread := newTestThread(t)
 	idleCalls := 0
-	thread.SetDelegate(ThreadDelegateFunc(func(_ *Thread) {
+	thread.SetDelegate(ThreadDelegateFunc(func(_ Thread) {
 		idleCalls++
 	}))
 
@@ -443,8 +443,8 @@ func TestDelegateNotifiedWhenThreadTransitionsToRequestThenIdle(t *testing.T) {
 	thread := newTestThread(t)
 	events := make([]string, 0, 2)
 	thread.SetDelegate(ThreadDelegateFuncs{
-		OnRequest: func(_ *Thread) { events = append(events, "request") },
-		OnIdle:    func(_ *Thread) { events = append(events, "idle") },
+		OnRequest: func(_ Thread) { events = append(events, "request") },
+		OnIdle:    func(_ Thread) { events = append(events, "idle") },
 	})
 
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
@@ -467,7 +467,7 @@ func TestDelegateReceivesEachStreamItemAppended(t *testing.T) {
 	thread := newTestThread(t)
 	appended := make([]Item, 0, 2)
 	thread.SetDelegate(ThreadDelegateFuncs{
-		OnStreamItemAppended: func(_ *Thread, item Item) {
+		OnStreamItemAppended: func(_ Thread, item Item) {
 			appended = append(appended, item)
 		},
 	})
@@ -889,7 +889,7 @@ func TestStrictToolResultPolicyMovesResultsBeforeHeldSendBoundary(t *testing.T) 
 func TestAwaitingToolResultsIsNotIdle(t *testing.T) {
 	thread := newTestThread(t)
 	idleCalls := 0
-	thread.SetDelegate(ThreadDelegateFuncs{OnIdle: func(*Thread) { idleCalls++ }})
+	thread.SetDelegate(ThreadDelegateFuncs{OnIdle: func(Thread) { idleCalls++ }})
 	streamer := newFakeStreamer()
 	streamer.capabilities.ToolResultSendPolicy = ToolResultSendRequiresComplete
 	streamer.Reply(func(b *streamBuilder) {
@@ -968,7 +968,7 @@ func TestQueueSyntheticToolExchangeCompletesIDsAndSkipsResolver(t *testing.T) {
 	thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
 	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("calc", "calculate")})
 	resolved := false
-	thread.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		resolved = true
 		return ToolDispatch{}, nil
 	}))
@@ -1031,7 +1031,7 @@ func TestQueueSyntheticToolExchangePanicsOnBasicMisuse(t *testing.T) {
 func TestDelegateReceivesRawToolCallChunkAndFinalItems(t *testing.T) {
 	thread := newTestThread(t)
 	seen := []Item{}
-	thread.SetDelegate(ThreadDelegateFuncs{OnStreamItemAppended: func(_ *Thread, item Item) {
+	thread.SetDelegate(ThreadDelegateFuncs{OnStreamItemAppended: func(_ Thread, item Item) {
 		seen = append(seen, item)
 	}})
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {

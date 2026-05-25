@@ -69,11 +69,15 @@ func recoveryToolCallStatusText(p pendingToolCall, policy ToolCallRecoveryPolicy
 		"If this action matters, verify the current state or ask the user before retrying."
 }
 
-func (t *Thread) AttachExecutorForRecovery(e stateObserver) error {
+func (t *thread) AttachExecutorForRecovery(e *ThreadExecutor) error {
 	return t.AttachExecutorForRecoveryWithOptions(e, RecoveryOptions{})
 }
 
-func (t *Thread) AttachExecutorForRecoveryWithOptions(e stateObserver, opts RecoveryOptions) error {
+func (t *thread) AttachExecutorForRecoveryWithOptions(e *ThreadExecutor, opts RecoveryOptions) error {
+	return t.attachExecutorForRecoveryWithOptions(e, opts)
+}
+
+func (t *thread) attachExecutorForRecoveryWithOptions(e stateObserver, opts RecoveryOptions) error {
 	state := t.State()
 	if state == StateStreamComplete {
 		t.cb.setState(StateIdle)
@@ -96,7 +100,7 @@ func (t *Thread) AttachExecutorForRecoveryWithOptions(e stateObserver, opts Reco
 	if state == StateReceivingStream {
 		return t.resumeReceivingStream(e, opts)
 	}
-	t.SetExecutor(e)
+	t.setExecutor(e)
 	if state == StateIdle || state == StateAwaitingToolResults {
 		_, err := t.resolvePendingToolCalls()
 		return err
@@ -107,7 +111,7 @@ func (t *Thread) AttachExecutorForRecoveryWithOptions(e stateObserver, opts Reco
 	return nil
 }
 
-func (t *Thread) recoverPendingToolCalls(opts RecoveryOptions) error {
+func (t *thread) recoverPendingToolCalls(opts RecoveryOptions) error {
 	policy := opts.ToolCallPolicy
 	switch policy {
 	case "":
@@ -135,7 +139,7 @@ func pendingToolCallNeedsRecovery(p pendingToolCall) bool {
 	return p.resolving || p.started
 }
 
-func (t *Thread) resumeReceivingStream(e stateObserver, opts RecoveryOptions) error {
+func (t *thread) resumeReceivingStream(e stateObserver, opts RecoveryOptions) error {
 	caps := StreamerCapabilities{}
 	if r, ok := e.(interface{ StreamerCapabilities() StreamerCapabilities }); ok {
 		caps = r.StreamerCapabilities()
@@ -185,11 +189,11 @@ func (t *Thread) resumeReceivingStream(e stateObserver, opts RecoveryOptions) er
 			return err
 		}
 	}
-	t.SetExecutor(e)
+	t.setExecutor(e)
 	return t.resumeConstructLLMRequest()
 }
 
-func (t *Thread) replaceDurableSnapshot() error {
+func (t *thread) replaceDurableSnapshot() error {
 	if t.store == nil {
 		return nil
 	}
@@ -202,7 +206,7 @@ func (t *Thread) replaceDurableSnapshot() error {
 	return nil
 }
 
-func (t *Thread) dropStreamTail(keep *item[Item]) {
+func (t *thread) dropStreamTail(keep *item[Item]) {
 	if keep == nil || keep == t.cb.streamInsertionPoint {
 		return
 	}
@@ -213,7 +217,7 @@ func (t *Thread) dropStreamTail(keep *item[Item]) {
 	t.cb.ip = keep
 }
 
-func (t *Thread) resumeConstructLLMRequest() error {
+func (t *thread) resumeConstructLLMRequest() error {
 	if t.State() != StateConstructLLMRequest {
 		return nil
 	}

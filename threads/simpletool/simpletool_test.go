@@ -10,7 +10,7 @@ import (
 )
 
 func TestProviderFuncClonesToolsSnapshot(t *testing.T) {
-	provider := ProviderFunc(func(_ *threads.Thread) threads.ToolsSnapshot {
+	provider := ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return threads.ToolsSnapshot{
 			Snapshot: threads.ToolOfferSnapshot{Offered: []threads.ToolSpec{{
 				Name:        "calc",
@@ -38,7 +38,7 @@ func TestResolverFuncReceivesOpaqueLoadData(t *testing.T) {
 	var gotName string
 	var gotData json.RawMessage
 
-	resolver := ResolverFunc(func(_ context.Context, _ *threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+	resolver := ResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 		gotName = call.Name
 		gotData = append(json.RawMessage(nil), handlerLoadData...)
 		return threads.ToolDispatch{Items: []threads.Item{threads.AssistantText("ok")}}, nil

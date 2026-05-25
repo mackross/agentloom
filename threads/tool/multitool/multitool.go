@@ -96,7 +96,7 @@ type SubtoolSpec struct {
 
 type Subtool interface {
 	SubtoolSpec() SubtoolSpec
-	HandleMultitoolCall(context.Context, *threads.Thread, ToolCall, tool.ReturnItem) (tool.Handling, error)
+	HandleMultitoolCall(context.Context, threads.Thread, ToolCall, tool.ReturnItem) (tool.Handling, error)
 }
 
 type Fallback struct {
@@ -123,12 +123,12 @@ func (f Fallback) CommandList() string {
 }
 
 type FallbackHandler interface {
-	HandleMultitoolFallback(context.Context, *threads.Thread, ToolCall, Fallback, tool.ReturnItem) (tool.Handling, error)
+	HandleMultitoolFallback(context.Context, threads.Thread, ToolCall, Fallback, tool.ReturnItem) (tool.Handling, error)
 }
 
-type FallbackFunc func(context.Context, *threads.Thread, ToolCall, Fallback, tool.ReturnItem) (tool.Handling, error)
+type FallbackFunc func(context.Context, threads.Thread, ToolCall, Fallback, tool.ReturnItem) (tool.Handling, error)
 
-func (f FallbackFunc) HandleMultitoolFallback(ctx context.Context, thread *threads.Thread, raw ToolCall, fallback Fallback, ret tool.ReturnItem) (tool.Handling, error) {
+func (f FallbackFunc) HandleMultitoolFallback(ctx context.Context, thread threads.Thread, raw ToolCall, fallback Fallback, ret tool.ReturnItem) (tool.Handling, error) {
 	if f == nil {
 		panic("multitool: nil fallback func")
 	}
@@ -136,12 +136,12 @@ func (f FallbackFunc) HandleMultitoolFallback(ctx context.Context, thread *threa
 }
 
 func StaticFallback(text string) FallbackHandler {
-	return FallbackFunc(func(_ context.Context, _ *threads.Thread, call ToolCall, _ Fallback, ret tool.ReturnItem) (tool.Handling, error) {
+	return FallbackFunc(func(_ context.Context, _ threads.Thread, call ToolCall, _ Fallback, ret tool.ReturnItem) (tool.Handling, error) {
 		return tool.Handling{}, ret(result(call, text))
 	})
 }
 
-type SubtoolFunc func(context.Context, *threads.Thread, ToolCall, tool.ReturnItem) (tool.Handling, error)
+type SubtoolFunc func(context.Context, threads.Thread, ToolCall, tool.ReturnItem) (tool.Handling, error)
 
 type funcSubtool struct {
 	spec SubtoolSpec
@@ -156,7 +156,7 @@ func Func(spec SubtoolSpec, fn SubtoolFunc) Subtool {
 }
 
 func (s funcSubtool) SubtoolSpec() SubtoolSpec { return s.spec }
-func (s funcSubtool) HandleMultitoolCall(ctx context.Context, thread *threads.Thread, call ToolCall, ret tool.ReturnItem) (tool.Handling, error) {
+func (s funcSubtool) HandleMultitoolCall(ctx context.Context, thread threads.Thread, call ToolCall, ret tool.ReturnItem) (tool.Handling, error) {
 	return s.fn(ctx, thread, call, ret)
 }
 
@@ -204,7 +204,7 @@ func (t *Tool) addName(name string, st Subtool, primary bool) {
 	t.subtools[name] = st
 }
 
-func (t *Tool) ToolsSnapshot(*threads.Thread) threads.ToolsSnapshot {
+func (t *Tool) ToolsSnapshot(threads.Thread) threads.ToolsSnapshot {
 	return threads.ToolsSnapshot{
 		Snapshot: t.Snapshot(),
 		Handlers: []threads.ToolHandlerBinding{{Name: t.setup.Name}},
@@ -220,7 +220,7 @@ func (t *Tool) Snapshot() threads.ToolOfferSnapshot {
 
 func (t *Tool) Spec() threads.ToolSpec { return t.spec() }
 
-func (t *Tool) ResolveTool(ctx context.Context, thread *threads.Thread, raw threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
+func (t *Tool) ResolveTool(ctx context.Context, thread threads.Thread, raw threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
 	var mu sync.Mutex
 	inHandler := true
 	var items []threads.Item
@@ -248,14 +248,14 @@ func (t *Tool) ResolveTool(ctx context.Context, thread *threads.Thread, raw thre
 	return threads.ToolDispatch{Started: true, Continue: handling.Continue, Recovery: handling.Recovery, Items: items}, err
 }
 
-func (t *Tool) HandleToolCall(ctx context.Context, thread *threads.Thread, call tool.Call, ret tool.ReturnItem) (tool.Handling, error) {
+func (t *Tool) HandleToolCall(ctx context.Context, thread threads.Thread, call tool.Call, ret tool.ReturnItem) (tool.Handling, error) {
 	if ret == nil {
 		return tool.Handling{}, fmt.Errorf("multitool: nil return item handler")
 	}
 	return t.dispatch(ctx, thread, threads.ToolCall(call), ret)
 }
 
-func (t *Tool) dispatch(ctx context.Context, thread *threads.Thread, raw threads.ToolCall, ret tool.ReturnItem) (tool.Handling, error) {
+func (t *Tool) dispatch(ctx context.Context, thread threads.Thread, raw threads.ToolCall, ret tool.ReturnItem) (tool.Handling, error) {
 	if raw.Name != t.setup.Name {
 		return tool.Handling{}, fmt.Errorf("multitool: tool %q not found", raw.Name)
 	}
@@ -310,7 +310,7 @@ func (t *Tool) spec() threads.ToolSpec {
 	return threads.ToolSpec{Name: t.setup.Name, Description: t.setup.Description, Payload: payload}
 }
 
-func (t *Tool) fallback(ctx context.Context, thread *threads.Thread, raw threads.ToolCall, call Call, ret tool.ReturnItem) (tool.Handling, error) {
+func (t *Tool) fallback(ctx context.Context, thread threads.Thread, raw threads.ToolCall, call Call, ret tool.ReturnItem) (tool.Handling, error) {
 	h := t.config.Fallback
 	if h == nil {
 		h = FallbackFunc(DefaultFallback)
@@ -337,7 +337,7 @@ func newToolCall(raw threads.ToolCall, call Call) ToolCall {
 	}
 }
 
-func DefaultFallback(_ context.Context, _ *threads.Thread, call ToolCall, fallback Fallback, ret tool.ReturnItem) (tool.Handling, error) {
+func DefaultFallback(_ context.Context, _ threads.Thread, call ToolCall, fallback Fallback, ret tool.ReturnItem) (tool.Handling, error) {
 	if fallback.ToolCall.Command == nil || strings.TrimSpace(*fallback.ToolCall.Command) == "" {
 		return tool.Handling{}, ret(result(call, fallback.CommandList()))
 	}

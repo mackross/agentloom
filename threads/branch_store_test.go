@@ -200,7 +200,7 @@ func TestBranchManagerOpenedBranchCanForkCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create root: %v", err)
 	}
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(UserText("base"))
 	cp, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
 	if err != nil {

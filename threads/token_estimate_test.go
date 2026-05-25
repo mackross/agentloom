@@ -7,7 +7,7 @@ import (
 
 func TestThreadEstimateRequestTokensUsesExecutorEstimator(t *testing.T) {
 	streamer := &tokenCountingStreamer{requestTokens: 123}
-	thread := New()
+	thread := newThread()
 	thread.SetExecutor(NewThreadExecutor(streamer))
 	thread.QueueItem(AssistantInstruction("be helpful"))
 	thread.QueueItem(UserText("hello"))
@@ -28,7 +28,7 @@ func TestThreadEstimateRequestTokensUsesExecutorEstimator(t *testing.T) {
 }
 
 func TestThreadEstimateRequestTokensFallsBackToApproximation(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(AssistantInstruction("be helpful"))
 	thread.QueueItem(UserText("hello world"))
 
@@ -43,7 +43,7 @@ func TestThreadEstimateRequestTokensFallsBackToApproximation(t *testing.T) {
 
 func TestThreadEstimateTextTokensUsesExecutorEstimator(t *testing.T) {
 	streamer := &tokenCountingStreamer{textTokens: 12}
-	thread := New()
+	thread := newThread()
 	thread.SetExecutor(NewThreadExecutor(streamer))
 
 	got, err := thread.EstimateTextTokens(context.Background(), "hello")
@@ -59,6 +59,18 @@ func TestThreadEstimateTextTokensUsesExecutorEstimator(t *testing.T) {
 }
 
 func TestThreadEstimateTextTokensFallsBackToApproximation(t *testing.T) {
+	thread := newThread()
+
+	got, err := thread.EstimateTextTokens(context.Background(), "hello world")
+	if err != nil {
+		t.Fatalf("EstimateTextTokens: %v", err)
+	}
+	if got <= 0 {
+		t.Fatalf("EstimateTextTokens = %d, want positive fallback", got)
+	}
+}
+
+func TestNewThreadEstimateTextTokensPublicSurface(t *testing.T) {
 	thread := New()
 
 	got, err := thread.EstimateTextTokens(context.Background(), "hello world")

@@ -20,7 +20,7 @@ type threadSnapshot struct {
 }
 
 func TestSnapshotRoundTripPreservesThreadSnapshot(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
 		b.Emit(AssistantText("world"))
 	})
@@ -47,7 +47,7 @@ func TestSnapshotRoundTripPreservesThreadSnapshot(t *testing.T) {
 }
 
 func TestSnapshotEncodeDecodeEncodeStableBytes(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(UserText("u1"))
 	thread.QueueItem(UserText("u2"))
 	thread.QueueItem(SendItem{})
@@ -84,7 +84,7 @@ func TestSnapshotEncodeDecodeEncodeStableBytes(t *testing.T) {
 }
 
 func TestSnapshotRoundTripPreservesToolCallItems(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
 		b.Emit(ToolCallChunk{CallID: "c1", Name: "calc", PayloadDelta: `{"a":`})
 		b.Emit(ToolCallChunk{CallID: "c1", PayloadDelta: `1}`})
@@ -111,7 +111,7 @@ func TestSnapshotRoundTripPreservesToolCallItems(t *testing.T) {
 }
 
 func TestSnapshotRoundTripPreservesToolSnapshotItems(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(testToolsSnapshot("calc", "calculate"))
 	thread.QueueItem(UserText("hello"))
 
@@ -132,7 +132,7 @@ func TestSnapshotRoundTripPreservesToolSnapshotItems(t *testing.T) {
 }
 
 func TestSnapshotRoundTripPreservesToolCallStartedItems(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
 	thread.QueueItem(ToolCallStarted{CallID: "c1", Continue: ToolContinueManual})
 
@@ -153,7 +153,7 @@ func TestSnapshotRoundTripPreservesToolCallStartedItems(t *testing.T) {
 }
 
 func TestSnapshotRoundTripRestoresToolsSnapshotHandlerLoadData(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	want := ToolsSnapshot{
 		Snapshot: ToolOfferSnapshot{Offered: []ToolSpec{{
 			Name:        "write_file",
@@ -190,7 +190,7 @@ func TestSnapshotRoundTripRestoresToolsSnapshotHandlerLoadData(t *testing.T) {
 }
 
 func TestSnapshotRoundTripRestoresToolResultItemsAsCanonicalThreadBlocks(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(ToolCallResult{
 		CallID: "c1",
 		Output: `{"ok":true}`,
@@ -225,7 +225,7 @@ func TestSnapshotRoundTripRestoresToolResultItemsAsCanonicalThreadBlocks(t *test
 func TestWALReplayPreservesRollbackableToolResult(t *testing.T) {
 	const hint = `<tool_call_hint tool="calc">Retry with valid JSON.</tool_call_hint>`
 
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(ToolCallResult{
 		CallID: "c1",
 		Output: "invalid JSON",
@@ -242,7 +242,7 @@ func TestWALReplayPreservesRollbackableToolResult(t *testing.T) {
 		t.Fatalf("WAL item lost rollback metadata: %#v", got)
 	}
 
-	restored := New()
+	restored := newThread()
 	if err := restored.ReplayWAL(events); err != nil {
 		t.Fatalf("replay WAL: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestWALReplayPreservesRollbackableToolResult(t *testing.T) {
 	}
 }
 
-func snapshotThread(t *Thread) threadSnapshot {
+func snapshotThread(t *thread) threadSnapshot {
 	index := map[*item[Item]]int{}
 	items := make([]Item, 0)
 	i := 0
@@ -313,7 +313,7 @@ func (f *fakeDurableStore) Load() (Checkpoint, []WALEvent) {
 }
 
 func TestThreadDurableStoreReceivesWALDiffs(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	store := &fakeDurableStore{}
 	thread.SetDurableStore(store)
 	if len(store.snapshots) != 1 {
@@ -342,7 +342,7 @@ func TestThreadDurableStoreReceivesWALDiffs(t *testing.T) {
 }
 
 func TestThreadAppendWALPanicsWithContextOnDurabilityFailure(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.SetDurableStore(&fakeDurableStore{panicAppend: "disk full"})
 
 	defer func() {

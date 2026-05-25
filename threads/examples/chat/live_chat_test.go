@@ -56,7 +56,7 @@ func runLiveChatExampleTest(t testing.TB, model, token string) {
 	thread.SetExecutor(threads.NewThreadExecutor(streamer))
 	var out strings.Builder
 	thread.SetDelegate(threads.ThreadDelegateFuncs{
-		OnStreamItemAppended: func(_ *threads.Thread, item threads.Item) {
+		OnStreamItemAppended: func(_ threads.Thread, item threads.Item) {
 			if text, ok := item.(threads.AssistantText); ok {
 				out.WriteString(string(text))
 			}

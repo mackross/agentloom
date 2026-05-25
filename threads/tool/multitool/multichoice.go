@@ -14,7 +14,7 @@ type Choice struct {
 	Description string
 }
 
-type ChoiceFunc func(context.Context, *threads.Thread, string, tool.ReturnItem) (tool.Handling, error)
+type ChoiceFunc func(context.Context, threads.Thread, string, tool.ReturnItem) (tool.Handling, error)
 
 type MultipleChoiceBuilder struct {
 	question     string
@@ -78,7 +78,7 @@ func (b MultipleChoiceBuilder) Config() Config {
 }
 
 func (b MultipleChoiceBuilder) choiceFunc() ChoiceFunc {
-	return func(ctx context.Context, thread *threads.Thread, answer string, ret tool.ReturnItem) (tool.Handling, error) {
+	return func(ctx context.Context, thread threads.Thread, answer string, ret tool.ReturnItem) (tool.Handling, error) {
 		if b.storeAnswer != nil {
 			*b.storeAnswer = answer
 		}
@@ -95,14 +95,14 @@ func (b MultipleChoiceBuilder) choiceFunc() ChoiceFunc {
 
 func MultipleChoiceConfig(question string, choices []Choice, fn ChoiceFunc) Config {
 	if fn == nil {
-		fn = func(_ context.Context, _ *threads.Thread, answer string, ret tool.ReturnItem) (tool.Handling, error) {
+		fn = func(_ context.Context, _ threads.Thread, answer string, ret tool.ReturnItem) (tool.Handling, error) {
 			return tool.Handling{Continue: threads.ToolContinueManual}, ret(threads.ToolCallResult{CallID: "", Output: answer})
 		}
 	}
 	subtools := make([]Subtool, 0, len(choices))
 	for _, choice := range choices {
 		choice := choice
-		subtools = append(subtools, Func(SubtoolSpec{Command: choice.Command, Description: choice.Description}, func(ctx context.Context, thread *threads.Thread, call ToolCall, ret tool.ReturnItem) (tool.Handling, error) {
+		subtools = append(subtools, Func(SubtoolSpec{Command: choice.Command, Description: choice.Description}, func(ctx context.Context, thread threads.Thread, call ToolCall, ret tool.ReturnItem) (tool.Handling, error) {
 			return fn(ctx, thread, choice.Command, func(item tool.Item) error {
 				if r, ok := item.(threads.ToolCallResult); ok && r.CallID == "" {
 					r.CallID = call.CallID
@@ -114,7 +114,7 @@ func MultipleChoiceConfig(question string, choices []Choice, fn ChoiceFunc) Conf
 	}
 	return Config{
 		Subtools: subtools,
-		Fallback: FallbackFunc(func(_ context.Context, _ *threads.Thread, raw ToolCall, fallback Fallback, ret tool.ReturnItem) (tool.Handling, error) {
+		Fallback: FallbackFunc(func(_ context.Context, _ threads.Thread, raw ToolCall, fallback Fallback, ret tool.ReturnItem) (tool.Handling, error) {
 			return tool.Handling{}, ret(threads.ToolCallResult{CallID: raw.CallID, Output: multipleChoiceFallbackText(question, fallback.Subtools)})
 		}),
 	}

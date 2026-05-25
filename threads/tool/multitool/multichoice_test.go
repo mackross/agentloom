@@ -20,7 +20,7 @@ func TestGoldenMultipleChoiceYesNo(t *testing.T) {
 	}, MultipleChoice("Is the sky blue on a clear day?").
 		Choice("yes", "the answer is yes").
 		Choice("no", "the answer is no").
-		Handle(func(_ context.Context, _ *threads.Thread, answer string, ret tool.ReturnItem) (tool.Handling, error) {
+		Handle(func(_ context.Context, _ threads.Thread, answer string, ret tool.ReturnItem) (tool.Handling, error) {
 			return tool.Handling{Continue: threads.ToolContinueManual}, ret(threads.ToolCallResult{Output: "choice: " + answer})
 		}).
 		Config())

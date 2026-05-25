@@ -222,21 +222,24 @@ func (b *StoredBranch) Load(opts RestoreOptions) (*Branch, error) {
 	if err != nil {
 		return nil, err
 	}
-	branch := &Branch{stored: b, idleCh: make(chan struct{}), Thread: thread}
+	branch := &Branch{stored: b, idleCh: make(chan struct{}), thread: thread}
 	thread.SetDelegate(branch)
 	return branch, nil
 }
 
 // Branch is a loaded branch: an opened stored branch plus its restored Thread.
-// Thread is embedded so callers can use Thread methods directly on Branch.
+// Branch exposes explicit Thread wrappers so event-loop-backed branches keep
+// all local thread access serialized through the loop.
 type Branch struct {
 	stored        *StoredBranch
 	eventLoop     *EventLoop
 	eventLoopDone chan error
 	delegate      ThreadDelegate
 	idleCh        chan struct{}
-	*Thread
+	thread        *thread
 }
+
+var _ Thread = (*Branch)(nil)
 
 func (b *Branch) Close() error {
 	if b == nil {
@@ -283,25 +286,227 @@ func (b *Branch) SetDelegate(d ThreadDelegate) {
 	if b == nil {
 		return
 	}
-	b.delegate = d
-	if b.Thread != nil {
-		b.Thread.SetDelegate(b)
+	if b.eventLoop == nil {
+		b.delegate = d
+		if b.thread != nil {
+			b.thread.SetDelegate(b)
+		}
+		return
+	}
+	if err := b.RunOnEventLoop(context.Background(), func(t Thread) error {
+		b.delegate = d
+		t.SetDelegate(b)
+		return nil
+	}); err != nil {
+		panic("threads branch set delegate: " + err.Error())
 	}
 }
 
-func (b *Branch) RunOnEventLoop(ctx context.Context, fn func(*Thread) error) error {
+func (b *Branch) State() State {
+	if b == nil || b.eventLoop == nil {
+		return b.thread.State()
+	}
+	var state State
+	if err := b.RunOnEventLoop(context.Background(), func(t Thread) error {
+		state = t.State()
+		return nil
+	}); err != nil {
+		panic("threads branch state: " + err.Error())
+	}
+	return state
+}
+
+func (b *Branch) CompletedTurns() []Turn {
+	if b == nil || b.eventLoop == nil {
+		return b.thread.CompletedTurns()
+	}
+	var turns []Turn
+	if err := b.RunOnEventLoop(context.Background(), func(t Thread) error {
+		turns = t.CompletedTurns()
+		return nil
+	}); err != nil {
+		panic("threads branch completed turns: " + err.Error())
+	}
+	return turns
+}
+
+func (b *Branch) Seq() uint32 {
+	if b == nil || b.eventLoop == nil {
+		return b.thread.Seq()
+	}
+	var seq uint32
+	if err := b.RunOnEventLoop(context.Background(), func(t Thread) error {
+		seq = t.Seq()
+		return nil
+	}); err != nil {
+		panic("threads branch seq: " + err.Error())
+	}
+	return seq
+}
+
+func (b *Branch) Snapshot() (ThreadSnapshot, error) {
+	if b == nil || b.eventLoop == nil {
+		return b.thread.Snapshot()
+	}
+	var snap ThreadSnapshot
+	err := b.RunOnEventLoop(context.Background(), func(t Thread) error {
+		var err error
+		snap, err = t.Snapshot()
+		return err
+	})
+	return snap, err
+}
+
+func (b *Branch) Checkpoint(opts CheckpointOptions) (Checkpoint, error) {
+	if b == nil || b.eventLoop == nil {
+		return b.thread.Checkpoint(opts)
+	}
+	var cp Checkpoint
+	err := b.RunOnEventLoop(context.Background(), func(t Thread) error {
+		var err error
+		cp, err = t.Checkpoint(opts)
+		return err
+	})
+	return cp, err
+}
+
+func (b *Branch) WALAfter(seq uint32) []WALEvent {
+	if b == nil || b.eventLoop == nil {
+		return b.thread.WALAfter(seq)
+	}
+	var wal []WALEvent
+	if err := b.RunOnEventLoop(context.Background(), func(t Thread) error {
+		wal = t.WALAfter(seq)
+		return nil
+	}); err != nil {
+		panic("threads branch WAL after: " + err.Error())
+	}
+	return wal
+}
+
+func (b *Branch) QueueItem(v Item) {
+	b.mutate("queue item", func(t Thread) error {
+		t.QueueItem(v)
+		return nil
+	})
+}
+
+func (b *Branch) QueueSyntheticToolExchange(call ToolCall, result ToolCallResult) {
+	b.mutate("queue synthetic tool exchange", func(t Thread) error {
+		t.QueueSyntheticToolExchange(call, result)
+		return nil
+	})
+}
+
+func (b *Branch) SetDurableStore(store DurableStore) {
+	b.mutate("set durable store", func(t Thread) error {
+		t.SetDurableStore(store)
+		return nil
+	})
+}
+
+func (b *Branch) SetExecutor(e *ThreadExecutor) {
+	b.mutate("set executor", func(t Thread) error {
+		t.SetExecutor(e)
+		return nil
+	})
+}
+
+func (b *Branch) SetToolProvider(p ToolProvider) {
+	b.mutate("set tool provider", func(t Thread) error {
+		t.SetToolProvider(p)
+		return nil
+	})
+}
+
+func (b *Branch) SetToolResolver(r ToolResolver) {
+	b.mutate("set tool resolver", func(t Thread) error {
+		t.SetToolResolver(r)
+		return nil
+	})
+}
+
+func (b *Branch) AttachExecutorForRecoveryWithOptions(e *ThreadExecutor, opts RecoveryOptions) error {
+	if b == nil || b.eventLoop == nil {
+		return b.thread.AttachExecutorForRecoveryWithOptions(e, opts)
+	}
+	return b.RunOnEventLoop(context.Background(), func(t Thread) error {
+		return t.AttachExecutorForRecoveryWithOptions(e, opts)
+	})
+}
+
+func (b *Branch) CancelCurrentTurn() bool {
+	if b == nil || b.thread == nil {
+		return false
+	}
+	return b.thread.CancelCurrentTurn()
+}
+
+func (b *Branch) EstimateRequestTokens(ctx context.Context) (int, error) {
+	if b == nil || b.eventLoop == nil {
+		return b.thread.EstimateRequestTokens(ctx)
+	}
+	var tokens int
+	err := b.RunOnEventLoop(ctx, func(t Thread) error {
+		var err error
+		tokens, err = t.EstimateRequestTokens(ctx)
+		return err
+	})
+	return tokens, err
+}
+
+func (b *Branch) EstimateTextTokens(ctx context.Context, text string) (int, error) {
+	if b == nil || b.eventLoop == nil {
+		return b.thread.EstimateTextTokens(ctx, text)
+	}
+	var tokens int
+	err := b.RunOnEventLoop(ctx, func(t Thread) error {
+		var err error
+		tokens, err = t.EstimateTextTokens(ctx, text)
+		return err
+	})
+	return tokens, err
+}
+
+func (b *Branch) ReturnAsyncToolItem(ctx context.Context, callID string, item Item) error {
+	if b == nil || b.thread == nil {
+		return ErrEventLoopClosed
+	}
+	return b.thread.ReturnAsyncToolItem(ctx, callID, item)
+}
+
+func (b *Branch) RunOnEventLoop(ctx context.Context, fn func(Thread) error) error {
 	if b == nil || b.eventLoop == nil {
 		return ErrEventLoopClosed
 	}
 	return b.eventLoop.Do(ctx, fn)
 }
 
-func (b *Branch) WaitUntilIdle(ctx context.Context) error {
+func (b *Branch) runLocal(ctx context.Context, fn func(*thread) error) error {
 	if b == nil || b.eventLoop == nil {
 		return ErrEventLoopClosed
 	}
+	return b.eventLoop.doLocal(ctx, fn)
+}
+
+func (b *Branch) mutate(label string, fn func(Thread) error) {
+	if b == nil || b.eventLoop == nil {
+		if err := fn(b.thread); err != nil {
+			panic("threads branch " + label + ": " + err.Error())
+		}
+		return
+	}
+	if err := b.RunOnEventLoop(context.Background(), fn); err != nil {
+		panic("threads branch " + label + ": " + err.Error())
+	}
+}
+
+func (b *Branch) WaitUntilIdle(ctx context.Context) error {
+	if b == nil || b.eventLoop == nil {
+		panic("threads Branch WaitUntilIdle requires an event loop")
+	}
 	idle := false
-	if err := b.RunOnEventLoop(ctx, func(t *Thread) error {
+	if err := b.RunOnEventLoop(ctx, func(t Thread) error {
 		idle = t.State() == StateIdle
 		return nil
 	}); err != nil {
@@ -319,7 +524,7 @@ func (b *Branch) WaitUntilIdle(ctx context.Context) error {
 	}
 }
 
-func (b *Branch) OnThreadIdle(t *Thread) {
+func (b *Branch) OnThreadIdle(t Thread) {
 	if b != nil {
 		if b.delegate != nil {
 			b.delegate.OnThreadIdle(t)
@@ -329,13 +534,13 @@ func (b *Branch) OnThreadIdle(t *Thread) {
 	}
 }
 
-func (b *Branch) OnThreadRequest(t *Thread) {
+func (b *Branch) OnThreadRequest(t Thread) {
 	if b != nil && b.delegate != nil {
 		b.delegate.OnThreadRequest(t)
 	}
 }
 
-func (b *Branch) OnThreadStreamItemAppended(t *Thread, item Item) {
+func (b *Branch) OnThreadStreamItemAppended(t Thread, item Item) {
 	if b == nil || b.delegate == nil {
 		return
 	}
@@ -344,7 +549,7 @@ func (b *Branch) OnThreadStreamItemAppended(t *Thread, item Item) {
 	}
 }
 
-func (b *Branch) OnThreadExecutorError(t *Thread, err error) {
+func (b *Branch) OnThreadExecutorError(t Thread, err error) {
 	if b == nil || b.delegate == nil {
 		return
 	}

@@ -33,7 +33,7 @@ func TestLiveThreadExecutesCalculatorToolWithOpenAIResponses(t *testing.T) {
 	thread := threads.New()
 	streamer := debugStreamer{t: t, inner: openaiwrap.NewResponsesStreamer(model)}
 	thread.SetExecutor(threads.NewThreadExecutor(streamer))
-	thread.SetToolProvider(simpletool.ProviderFunc(func(_ *threads.Thread) threads.ToolsSnapshot {
+	thread.SetToolProvider(simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return threads.ToolsSnapshot{
 			Snapshot: threads.ToolOfferSnapshot{
 				Offered: []threads.ToolSpec{{
@@ -54,7 +54,7 @@ func TestLiveThreadExecutesCalculatorToolWithOpenAIResponses(t *testing.T) {
 	}))
 
 	resolveCalls := 0
-	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ *threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 		resolveCalls++
 		var args struct {
 			A int `json:"a"`
@@ -74,7 +74,7 @@ func TestLiveThreadExecutesCalculatorToolWithOpenAIResponses(t *testing.T) {
 
 	var out strings.Builder
 	thread.SetDelegate(threads.ThreadDelegateFuncs{
-		OnStreamItemAppended: func(_ *threads.Thread, item threads.Item) {
+		OnStreamItemAppended: func(_ threads.Thread, item threads.Item) {
 			t.Logf("stream item: %T %#v", item, item)
 			if text, ok := item.(threads.AssistantText); ok {
 				out.WriteString(string(text))
@@ -121,7 +121,7 @@ func TestLiveMultitoolLarkJSONRepairWithOpenAIResponses(t *testing.T) {
 			Command:     "create-ticket",
 			Description: "Create a ticket. The JSON input must contain title as a string and priority as an integer.",
 			Usage:       `{"title":"rollback live test","priority":3}`,
-		}, "create_ticket", tool.JSONHandler(func(_ context.Context, _ *threads.Thread, call tool.Call, args ticketArgs) tool.Item {
+		}, "create_ticket", tool.JSONHandler(func(_ context.Context, _ threads.Thread, call tool.Call, args ticketArgs) tool.Item {
 			successes++
 			return tool.ResultText(call, fmt.Sprintf("created ticket %q with priority %d", args.Title, args.Priority))
 		})),
@@ -135,7 +135,7 @@ func TestLiveMultitoolLarkJSONRepairWithOpenAIResponses(t *testing.T) {
 
 	var out strings.Builder
 	thread.SetDelegate(threads.ThreadDelegateFuncs{
-		OnStreamItemAppended: func(_ *threads.Thread, item threads.Item) {
+		OnStreamItemAppended: func(_ threads.Thread, item threads.Item) {
 			t.Logf("stream item: %T %#v", item, item)
 			if text, ok := item.(threads.AssistantText); ok {
 				out.WriteString(string(text))

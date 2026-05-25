@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func toolLifecycleTypes(thread *Thread, callID string) []string {
+func toolLifecycleTypes(thread *thread, callID string) []string {
 	out := []string{}
 	for _, item := range thread.items.Slice() {
 		switch v := item.(type) {
@@ -33,9 +33,9 @@ func toolLifecycleTypes(thread *Thread, callID string) []string {
 }
 
 func TestToolResolutionRecordsResolvingBeforeResolverRuns(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("calc", "calculate")})
-	thread.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		// The resolving marker is written before consumer resolver code runs, so a
 		// crash/panic inside this function is distinguishable from a call that never
 		// entered resolution.
@@ -64,7 +64,7 @@ func TestToolResolutionRecordsResolvingBeforeResolverRuns(t *testing.T) {
 }
 
 func TestToolCallResolvingPreservesAmbiguousStateAcrossSnapshotAndWAL(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
 	if err != nil {
 		t.Fatalf("base checkpoint: %v", err)
@@ -101,7 +101,7 @@ func TestToolCallResolvingPreservesAmbiguousStateAcrossSnapshotAndWAL(t *testing
 }
 
 func TestAttachExecutorForRecoveryRejectsIdleThreadWithResolvingToolCall(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
 	thread.QueueItem(ToolCallResolving{CallID: "c1"})
 

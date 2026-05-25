@@ -47,7 +47,7 @@ implemented feature overview.
   - streamed item appended
   - idle
   - when a thread is owned by an `EventLoop`, delegate callbacks already run on
-    the event-loop mutation lane; use the supplied `*Thread` directly inside the
+    the event-loop mutation lane; use the supplied `Thread` directly inside the
     callback, and use a goroutine for any later `EventLoop.Do` /
     `Branch.RunOnEventLoop` call
 - Durability support:

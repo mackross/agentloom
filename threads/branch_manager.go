@@ -208,7 +208,7 @@ func loadStoredBranch(stored *StoredBranch, opts RestoreOptions, withEventLoop b
 		return nil, err
 	}
 	if withEventLoop {
-		branch.eventLoop = NewEventLoop(branch.Thread)
+		branch.eventLoop = NewEventLoop(branch.thread)
 		branch.eventLoopDone = make(chan error, 1)
 		go func() { branch.eventLoopDone <- branch.eventLoop.Run(context.Background()) }()
 	}

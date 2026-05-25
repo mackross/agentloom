@@ -17,7 +17,7 @@ type StructTool[T any] struct {
 }
 
 type StructToolDelegate[T any] interface {
-	OnStructToolCall(context.Context, *threads.Thread, Call, T) Item
+	OnStructToolCall(context.Context, threads.Thread, Call, T) Item
 }
 
 // NewStructTool creates a single-tool toolbox for T. The tool is offered as the
@@ -35,7 +35,7 @@ func NewStructTool[T any](name, desc string, delegate StructToolDelegate[T]) *St
 	}
 }
 
-func (s *StructTool[T]) ToolsSnapshot(_ *threads.Thread) threads.ToolsSnapshot {
+func (s *StructTool[T]) ToolsSnapshot(_ threads.Thread) threads.ToolsSnapshot {
 	parallel := false
 	return threads.ToolsSnapshot{
 		Snapshot: threads.ToolOfferSnapshot{
@@ -48,7 +48,7 @@ func (s *StructTool[T]) ToolsSnapshot(_ *threads.Thread) threads.ToolsSnapshot {
 	}
 }
 
-func (s *StructTool[T]) ResolveTool(ctx context.Context, thread *threads.Thread, call threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
+func (s *StructTool[T]) ResolveTool(ctx context.Context, thread threads.Thread, call threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
 	if call.Name != s.spec.Name {
 		return threads.ToolDispatch{}, fmt.Errorf("tool %q not found", call.Name)
 	}
@@ -76,7 +76,7 @@ func (s *StructTool[T]) ResolveTool(ctx context.Context, thread *threads.Thread,
 	}, nil
 }
 
-func (s *StructTool[T]) HandleToolCall(ctx context.Context, thread *threads.Thread, call Call, ret ReturnItem) (Handling, error) {
+func (s *StructTool[T]) HandleToolCall(ctx context.Context, thread threads.Thread, call Call, ret ReturnItem) (Handling, error) {
 	dispatch, err := s.ResolveTool(ctx, thread, threads.ToolCall(call), nil)
 	for _, item := range dispatch.Items {
 		if retErr := ret(item); retErr != nil && err == nil {

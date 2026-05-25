@@ -10,7 +10,7 @@ var ErrEventLoopClosed = errors.New("threads event loop closed")
 var ErrEventLoopAlreadyStarted = errors.New("threads event loop already started")
 
 type eventLoopOp struct {
-	fn   func(*Thread) error
+	fn   func(Thread) error
 	done chan error
 }
 
@@ -20,7 +20,7 @@ type eventLoopOp struct {
 // directly. Use Do to inspect or mutate the Thread so async tool completions,
 // model stream events, recovery, and user actions are serialized in one place.
 type EventLoop struct {
-	thread *Thread
+	thread *thread
 	ops    chan eventLoopOp
 	closed chan struct{}
 	done   chan struct{}
@@ -29,14 +29,24 @@ type EventLoop struct {
 	runOnce   sync.Once
 }
 
-func NewEventLoop(t *Thread) *EventLoop {
+// NewEventLoop creates an event loop that owns a local thread's mutation lane.
+//
+// The parameter is the public Thread interface so callers do not have to name
+// the concrete implementation in ordinary setup code. The current event loop
+// implementation can only own a *thread; passing any other Thread
+// implementation is programmer error and panics.
+func NewEventLoop(t Thread) *EventLoop {
+	local, ok := t.(*thread)
+	if !ok {
+		panic("threads event loop requires a thread")
+	}
 	l := &EventLoop{
-		thread: t,
+		thread: local,
 		ops:    make(chan eventLoopOp),
 		closed: make(chan struct{}),
 		done:   make(chan struct{}),
 	}
-	t.setEventLoop(l)
+	local.setEventLoop(l)
 	return l
 }
 
@@ -60,9 +70,20 @@ func (l *EventLoop) Run(ctx context.Context) error {
 	}
 }
 
-// Do runs fn on the EventLoop's thread mutation lane. The supplied Thread may
-// be used with its full API only for the duration of fn.
-func (l *EventLoop) Do(ctx context.Context, fn func(*Thread) error) error {
+// Do runs fn on the EventLoop's thread mutation lane. The supplied Thread is a
+// synchronous/direct view and may be used with its full API only for the
+// duration of fn.
+func (l *EventLoop) Do(ctx context.Context, fn func(Thread) error) error {
+	return l.do(ctx, fn)
+}
+
+func (l *EventLoop) doLocal(ctx context.Context, fn func(*thread) error) error {
+	return l.do(ctx, func(t Thread) error {
+		return fn(t.(*thread))
+	})
+}
+
+func (l *EventLoop) do(ctx context.Context, fn func(Thread) error) error {
 	if fn == nil {
 		panic("threads event loop do requires a function")
 	}

@@ -31,7 +31,7 @@ func TestGoldenJSONFailure(t *testing.T) {
 			Command:     "echo-json",
 			Description: "Echo a JSON value.",
 			Usage:       "<json object>",
-		}, "inner_echo", tool.HandlerFunc(func(context.Context, *threads.Thread, tool.Call, tool.ReturnItem) (tool.Handling, error) {
+		}, "inner_echo", tool.HandlerFunc(func(context.Context, threads.Thread, tool.Call, tool.ReturnItem) (tool.Handling, error) {
 			t.Fatal("handler should not run")
 			return tool.Handling{}, nil
 		})),
@@ -76,7 +76,7 @@ func TestSnapshotCanBeRequired(t *testing.T) {
 
 func TestSubtoolHandlingPassesThrough(t *testing.T) {
 	mt := New(Setup{}, Config{Subtools: []Subtool{
-		Func(SubtoolSpec{Command: "safe"}, func(_ context.Context, _ *threads.Thread, call ToolCall, ret tool.ReturnItem) (tool.Handling, error) {
+		Func(SubtoolSpec{Command: "safe"}, func(_ context.Context, _ threads.Thread, call ToolCall, ret tool.ReturnItem) (tool.Handling, error) {
 			if err := ret(threads.ToolCallResult{CallID: call.CallID, Output: "ok"}); err != nil {
 				return tool.Handling{}, err
 			}
@@ -97,7 +97,7 @@ func TestJSONSubtoolValidatesAndBuildsThreadToolCall(t *testing.T) {
 		Value string `json:"value"`
 	}
 	mt := New(Setup{}, Config{Subtools: []Subtool{
-		JSONHandler[args](SubtoolSpec{Command: "echo-json"}, "inner_echo", tool.HandlerFunc(func(_ context.Context, _ *threads.Thread, inner tool.Call, ret tool.ReturnItem) (tool.Handling, error) {
+		JSONHandler[args](SubtoolSpec{Command: "echo-json"}, "inner_echo", tool.HandlerFunc(func(_ context.Context, _ threads.Thread, inner tool.Call, ret tool.ReturnItem) (tool.Handling, error) {
 			if inner.Name != "inner_echo" || inner.CallID != "c1" || inner.Payload != `{"value":"ok"}` {
 				t.Fatalf("unexpected inner call: %#v", inner)
 			}
@@ -126,7 +126,7 @@ func TestJSONSubtoolReturnsUsefulParseError(t *testing.T) {
 			Command:     "echo-json",
 			Description: "Echo a JSON value.",
 			Usage:       "<json object>",
-		}, "inner_echo", tool.HandlerFunc(func(context.Context, *threads.Thread, tool.Call, tool.ReturnItem) (tool.Handling, error) {
+		}, "inner_echo", tool.HandlerFunc(func(context.Context, threads.Thread, tool.Call, tool.ReturnItem) (tool.Handling, error) {
 			t.Fatal("handler should not run")
 			return tool.Handling{}, nil
 		})),
@@ -212,14 +212,14 @@ func newGoldenTool(mode Mode) *Tool {
 			Command:     "echo",
 			Usage:       "[--upper] <label>",
 			Description: "echoes parsed input",
-		}, func(_ context.Context, _ *threads.Thread, call ToolCall, ret tool.ReturnItem) (tool.Handling, error) {
+		}, func(_ context.Context, _ threads.Thread, call ToolCall, ret tool.ReturnItem) (tool.Handling, error) {
 			return tool.Handling{}, ret(threads.ToolCallResult{CallID: call.CallID, Output: stableCall(call.Call())})
 		}),
 		Func(SubtoolSpec{
 			Command:     "count",
 			Usage:       "",
 			Description: "counts input bytes",
-		}, func(_ context.Context, _ *threads.Thread, call ToolCall, ret tool.ReturnItem) (tool.Handling, error) {
+		}, func(_ context.Context, _ threads.Thread, call ToolCall, ret tool.ReturnItem) (tool.Handling, error) {
 			input := ""
 			if call.Input != nil {
 				input = *call.Input

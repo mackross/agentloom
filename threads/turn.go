@@ -25,7 +25,7 @@ const (
 // branch point. A Turn is tied to its source thread and becomes invalid after
 // that thread mutates.
 type Turn struct {
-	thread *Thread
+	thread *thread
 	index  int
 	role   TurnRole
 	text   string
@@ -37,7 +37,7 @@ type Turn struct {
 // durable position of the conversation: checkpoints capture it, WAL events
 // advance it, and external stores can use it to compare a live thread with the
 // persisted branch/session head.
-func (t *Thread) Seq() uint32 { return t.mutationSeq }
+func (t *thread) Seq() uint32 { return t.mutationSeq }
 
 // CompletedTurns returns the branchable completed single-role turns currently
 // visible in the thread. It excludes streaming tails and malformed or unresolved
@@ -46,7 +46,7 @@ func (t *Thread) Seq() uint32 { return t.mutationSeq }
 // If an EventLoop owns this Thread, call CompletedTurns only from EventLoop.Do.
 // The returned Turn values are tied to the current mutation sequence and may be
 // invalidated by the next thread mutation.
-func (t *Thread) CompletedTurns() []Turn {
+func (t *thread) CompletedTurns() []Turn {
 	items := t.items.Slice()
 	limit := completedItemLimit(t, items)
 	var turns []Turn
@@ -115,7 +115,7 @@ func turnItem(v Item) (TurnRole, string, bool) {
 	}
 }
 
-func completedItemLimit(t *Thread, items []Item) int {
+func completedItemLimit(t *thread, items []Item) int {
 	limit := len(items)
 	if t.cb.State() == StateReceivingStream && t.cb.streamInsertionPoint != nil {
 		limit = sendIndexBefore(t, t.cb.streamInsertionPoint)
@@ -174,7 +174,7 @@ func hasToolCall(items []Item, callID string) bool {
 	return false
 }
 
-func sendIndexBefore(t *Thread, end *item[Item]) int {
+func sendIndexBefore(t *thread, end *item[Item]) int {
 	last := 0
 	for i, n := 0, t.items.Head(); n != nil && n != end.Next; i, n = i+1, n.Next {
 		if _, ok := n.Item.(SendItem); ok {

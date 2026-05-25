@@ -8,18 +8,18 @@ import (
 	"testing"
 )
 
-type toolResolverFunc func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error)
+type toolResolverFunc func(context.Context, Thread, ToolCall, json.RawMessage) (ToolDispatch, error)
 
-func (f toolResolverFunc) ResolveTool(ctx context.Context, thread *Thread, call ToolCall, load json.RawMessage) (ToolDispatch, error) {
+func (f toolResolverFunc) ResolveTool(ctx context.Context, thread Thread, call ToolCall, load json.RawMessage) (ToolDispatch, error) {
 	return f(ctx, thread, call, load)
 }
 
-func runPendingToolDispatch(t *testing.T, dispatch ToolDispatch) (*Thread, Checkpoint) {
+func runPendingToolDispatch(t *testing.T, dispatch ToolDispatch) (*thread, Checkpoint) {
 	t.Helper()
 
-	thread := New()
+	thread := newThread()
 	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("calc", "calculate")})
-	thread.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		return dispatch, nil
 	}))
 
@@ -39,7 +39,7 @@ func runPendingToolDispatch(t *testing.T, dispatch ToolDispatch) (*Thread, Check
 	return thread, base
 }
 
-func requirePendingToolCall(t *testing.T, thread *Thread) pendingToolCall {
+func requirePendingToolCall(t *testing.T, thread *thread) pendingToolCall {
 	t.Helper()
 
 	pending := thread.cb.pendingToolCalls(&thread.items)
@@ -58,10 +58,10 @@ func walThroughOp(events []WALEvent, op string) []WALEvent {
 	return append([]WALEvent(nil), events...)
 }
 
-func restoreReceivingStreamCheckpoint(t *testing.T, beforeSend []Item, streamed ...Item) (*Thread, func()) {
+func restoreReceivingStreamCheckpoint(t *testing.T, beforeSend []Item, streamed ...Item) (*thread, func()) {
 	t.Helper()
 
-	thread := New()
+	thread := newThread()
 	ready := make(chan struct{})
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
 		for _, item := range streamed {
@@ -133,10 +133,10 @@ func (s *clearingDurableStore) Load() (Checkpoint, []WALEvent) {
 	return Checkpoint{Seq: s.cp.Seq, Unsafe: s.cp.Unsafe, Snapshot: cloneSnapshot(s.cp.Snapshot)}, append([]WALEvent(nil), s.wal...)
 }
 
-func restoreReceivingStreamFromDurableStore(t *testing.T, beforeSend []Item, streamed ...Item) (*Thread, *clearingDurableStore, func()) {
+func restoreReceivingStreamFromDurableStore(t *testing.T, beforeSend []Item, streamed ...Item) (*thread, *clearingDurableStore, func()) {
 	t.Helper()
 
-	thread := New()
+	thread := newThread()
 	store := &clearingDurableStore{}
 	thread.SetDurableStore(store)
 	ready := make(chan struct{})
@@ -199,7 +199,7 @@ func walContainsItemType(events []WALEvent, typ string) bool {
 }
 
 func TestAttachExecutorForRecoverySettlesStreamCompleteWithoutNewRequest(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(UserText("hello"))
 	thread.QueueItem(SendItem{})
 	thread.QueueItem(AssistantText("done"))
@@ -228,7 +228,7 @@ func TestAttachExecutorForRecoverySettlesStreamCompleteWithoutNewRequest(t *test
 }
 
 func TestAttachExecutorForRecoverySettlesStreamCompleteWithRequestedTool(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("calc", "calculate")})
 	thread.QueueItem(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
 	snap, err := thread.Snapshot()
@@ -242,7 +242,7 @@ func TestAttachExecutorForRecoverySettlesStreamCompleteWithRequestedTool(t *test
 		t.Fatalf("restore stream_complete snapshot: %v", err)
 	}
 	resolverCalls := 0
-	restored.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	restored.SetToolResolver(toolResolverFunc(func(context.Context, Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		resolverCalls++
 		return ToolDispatch{Items: []Item{ToolCallResult{CallID: "c1", Output: "2"}}}, nil
 	}))
@@ -279,7 +279,7 @@ func TestAttachExecutorForRecoveryInstallsExecutorWhileIdle(t *testing.T) {
 }
 
 func TestAttachExecutorForRecoveryResendsConstructLLMRequestAfterCheckpointRestore(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(AssistantInstruction("tone"))
 	thread.QueueItem(UserText("hello"))
 	thread.QueueItem(SendItem{})
@@ -328,7 +328,7 @@ func TestAttachExecutorForRecoveryResendsConstructLLMRequestAfterCheckpointResto
 }
 
 func TestAttachExecutorForRecoveryCallsOnThreadRequestOnceForRecoveredRequest(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(UserText("hello"))
 	thread.QueueItem(SendItem{})
 
@@ -343,7 +343,7 @@ func TestAttachExecutorForRecoveryCallsOnThreadRequestOnceForRecoveredRequest(t 
 
 	requestCalls := 0
 	restored.SetDelegate(ThreadDelegateFuncs{
-		OnRequest: func(_ *Thread) {
+		OnRequest: func(_ Thread) {
 			requestCalls++
 		},
 	})
@@ -376,7 +376,7 @@ func TestAttachExecutorForRecoveryResolvesRequestedToolAfterEndStreamRestore(t *
 	}
 
 	resolverCalls := 0
-	restored.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	restored.SetToolResolver(toolResolverFunc(func(context.Context, Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		resolverCalls++
 		return ToolDispatch{Items: []Item{ToolCallResult{CallID: "c1", Output: "2"}}}, nil
 	}))
@@ -675,7 +675,7 @@ func TestAttachExecutorForRecoveryReceivingStreamScenarios(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var (
-				restored      *Thread
+				restored      *thread
 				store         *clearingDurableStore
 				cleanup       func()
 				replaceBefore int
@@ -748,7 +748,7 @@ func TestAttachExecutorForRecoveryReceivingStreamScenarios(t *testing.T) {
 }
 
 func TestAttachExecutorForRecoveryCancelAllAddsRecoveryResultForResolvingTool(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.SetDurableStore(&fakeDurableStore{})
 	thread.QueueItem(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
 	thread.QueueItem(ToolCallResolving{CallID: "c1"})
@@ -789,7 +789,7 @@ func TestAttachExecutorForRecoveryCancelAllAddsRecoveryResultForStartedTools(t *
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			thread := New()
+			thread := newThread()
 			store := &fakeDurableStore{}
 			thread.SetDurableStore(store)
 			thread.QueueItem(UserText("hello"))
@@ -839,7 +839,7 @@ func TestAttachExecutorForRecoveryCancelAllAddsRecoveryResultForStartedTools(t *
 }
 
 func TestAttachExecutorForRecoveryCancelAllDurablyReloadsRecoveryResult(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	store := &clearingDurableStore{}
 	thread.SetDurableStore(store)
 	thread.QueueItem(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
@@ -871,7 +871,7 @@ func TestAttachExecutorForRecoveryCancelAllDurablyReloadsRecoveryResult(t *testi
 }
 
 func TestLateToolResultAfterRecoveryCancellationIsDropped(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	store := &fakeDurableStore{}
 	thread.SetDurableStore(store)
 	thread.QueueItem(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
@@ -923,7 +923,7 @@ func TestAttachExecutorForRecoveryAllowsIdleThreadWithRequestedToolCall(t *testi
 }
 
 func TestAttachExecutorForRecoveryAcceptsAwaitingToolResults(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("calc", "calculate")})
 	streamer := newFakeStreamer()
 	streamer.capabilities.ToolResultSendPolicy = ToolResultSendRequiresComplete
@@ -941,7 +941,7 @@ func TestAttachExecutorForRecoveryAcceptsAwaitingToolResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restore awaiting: %v", err)
 	}
-	restored.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	restored.SetToolResolver(toolResolverFunc(func(context.Context, Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		return ToolDispatch{Items: []Item{ToolCallResult{CallID: "c1", Output: "1"}}}, nil
 	}))
 	followup := newFakeStreamer().Reply(func(b *streamBuilder) {

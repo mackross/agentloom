@@ -20,14 +20,14 @@ type Handling struct {
 type Handler interface {
 	// HandleToolCall receives the ResolveTool context, which CancelCurrentTurn
 	// cancels when the canceled LLM streamer turn produced this tool call.
-	HandleToolCall(context.Context, *threads.Thread, Call, ReturnItem) (Handling, error)
+	HandleToolCall(context.Context, threads.Thread, Call, ReturnItem) (Handling, error)
 }
 
 // HandlerFunc receives the ResolveTool context, which CancelCurrentTurn cancels
 // when the canceled LLM streamer turn produced this tool call.
-type HandlerFunc func(context.Context, *threads.Thread, Call, ReturnItem) (Handling, error)
+type HandlerFunc func(context.Context, threads.Thread, Call, ReturnItem) (Handling, error)
 
-func (f HandlerFunc) HandleToolCall(ctx context.Context, thread *threads.Thread, call Call, ret ReturnItem) (Handling, error) {
+func (f HandlerFunc) HandleToolCall(ctx context.Context, thread threads.Thread, call Call, ret ReturnItem) (Handling, error) {
 	if f == nil {
 		panic("tool.HandlerFunc is nil")
 	}
@@ -162,7 +162,7 @@ func (c *Catalog) LoadTool(name string) (Handler, error) {
 	return entry.handler, nil
 }
 
-func (c *Catalog) Dispatch(ctx context.Context, thread *threads.Thread, call Call) (threads.ToolDispatch, error) {
+func (c *Catalog) Dispatch(ctx context.Context, thread threads.Thread, call Call) (threads.ToolDispatch, error) {
 	h, err := c.LoadTool(call.Name)
 	if err != nil {
 		return threads.ToolDispatch{}, err

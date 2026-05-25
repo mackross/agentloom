@@ -22,7 +22,7 @@ func (l *EventLoop) StartToolResult(ctx context.Context, call ToolCall, fn func(
 	}
 	go func() {
 		ready := false
-		if err := l.Do(ctx, func(thread *Thread) error {
+		if err := l.doLocal(ctx, func(thread *thread) error {
 			var err error
 			ready, err = toolCallOutstanding(thread, call.CallID)
 			return err
@@ -32,7 +32,7 @@ func (l *EventLoop) StartToolResult(ctx context.Context, call ToolCall, fn func(
 
 		item := worker(ctx)
 		item.CallID = call.CallID
-		_ = l.Do(context.Background(), func(thread *Thread) error {
+		_ = l.doLocal(context.Background(), func(thread *thread) error {
 			outstanding, err := toolCallOutstanding(thread, call.CallID)
 			if err != nil || !outstanding {
 				return err
@@ -44,14 +44,14 @@ func (l *EventLoop) StartToolResult(ctx context.Context, call ToolCall, fn func(
 	return ToolDispatch{Started: true, Recovery: recovery}
 }
 
-func (t *Thread) ReturnAsyncToolItem(ctx context.Context, callID string, item Item) error {
+func (t *thread) ReturnAsyncToolItem(ctx context.Context, callID string, item Item) error {
 	if item == nil {
 		return fmt.Errorf("threads return nil tool item")
 	}
 	if t.loop == nil {
 		return fmt.Errorf("threads async tool result requires event loop")
 	}
-	return t.loop.Do(ctx, func(thread *Thread) error {
+	return t.loop.doLocal(ctx, func(thread *thread) error {
 		outstanding, err := toolCallOutstanding(thread, callID)
 		if err != nil || !outstanding {
 			return err
@@ -61,7 +61,7 @@ func (t *Thread) ReturnAsyncToolItem(ctx context.Context, callID string, item It
 	})
 }
 
-func toolCallOutstanding(thread *Thread, callID string) (bool, error) {
+func toolCallOutstanding(thread *thread, callID string) (bool, error) {
 	snap, err := thread.Snapshot()
 	if err != nil {
 		return false, err

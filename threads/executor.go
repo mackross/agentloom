@@ -82,7 +82,7 @@ func (x *ThreadExecutor) TextTokenEstimator() TextTokenEstimator {
 	return nil
 }
 
-func (x *ThreadExecutor) OnControlBlockStateChange(t *Thread, _, to State) error {
+func (x *ThreadExecutor) OnControlBlockStateChange(t *thread, _, to State) error {
 	if to != StateConstructLLMRequest || x.streamer == nil {
 		return nil
 	}

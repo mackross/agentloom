@@ -9,9 +9,9 @@ import (
 )
 
 func TestEventLoopDoRunsOnThreadLane(t *testing.T) {
-	thread := New()
-	loop := NewEventLoop(thread)
-	if thread.loop != loop {
+	th := newThread()
+	loop := NewEventLoop(th)
+	if th.loop != loop {
 		t.Fatal("expected event loop to mark thread ownership")
 	}
 	runErr := make(chan error, 1)
@@ -19,12 +19,12 @@ func TestEventLoopDoRunsOnThreadLane(t *testing.T) {
 	defer func() {
 		_ = loop.Close()
 		<-runErr
-		if thread.loop != nil {
+		if th.loop != nil {
 			t.Fatal("expected close to clear thread event loop ownership")
 		}
 	}()
 
-	if err := loop.Do(context.Background(), func(t *Thread) error {
+	if err := loop.Do(context.Background(), func(t Thread) error {
 		t.QueueItem(UserText("hello"))
 		return nil
 	}); err != nil {
@@ -32,8 +32,8 @@ func TestEventLoopDoRunsOnThreadLane(t *testing.T) {
 	}
 
 	var got []Item
-	if err := loop.Do(context.Background(), func(t *Thread) error {
-		got = t.items.Slice()
+	if err := loop.doLocal(context.Background(), func(th *thread) error {
+		got = th.items.Slice()
 		return nil
 	}); err != nil {
 		t.Fatalf("event loop read: %v", err)
@@ -44,7 +44,7 @@ func TestEventLoopDoRunsOnThreadLane(t *testing.T) {
 }
 
 func TestEventLoopCloseStopsRunAndRejectsDo(t *testing.T) {
-	loop := NewEventLoop(New())
+	loop := NewEventLoop(newThread())
 	runErr := make(chan error, 1)
 	go func() { runErr <- loop.Run(context.Background()) }()
 
@@ -60,14 +60,14 @@ func TestEventLoopCloseStopsRunAndRejectsDo(t *testing.T) {
 		t.Fatal("timed out waiting for event loop to stop")
 	}
 
-	err := loop.Do(context.Background(), func(*Thread) error { return nil })
+	err := loop.Do(context.Background(), func(Thread) error { return nil })
 	if !errors.Is(err, ErrEventLoopClosed) {
 		t.Fatalf("expected closed error, got %v", err)
 	}
 }
 
 func TestEventLoopPanicsWhenThreadAlreadyOwned(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	loop := NewEventLoop(thread)
 	defer func() { _ = loop.Close() }()
 	defer func() {
@@ -79,7 +79,7 @@ func TestEventLoopPanicsWhenThreadAlreadyOwned(t *testing.T) {
 }
 
 func TestEventLoopRunCanOnlyStartOnce(t *testing.T) {
-	loop := NewEventLoop(New())
+	loop := NewEventLoop(newThread())
 	if err := loop.Close(); err != nil {
 		t.Fatalf("event loop close: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestEventLoopRunCanOnlyStartOnce(t *testing.T) {
 }
 
 func TestEventLoopDoRejectsAfterRunContextEnds(t *testing.T) {
-	loop := NewEventLoop(New())
+	loop := NewEventLoop(newThread())
 	ctx, cancel := context.WithCancel(context.Background())
 	runErr := make(chan error, 1)
 	go func() { runErr <- loop.Run(ctx) }()
@@ -106,14 +106,14 @@ func TestEventLoopDoRejectsAfterRunContextEnds(t *testing.T) {
 		t.Fatal("timed out waiting for event loop context cancellation")
 	}
 
-	err := loop.Do(context.Background(), func(*Thread) error { return nil })
+	err := loop.Do(context.Background(), func(Thread) error { return nil })
 	if !errors.Is(err, ErrEventLoopClosed) {
 		t.Fatalf("expected closed error, got %v", err)
 	}
 }
 
 func TestEventLoopDoPanicsWithNilFunc(t *testing.T) {
-	loop := NewEventLoop(New())
+	loop := NewEventLoop(newThread())
 	defer func() {
 		if recover() == nil {
 			t.Fatal("expected panic")

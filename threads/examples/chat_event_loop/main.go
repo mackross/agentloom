@@ -39,15 +39,15 @@ func main() {
 		}
 	})
 	delegate := threads.ThreadDelegateFuncs{
-		OnRequest: func(_ *threads.Thread) {
+		OnRequest: func(_ threads.Thread) {
 			ui.AssistantStart()
 		},
-		OnStreamItemAppended: func(_ *threads.Thread, item threads.Item) {
+		OnStreamItemAppended: func(_ threads.Thread, item threads.Item) {
 			if text, ok := item.(threads.AssistantText); ok {
 				ui.Print(string(text))
 			}
 		},
-		OnIdle: func(_ *threads.Thread) {
+		OnIdle: func(_ threads.Thread) {
 			ui.AssistantDone()
 		},
 	}
@@ -64,8 +64,8 @@ func main() {
 		}
 	}()
 
-	if err := loop.Do(context.Background(), func(thread *threads.Thread) error {
-		configureThread(thread, executor, delegate)
+	if err := loop.Do(context.Background(), func(thread threads.Thread) error {
+		configureThread(thread.(threads.Thread), executor, delegate)
 		return nil
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, "event loop setup error:", err)
@@ -101,7 +101,7 @@ func main() {
 				ui.Prompt()
 				continue
 			}
-			if err := loop.Do(context.Background(), func(thread *threads.Thread) error {
+			if err := loop.Do(context.Background(), func(thread threads.Thread) error {
 				thread.QueueItem(threads.AssistantInstruction(instruction))
 				return nil
 			}); err != nil {
@@ -121,8 +121,8 @@ func main() {
 				continue
 			}
 			var resolvedModel string
-			if err := loop.Do(context.Background(), func(thread *threads.Thread) error {
-				nextExecutor, resolved, err := switchModelIfIdle(thread, nextModel)
+			if err := loop.Do(context.Background(), func(thread threads.Thread) error {
+				nextExecutor, resolved, err := switchModelIfIdle(thread.(threads.Thread), nextModel)
 				if err != nil {
 					return err
 				}
@@ -140,7 +140,7 @@ func main() {
 			continue
 		}
 
-		if err := loop.Do(context.Background(), func(thread *threads.Thread) error {
+		if err := loop.Do(context.Background(), func(thread threads.Thread) error {
 			thread.QueueItem(threads.UserText(line))
 			thread.QueueItem(threads.SendItem{})
 			return nil
@@ -431,7 +431,7 @@ func newStreamerForModel(model string) (threads.LLMStreamer, string) {
 	}
 }
 
-func switchModelIfIdle(thread *threads.Thread, model string) (*threads.ThreadExecutor, string, error) {
+func switchModelIfIdle(thread threads.Thread, model string) (*threads.ThreadExecutor, string, error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return nil, "", fmt.Errorf("usage: /model <name>")
@@ -463,10 +463,10 @@ type jsToolArgs struct {
 	Code string `json:"code" jsonschema:"JavaScript source to execute in a fresh sandbox"`
 }
 
-func configureThread(thread *threads.Thread, executor *threads.ThreadExecutor, delegate threads.ThreadDelegate) {
+func configureThread(thread threads.Thread, executor *threads.ThreadExecutor, delegate threads.ThreadDelegate) {
 	thread.SetExecutor(executor)
 	thread.SetDelegate(delegate)
-	thread.SetToolProvider(simpletool.ProviderFunc(func(_ *threads.Thread) threads.ToolsSnapshot {
+	thread.SetToolProvider(simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return threads.ToolsSnapshot{
 			Snapshot: threads.ToolOfferSnapshot{Offered: []threads.ToolSpec{{
 				Name:        "javascript",
@@ -479,7 +479,7 @@ func configureThread(thread *threads.Thread, executor *threads.ThreadExecutor, d
 			}},
 		}
 	}))
-	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ *threads.Thread, call threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
 		if call.Name != "javascript" {
 			return threads.ToolDispatch{}, fmt.Errorf("unknown tool %q", call.Name)
 		}

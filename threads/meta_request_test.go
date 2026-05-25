@@ -132,7 +132,7 @@ func TestRequestBuilderRemovesSteeringHintAfterSuccessfulRetry(t *testing.T) {
 }
 
 func TestItemMetaPreventsControlBlockCoalescing(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(UserText("a"))
 	thread.QueueItem(PreviousItemMetadata{"cache/id": "a"})
 	thread.QueueItem(UserText("b"))

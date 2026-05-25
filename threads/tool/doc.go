@@ -17,7 +17,7 @@
 // closures.
 //
 // TODO: Provide first-class runtime wiring for late returns. Catalog.Dispatch
-// currently needs a *threads.Thread so asynchronous ReturnItem calls can re-enter
+// currently needs a threads.Thread so asynchronous ReturnItem calls can re-enter
 // through the thread's EventLoop; the final helper should make this ergonomic
 // without hiding the requirement that late returns need an EventLoop.
 //

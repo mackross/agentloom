@@ -22,7 +22,7 @@ type answerDelegate struct {
 	answered bool
 }
 
-func (d *answerDelegate) OnStructToolCall(_ context.Context, _ *threads.Thread, call tool.Call, v yesNoAnswer) tool.Item {
+func (d *answerDelegate) OnStructToolCall(_ context.Context, _ threads.Thread, call tool.Call, v yesNoAnswer) tool.Item {
 	d.answer = v
 	d.answered = true
 	return tool.ResultText(call, "ok")
@@ -71,7 +71,7 @@ func main() {
 		}, multitool.MultipleChoice(question).
 			Choice("yes", "the answer is yes").
 			Choice("no", "the answer is no").
-			Handle(func(_ context.Context, _ *threads.Thread, selected string, ret tool.ReturnItem) (tool.Handling, error) {
+			Handle(func(_ context.Context, _ threads.Thread, selected string, ret tool.ReturnItem) (tool.Handling, error) {
 				answer = selected
 				fmt.Fprintf(os.Stderr, "multitool selected answer: %s\n", selected)
 				return tool.Handling{Continue: threads.ToolContinueManual}, ret(threads.ToolCallResult{Output: "ok"})
@@ -80,10 +80,10 @@ func main() {
 		thread.SetToolProvider(answerTool)
 		thread.SetToolResolver(answerTool)
 		thread.SetDelegate(threads.ThreadDelegateFuncs{
-			OnStreamItemAppended: func(_ *threads.Thread, item threads.Item) {
+			OnStreamItemAppended: func(_ threads.Thread, item threads.Item) {
 				fmt.Fprintf(os.Stderr, "stream item: %#v\n", item)
 			},
-			OnExecutorError: func(_ *threads.Thread, err error) {
+			OnExecutorError: func(_ threads.Thread, err error) {
 				fmt.Fprintf(os.Stderr, "executor error: %v\n", err)
 			},
 		})

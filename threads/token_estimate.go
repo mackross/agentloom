@@ -24,7 +24,7 @@ type tokenEstimateProvider interface {
 // EstimateRequestTokens estimates the number of model context tokens for the current
 // request snapshot. If the installed executor/streamer does not provide a
 // tokenizer, a conservative approximation is returned.
-func (t *Thread) EstimateRequestTokens(ctx context.Context) (int, error) {
+func (t *thread) EstimateRequestTokens(ctx context.Context) (int, error) {
 	req := t.requestSnapshot()
 	if p, ok := t.executor.(tokenEstimateProvider); ok {
 		if estimator := p.RequestTokenEstimator(); estimator != nil {
@@ -37,7 +37,7 @@ func (t *Thread) EstimateRequestTokens(ctx context.Context) (int, error) {
 // EstimateTextTokens estimates the number of model context tokens text will use.
 // If the installed executor/streamer does not provide a tokenizer, a
 // conservative approximation is returned.
-func (t *Thread) EstimateTextTokens(ctx context.Context, text string) (int, error) {
+func (t *thread) EstimateTextTokens(ctx context.Context, text string) (int, error) {
 	if p, ok := t.executor.(tokenEstimateProvider); ok {
 		if estimator := p.TextTokenEstimator(); estimator != nil {
 			return estimator.EstimateTextTokens(ctx, text)
@@ -46,7 +46,7 @@ func (t *Thread) EstimateTextTokens(ctx context.Context, text string) (int, erro
 	return EstimateTextTokensApprox(text), nil
 }
 
-func (t *Thread) requestSnapshot() Req {
+func (t *thread) requestSnapshot() Req {
 	caps := StreamerCapabilities{}
 	if e, ok := t.executor.(interface{ StreamerCapabilities() StreamerCapabilities }); ok {
 		caps = e.StreamerCapabilities()
@@ -54,7 +54,7 @@ func (t *Thread) requestSnapshot() Req {
 	return t.requestSnapshotWithBuilder(nil, caps)
 }
 
-func (t *Thread) requestSnapshotWithBuilder(b RequestBuilder, caps StreamerCapabilities) Req {
+func (t *thread) requestSnapshotWithBuilder(b RequestBuilder, caps StreamerCapabilities) Req {
 	if b == nil {
 		b = DefaultRequestBuilder
 	}

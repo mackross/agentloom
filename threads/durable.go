@@ -95,7 +95,7 @@ type SnapshotItem struct {
 	SafeRollback *ToolCallSafeRollback `json:"safe_rollback,omitempty"`
 }
 
-func (t *Thread) Snapshot() (ThreadSnapshot, error) {
+func (t *thread) Snapshot() (ThreadSnapshot, error) {
 	nodeIndex := map[*item[Item]]int{}
 	items := make([]SnapshotItem, 0)
 	idx := 0
@@ -119,7 +119,7 @@ func (t *Thread) Snapshot() (ThreadSnapshot, error) {
 	}, nil
 }
 
-func RestoreThreadSnapshot(snapshot ThreadSnapshot) (*Thread, error) {
+func RestoreThreadSnapshot(snapshot ThreadSnapshot) (*thread, error) {
 	if snapshot.Version != serializedThreadVersion {
 		return nil, fmt.Errorf("unsupported thread serialization version: %d", snapshot.Version)
 	}
@@ -127,7 +127,7 @@ func RestoreThreadSnapshot(snapshot ThreadSnapshot) (*Thread, error) {
 		return nil, fmt.Errorf("unsupported thread state: %q", snapshot.State)
 	}
 
-	t := New()
+	t := newThread()
 	nodes := make([]*item[Item], 0, len(snapshot.Items))
 	for _, raw := range snapshot.Items {
 		v, err := snapshotItemToItem(raw)
@@ -156,7 +156,7 @@ func RestoreThreadSnapshot(snapshot ThreadSnapshot) (*Thread, error) {
 	return t, nil
 }
 
-func (t *Thread) Checkpoint(opts CheckpointOptions) (Checkpoint, error) {
+func (t *thread) Checkpoint(opts CheckpointOptions) (Checkpoint, error) {
 	policy := opts.Policy
 	if policy == "" {
 		policy = InflightSkip
@@ -195,7 +195,7 @@ func (t *Thread) Checkpoint(opts CheckpointOptions) (Checkpoint, error) {
 	}
 }
 
-func RestoreCheckpoint(cp Checkpoint, opts RestoreOptions) (*Thread, error) {
+func RestoreCheckpoint(cp Checkpoint, opts RestoreOptions) (*thread, error) {
 	if cp.Unsafe && !opts.AllowUnsafe {
 		return nil, ErrRestoreUnsafeRequiresExecutor
 	}
@@ -211,7 +211,7 @@ func RestoreCheckpoint(cp Checkpoint, opts RestoreOptions) (*Thread, error) {
 	return t, nil
 }
 
-func RestoreFromCheckpointAndWAL(cp Checkpoint, wal []WALEvent, opts RestoreOptions) (*Thread, error) {
+func RestoreFromCheckpointAndWAL(cp Checkpoint, wal []WALEvent, opts RestoreOptions) (*thread, error) {
 	t, err := RestoreCheckpoint(cp, opts)
 	if err != nil {
 		return nil, err
@@ -247,7 +247,7 @@ func RestoreFromCheckpointAndWAL(cp Checkpoint, wal []WALEvent, opts RestoreOpti
 	return safe, safe.ReplayWAL(wal[:lastSafe])
 }
 
-func (t *Thread) WALAfter(seq uint32) []WALEvent {
+func (t *thread) WALAfter(seq uint32) []WALEvent {
 	out := make([]WALEvent, 0, len(t.wal))
 	for _, ev := range t.wal {
 		if ev.Seq <= seq {
@@ -258,7 +258,7 @@ func (t *Thread) WALAfter(seq uint32) []WALEvent {
 	return out
 }
 
-func (t *Thread) ReplayWAL(events []WALEvent) error {
+func (t *thread) ReplayWAL(events []WALEvent) error {
 	if len(events) == 0 {
 		return nil
 	}
@@ -469,7 +469,7 @@ func cloneSnapshot(s ThreadSnapshot) ThreadSnapshot {
 	}
 }
 
-func (t *Thread) appendWAL(op string, item Item) {
+func (t *thread) appendWAL(op string, item Item) {
 	if t.replayingWAL {
 		return
 	}
@@ -497,7 +497,7 @@ func (t *Thread) appendWAL(op string, item Item) {
 	t.store.AppendWALDiff([]WALEvent{ev})
 }
 
-func (t *Thread) applyWALEvent(ev WALEvent) error {
+func (t *thread) applyWALEvent(ev WALEvent) error {
 	switch ev.Op {
 	case walOpQueueItem:
 		if ev.Item.Type == "" {
@@ -540,12 +540,12 @@ func (t *Thread) applyWALEvent(ev WALEvent) error {
 	}
 }
 
-func (t *Thread) isInflightState() bool {
+func (t *thread) isInflightState() bool {
 	s := t.State()
 	return s == StateConstructLLMRequest || s == StateReceivingStream || s == StateStreamComplete
 }
 
-func (t *Thread) requiresRecovery() bool {
+func (t *thread) requiresRecovery() bool {
 	if t.isInflightState() {
 		return true
 	}
@@ -557,7 +557,7 @@ func (t *Thread) requiresRecovery() bool {
 	return false
 }
 
-func (t *Thread) waitUntilSafe(timeout time.Duration) error {
+func (t *thread) waitUntilSafe(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	if timeout <= 0 {
 		deadline = time.Now().Add(5 * time.Second)
@@ -571,16 +571,16 @@ func (t *Thread) waitUntilSafe(timeout time.Duration) error {
 	return nil
 }
 
-func (t *Thread) captureSafeIfIdle() { t.captureSafeIfRestorable() }
+func (t *thread) captureSafeIfIdle() { t.captureSafeIfRestorable() }
 
-func (t *Thread) captureSafeIfRestorable() {
+func (t *thread) captureSafeIfRestorable() {
 	if t.State() != StateIdle && t.State() != StateAwaitingToolResults {
 		return
 	}
 	t.captureSafeSnapshot()
 }
 
-func (t *Thread) captureSafeSnapshot() {
+func (t *thread) captureSafeSnapshot() {
 	snap, err := t.Snapshot()
 	if err != nil {
 		return

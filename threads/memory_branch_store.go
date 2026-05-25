@@ -48,7 +48,7 @@ func (s *MemoryBranchStore) CreateBranch(ctx context.Context, opts BranchCreateO
 	if err != nil {
 		return nil, err
 	}
-	cp, err := New().Checkpoint(CheckpointOptions{Policy: InflightSkip})
+	cp, err := newThread().Checkpoint(CheckpointOptions{Policy: InflightSkip})
 	if err != nil {
 		return nil, err
 	}

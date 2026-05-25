@@ -10,7 +10,7 @@ import (
 )
 
 func TestRestoreFromCheckpointAndWALPreservesCoalescedUserItems(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
 	if err != nil {
 		t.Fatalf("base checkpoint: %v", err)
@@ -37,7 +37,7 @@ func TestRestoreFromCheckpointAndWALPreservesCoalescedUserItems(t *testing.T) {
 }
 
 func TestRestoreFromCheckpointAndWALPreservesSyntheticToolExchange(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
 	if err != nil {
 		t.Fatalf("base checkpoint: %v", err)
@@ -54,7 +54,7 @@ func TestRestoreFromCheckpointAndWALPreservesSyntheticToolExchange(t *testing.T)
 }
 
 func TestRestoreFromCheckpointAndWALReplaysStreamLifecycle(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
 	if err != nil {
 		t.Fatalf("base checkpoint: %v", err)
@@ -82,14 +82,14 @@ func TestRestoreFromCheckpointAndWALReplaysStreamLifecycle(t *testing.T) {
 }
 
 func TestReplayWALRejectsNonMonotonicSequence(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	if err := thread.ReplayWAL([]WALEvent{{Seq: 2, Op: walOpQueueItem, Item: SnapshotItem{Type: "user_text", Text: "a"}}, {Seq: 1, Op: walOpQueueItem, Item: SnapshotItem{Type: "user_text", Text: "b"}}}); err == nil {
 		t.Fatal("expected non-monotonic replay error")
 	}
 }
 
 func TestRestoreFromCheckpointAndWALTrimsUnsafeTailByDefault(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
 	if err != nil {
 		t.Fatalf("base checkpoint: %v", err)
@@ -116,9 +116,9 @@ func TestRestoreFromCheckpointAndWALTrimsUnsafeTailByDefault(t *testing.T) {
 }
 
 func TestRestoreFromCheckpointAndWALTrimsPendingStartedToolTailByDefault(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("edit", "edit files")})
-	thread.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		return ToolDispatch{
 			Started:  true,
 			Recovery: ToolRecoveryUnsafe,
@@ -163,9 +163,9 @@ func TestRestoreFromCheckpointAndWALTrimsPendingStartedToolTailByDefault(t *test
 }
 
 func TestRestoreFromCheckpointAndWALAllowsCompletedStartedTool(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("edit", "edit files")})
-	thread.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		return ToolDispatch{
 			Started:  true,
 			Recovery: ToolRecoveryUnsafe,
@@ -214,9 +214,9 @@ func TestRestoreFromCheckpointAndWALAllowsUnsafeStartedToolWhenRequested(t *test
 }
 
 func TestRestoreFromCheckpointAndWALReplaysLateAutoSend(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("calc", "calculate")})
-	thread.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
 		return ToolDispatch{
 			Started:  true,
 			Recovery: ToolRecoveryUnsafe,
@@ -252,7 +252,7 @@ func TestRestoreFromCheckpointAndWALReplaysLateAutoSend(t *testing.T) {
 }
 
 func TestRestoreFromCheckpointAndWALReplaysToolCallChunkFinalize(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
 	if err != nil {
 		t.Fatalf("base checkpoint: %v", err)
@@ -281,7 +281,7 @@ func TestRestoreFromCheckpointAndWALReplaysToolCallChunkFinalize(t *testing.T) {
 }
 
 func TestRestoreFromCheckpointAndWALReplaysToolSnapshotControlItem(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
 	if err != nil {
 		t.Fatalf("base checkpoint: %v", err)
@@ -304,7 +304,7 @@ func TestRestoreFromCheckpointAndWALReplaysToolSnapshotControlItem(t *testing.T)
 }
 
 func TestRestoreFromCheckpointAndWALReplaysAwaitingToolResults(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
 	if err != nil {
 		t.Fatalf("base checkpoint: %v", err)
@@ -328,7 +328,7 @@ func TestRestoreFromCheckpointAndWALReplaysAwaitingToolResults(t *testing.T) {
 }
 
 func TestRestoreFromCheckpointAndWALReplaysToolsSnapshotHandlerLoadData(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
 	if err != nil {
 		t.Fatalf("base checkpoint: %v", err)

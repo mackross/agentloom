@@ -6,7 +6,7 @@ import (
 )
 
 func TestCheckpointSkipUsesSafeBoundaryDuringInflight(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	streamStart := make(chan struct{})
 
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
@@ -48,7 +48,7 @@ func TestCheckpointSkipUsesSafeBoundaryDuringInflight(t *testing.T) {
 }
 
 func TestCheckpointWaitReturnsAfterInflightCompletion(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	streamStart := make(chan struct{})
 
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
@@ -101,7 +101,7 @@ func TestCheckpointWaitReturnsAfterInflightCompletion(t *testing.T) {
 }
 
 func TestCheckpointUnsafeRestoreRequiresExplicitOptIn(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	streamStart := make(chan struct{})
 
 	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
@@ -142,7 +142,7 @@ func TestCheckpointUnsafeRestoreRequiresExplicitOptIn(t *testing.T) {
 }
 
 func TestCheckpointSkipPreservesAwaitingToolResults(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	streamer := newFakeStreamer()
 	streamer.capabilities.ToolResultSendPolicy = ToolResultSendRequiresComplete
 	streamer.Reply(func(b *streamBuilder) {

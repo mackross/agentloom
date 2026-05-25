@@ -11,7 +11,7 @@ const roundTripEnv = "THREAD_TEST_SERIALIZE_ROUNDTRIP"
 
 type testThread struct {
 	t *testing.T
-	*Thread
+	*thread
 
 	executor         stateObserver
 	delegate         ThreadDelegate
@@ -25,7 +25,7 @@ func newTestThread(t *testing.T) *testThread {
 	t.Helper()
 	return &testThread{
 		t:                t,
-		Thread:           New(),
+		thread:           newThread(),
 		roundTripEnabled: os.Getenv(roundTripEnv) == "1",
 	}
 }
@@ -33,11 +33,11 @@ func newTestThread(t *testing.T) *testThread {
 func (x *testThread) SetExecutor(e stateObserver) {
 	x.executor = e
 	x.recoveryAttached = false
-	x.Thread.SetExecutor(e)
+	x.thread.setExecutor(e)
 }
 
 func (x *testThread) AttachExecutorForRecovery(e stateObserver) error {
-	err := x.Thread.AttachExecutorForRecovery(e)
+	err := x.thread.attachExecutorForRecoveryWithOptions(e, RecoveryOptions{})
 	if err != nil {
 		return err
 	}
@@ -48,12 +48,12 @@ func (x *testThread) AttachExecutorForRecovery(e stateObserver) error {
 
 func (x *testThread) SetDelegate(d ThreadDelegate) {
 	x.delegate = d
-	x.Thread.SetDelegate(d)
+	x.thread.SetDelegate(d)
 }
 
 func (x *testThread) QueueItem(v Item) {
 	x.queueDepth++
-	x.Thread.QueueItem(v)
+	x.thread.QueueItem(v)
 	x.queueDepth--
 
 	if x.queueDepth == 0 {
@@ -65,7 +65,7 @@ func (x *testThread) maybeRoundTrip() {
 	if !x.roundTripEnabled {
 		return
 	}
-	firstSnap, err := x.Thread.Snapshot()
+	firstSnap, err := x.thread.Snapshot()
 	if err != nil {
 		x.t.Fatalf("snapshot thread: %v", err)
 	}
@@ -83,11 +83,11 @@ func (x *testThread) maybeRoundTrip() {
 	}
 	if x.executor != nil {
 		if x.recoveryAttached {
-			if err := next.AttachExecutorForRecovery(x.executor); err != nil {
+			if err := next.attachExecutorForRecoveryWithOptions(x.executor, RecoveryOptions{}); err != nil {
 				x.t.Fatalf("re-attach executor for recovery: %v", err)
 			}
 		} else {
-			next.SetExecutor(x.executor)
+			next.setExecutor(x.executor)
 		}
 	}
 	if x.delegate != nil {
@@ -104,5 +104,5 @@ func (x *testThread) maybeRoundTrip() {
 	if !bytes.Equal(first, second) {
 		x.t.Fatalf("thread snapshot encode/decode/encode mismatch\nfirst:  %s\nsecond: %s", string(first), string(second))
 	}
-	x.Thread = next
+	x.thread = next
 }

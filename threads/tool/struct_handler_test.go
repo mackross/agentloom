@@ -13,7 +13,7 @@ type structToolTestArgs struct {
 
 type structToolTestDelegate struct{}
 
-func (structToolTestDelegate) OnStructToolCall(_ context.Context, _ *threads.Thread, call Call, args structToolTestArgs) Item {
+func (structToolTestDelegate) OnStructToolCall(_ context.Context, _ threads.Thread, call Call, args structToolTestArgs) Item {
 	return ResultText(call, args.Value)
 }
 

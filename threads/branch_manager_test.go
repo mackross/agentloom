@@ -28,6 +28,16 @@ func (branchTargetTestCodec) Format(target BranchTarget) (string, error) {
 	return string(target.BranchID) + "/turn/0", nil
 }
 
+func assertPanics(t *testing.T, fn func(), name string) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Fatalf("%s did not panic", name)
+		}
+	}()
+	fn()
+}
+
 func TestStoredBranchLoadAndBranchManagerOpen(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryBranchStore()
@@ -62,8 +72,9 @@ func TestStoredBranchLoadAndBranchManagerOpen(t *testing.T) {
 	if loaded.Record().ID != "root" {
 		t.Fatalf("Record ID = %q, want root", loaded.Record().ID)
 	}
-	if err := loaded.RunOnEventLoop(ctx, func(thread *Thread) error {
-		if got := len(thread.CompletedTurns()); got != 2 {
+	if err := loaded.RunOnEventLoop(ctx, func(th Thread) error {
+		local := th.(*thread)
+		if got := len(local.CompletedTurns()); got != 2 {
 			t.Fatalf("event loop turns = %d, want 2", got)
 		}
 		return nil
@@ -78,12 +89,10 @@ func TestStoredBranchLoadAndBranchManagerOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenWithoutEventLoop: %v", err)
 	}
-	if err := loadedWithoutLoop.RunOnEventLoop(ctx, func(*Thread) error { return nil }); !errors.Is(err, ErrEventLoopClosed) {
+	if err := loadedWithoutLoop.RunOnEventLoop(ctx, func(Thread) error { return nil }); !errors.Is(err, ErrEventLoopClosed) {
 		t.Fatalf("RunOnEventLoop without loop err = %v, want ErrEventLoopClosed", err)
 	}
-	if err := loadedWithoutLoop.WaitUntilIdle(ctx); !errors.Is(err, ErrEventLoopClosed) {
-		t.Fatalf("WaitUntilIdle without loop err = %v, want ErrEventLoopClosed", err)
-	}
+	assertPanics(t, func() { _ = loadedWithoutLoop.WaitUntilIdle(ctx) }, "WaitUntilIdle without loop")
 	if err := loadedWithoutLoop.Close(); err != nil {
 		t.Fatalf("Close loaded without loop: %v", err)
 	}
@@ -135,7 +144,7 @@ func TestBranchManagerOpenAsCopyDoesNotRequireParentLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateBranch: %v", err)
 	}
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(UserText("hello"))
 	cp, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
 	if err != nil {
@@ -228,11 +237,11 @@ func TestBranchSetDelegateForwardsStreamItems(t *testing.T) {
 	})
 	var streamed []Item
 	branch.SetDelegate(ThreadDelegateFuncs{
-		OnStreamItemAppended: func(_ *Thread, item Item) {
+		OnStreamItemAppended: func(_ Thread, item Item) {
 			streamed = append(streamed, item)
 		},
 	})
-	if err := branch.RunOnEventLoop(ctx, func(thread *Thread) error {
+	if err := branch.runLocal(ctx, func(thread *thread) error {
 		thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
 		thread.QueueItem(UserText("hi"))
 		thread.QueueItem(SendItem{})
@@ -269,12 +278,12 @@ func TestBranchSetDelegateForwardsExecutorErrors(t *testing.T) {
 	want := errors.New("boom")
 	var got error
 	branch.SetDelegate(ThreadDelegateFuncs{
-		OnExecutorError: func(_ *Thread, err error) {
+		OnExecutorError: func(_ Thread, err error) {
 			got = err
 		},
 	})
-	if err := branch.RunOnEventLoop(ctx, func(thread *Thread) error {
-		thread.SetExecutor(errorObserver{err: want})
+	if err := branch.runLocal(ctx, func(thread *thread) error {
+		thread.setExecutor(errorObserver{err: want})
 		thread.QueueItem(UserText("hi"))
 		thread.QueueItem(SendItem{})
 		return nil
@@ -302,7 +311,7 @@ func TestBranchWaitUntilIdleReturnsAfterDelegate(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer branch.Close()
-	if err := branch.RunOnEventLoop(ctx, func(thread *Thread) error {
+	if err := branch.runLocal(ctx, func(thread *thread) error {
 		thread.QueueItem(UserText("pending"))
 		thread.QueueItem(SendItem{})
 		if thread.State() == StateIdle {
@@ -317,7 +326,7 @@ func TestBranchWaitUntilIdleReturnsAfterDelegate(t *testing.T) {
 	releaseDelegate := make(chan struct{})
 	waitReturned := make(chan error, 1)
 	branch.SetDelegate(ThreadDelegateFuncs{
-		OnIdle: func(*Thread) {
+		OnIdle: func(Thread) {
 			close(delegateStarted)
 			<-releaseDelegate
 		},
@@ -330,7 +339,7 @@ func TestBranchWaitUntilIdleReturnsAfterDelegate(t *testing.T) {
 	case <-time.After(10 * time.Millisecond):
 	}
 
-	go branch.OnThreadIdle(branch.Thread)
+	go branch.OnThreadIdle(branch.thread)
 	select {
 	case <-delegateStarted:
 	case <-time.After(time.Second):

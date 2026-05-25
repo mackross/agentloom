@@ -7,7 +7,7 @@ import (
 )
 
 func TestSeqAndCompletedTurnsExposeBranchableConversation(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	if got := thread.Seq(); got != 0 {
 		t.Fatalf("new thread seq = %d, want 0", got)
 	}
@@ -39,7 +39,7 @@ func TestSeqAndCompletedTurnsExposeBranchableConversation(t *testing.T) {
 }
 
 func TestTurnCheckpointFromUserRestoresRequestReadyPrefix(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(UserText("first"))
 	thread.QueueItem(SendItem{})
 	thread.QueueItem(AssistantText("old"))
@@ -79,7 +79,7 @@ func TestTurnCheckpointFromUserRestoresRequestReadyPrefix(t *testing.T) {
 }
 
 func TestTurnCheckpointFromAssistantRestoresSettledPrefix(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(UserText("first"))
 	thread.QueueItem(SendItem{})
 	thread.QueueItem(AssistantText("answer"))
@@ -109,7 +109,7 @@ func TestTurnCheckpointFromAssistantRestoresSettledPrefix(t *testing.T) {
 }
 
 func TestPartialAssistantAndUnresolvedToolsAreNotBranchable(t *testing.T) {
-	settledThenStreaming := New()
+	settledThenStreaming := newThread()
 	settledThenStreaming.QueueItem(UserText("u1"))
 	settledThenStreaming.QueueItem(SendItem{})
 	if err := settledThenStreaming.beginStreaming(); err != nil {
@@ -137,7 +137,7 @@ func TestPartialAssistantAndUnresolvedToolsAreNotBranchable(t *testing.T) {
 		t.Fatalf("last branchable turn during later stream = role %q text %q", turns[2].Role(), turns[2].Text())
 	}
 
-	streaming := New()
+	streaming := newThread()
 	streaming.QueueItem(UserText("u"))
 	streaming.QueueItem(SendItem{})
 	if err := streaming.beginStreaming(); err != nil {
@@ -151,7 +151,7 @@ func TestPartialAssistantAndUnresolvedToolsAreNotBranchable(t *testing.T) {
 		t.Fatalf("branchable turns during stream = %d, want only user turn", got)
 	}
 
-	tools := New()
+	tools := newThread()
 	tools.QueueItem(UserText("u"))
 	tools.QueueItem(SendItem{})
 	tools.QueueItem(AssistantText("planning"))
@@ -163,7 +163,7 @@ func TestPartialAssistantAndUnresolvedToolsAreNotBranchable(t *testing.T) {
 }
 
 func TestCompletedTurnsAfterRestoreAndToolResultPrefix(t *testing.T) {
-	thread := New()
+	thread := newThread()
 	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
 	if err != nil {
 		t.Fatalf("base checkpoint: %v", err)
@@ -192,8 +192,8 @@ func TestCompletedTurnsAfterRestoreAndToolResultPrefix(t *testing.T) {
 }
 
 func TestTurnCheckpointInsideEventLoopCanBranch(t *testing.T) {
-	thread := New()
-	loop := NewEventLoop(thread)
+	th := newThread()
+	loop := NewEventLoop(th)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -201,12 +201,12 @@ func TestTurnCheckpointInsideEventLoopCanBranch(t *testing.T) {
 
 	var cp Checkpoint
 	var sourceHeadSeq uint32
-	err := loop.Do(ctx, func(t *Thread) error {
-		t.QueueItem(UserText("branch me"))
-		turn := t.CompletedTurns()[0]
+	err := loop.doLocal(ctx, func(th *thread) error {
+		th.QueueItem(UserText("branch me"))
+		turn := th.CompletedTurns()[0]
 		var err error
 		cp, err = turn.Checkpoint()
-		sourceHeadSeq = t.Seq()
+		sourceHeadSeq = th.Seq()
 		return err
 	})
 	if err != nil {
@@ -225,7 +225,7 @@ func TestTurnCheckpointRejectsZeroAndStaleTurns(t *testing.T) {
 	if _, err := (Turn{}).Checkpoint(); err == nil {
 		t.Fatal("zero turn checkpoint succeeded")
 	}
-	thread := New()
+	thread := newThread()
 	thread.QueueItem(UserText("u"))
 	turn := thread.CompletedTurns()[0]
 	thread.QueueItem(UserText(" mutation"))

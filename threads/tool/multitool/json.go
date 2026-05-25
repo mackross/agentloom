@@ -10,11 +10,11 @@ import (
 	"github.com/mackross/agentloom/threads/tool"
 )
 
-func jsonSubtool[T any](spec SubtoolSpec, toolName string, fn func(context.Context, *threads.Thread, threads.ToolCall, T, tool.ReturnItem) (tool.Handling, error)) Subtool {
+func jsonSubtool[T any](spec SubtoolSpec, toolName string, fn func(context.Context, threads.Thread, threads.ToolCall, T, tool.ReturnItem) (tool.Handling, error)) Subtool {
 	if fn == nil {
 		panic("multitool: nil JSON subtool handler")
 	}
-	return Func(spec, func(ctx context.Context, thread *threads.Thread, call ToolCall, ret tool.ReturnItem) (tool.Handling, error) {
+	return Func(spec, func(ctx context.Context, thread threads.Thread, call ToolCall, ret tool.ReturnItem) (tool.Handling, error) {
 		inner, args, ok := parseJSONInput[T](call, spec, toolName, ret)
 		if !ok {
 			return tool.Handling{}, nil
@@ -41,7 +41,7 @@ func JSONHandler[T any](spec SubtoolSpec, toolName string, h tool.Handler) Subto
 	if h == nil {
 		panic("multitool.JSONHandler requires non-nil handler")
 	}
-	return jsonSubtool(spec, toolName, func(ctx context.Context, thread *threads.Thread, inner threads.ToolCall, _ T, ret tool.ReturnItem) (tool.Handling, error) {
+	return jsonSubtool(spec, toolName, func(ctx context.Context, thread threads.Thread, inner threads.ToolCall, _ T, ret tool.ReturnItem) (tool.Handling, error) {
 		return h.HandleToolCall(ctx, thread, tool.Call(inner), ret)
 	})
 }
