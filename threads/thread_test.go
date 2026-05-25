@@ -1,6 +1,8 @@
 package threads
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -904,6 +906,126 @@ func TestAwaitingToolResultsIsNotIdle(t *testing.T) {
 	if idleCalls != 0 {
 		t.Fatalf("OnThreadIdle called %d times", idleCalls)
 	}
+}
+
+func TestQueueSyntheticToolExchangeBeforeSend(t *testing.T) {
+	thread := newTestThread(t)
+	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
+		b.AssertRequest(func(req Req) {
+			want := []Item{
+				ToolCall{CallID: "synthetic", Name: "calc", Payload: `{"a":1}`},
+				ToolCallResult{CallID: "synthetic", Output: "1"},
+			}
+			if !reflect.DeepEqual(req.Items, want) {
+				t.Fatalf("request items = %#v, want %#v", req.Items, want)
+			}
+		})
+	})
+	thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
+
+	thread.QueueSyntheticToolExchange(ToolCall{CallID: "synthetic", Name: "calc", Payload: `{"a":1}`}, ToolCallResult{Output: "1"})
+	thread.QueueItem(SendItem{})
+
+	streamer.AssertCallCount(t)
+}
+
+func TestQueueSyntheticToolExchangeAfterSendRespectsBarrier(t *testing.T) {
+	thread := newTestThread(t)
+	streamer := newFakeStreamer().Reply(func(b *streamBuilder) {
+		b.AssertRequest(func(req Req) {
+			if !reflect.DeepEqual(req.Items, []Item{UserText("first")}) {
+				t.Fatalf("first request items = %#v", req.Items)
+			}
+		})
+		b.Do(func() {
+			thread.QueueSyntheticToolExchange(ToolCall{CallID: "synthetic", Name: "calc", Payload: `{}`}, ToolCallResult{Output: "ok"})
+		})
+	}).Reply(func(b *streamBuilder) {
+		b.AssertRequest(func(req Req) {
+			want := []Item{
+				UserText("first"),
+				ToolCall{CallID: "synthetic", Name: "calc", Payload: `{}`},
+				ToolCallResult{CallID: "synthetic", Output: "ok"},
+			}
+			if !reflect.DeepEqual(req.Items, want) {
+				t.Fatalf("second request items = %#v, want %#v", req.Items, want)
+			}
+		})
+	})
+	thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
+
+	thread.QueueItem(UserText("first"))
+	thread.QueueItem(SendItem{})
+	thread.QueueItem(SendItem{})
+
+	streamer.AssertCallCount(t)
+}
+
+func TestQueueSyntheticToolExchangeCompletesIDsAndSkipsResolver(t *testing.T) {
+	thread := newTestThread(t)
+	streamer := newFakeStreamer()
+	streamer.syntheticID = "provider-id"
+	thread.SetExecutor(NewThreadExecutor(streamer.Streamer()))
+	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("calc", "calculate")})
+	resolved := false
+	thread.SetToolResolver(toolResolverFunc(func(context.Context, *Thread, ToolCall, json.RawMessage) (ToolDispatch, error) {
+		resolved = true
+		return ToolDispatch{}, nil
+	}))
+
+	thread.QueueSyntheticToolExchange(ToolCall{Name: "calc", Payload: `{}`}, ToolCallResult{Output: "ok"})
+
+	if resolved {
+		t.Fatal("resolver was called for synthetic tool exchange")
+	}
+	want := []Item{
+		ToolsSnapshot{Snapshot: testToolsSnapshot("calc", "calculate").Snapshot, Handlers: testToolsSnapshot("calc", "calculate").Handlers},
+		ToolCall{CallID: "provider-id", Name: "calc", Payload: `{}`},
+		ToolCallResult{CallID: "provider-id", Output: "ok"},
+	}
+	if got := thread.items.Slice(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("thread items = %#v, want %#v", got, want)
+	}
+	if got := thread.Queued().Slice(); len(got) != 0 {
+		t.Fatalf("queued items = %#v, want none", got)
+	}
+}
+
+func TestQueueSyntheticToolExchangeFallbackAndCopiedIDs(t *testing.T) {
+	thread := newTestThread(t)
+	thread.QueueSyntheticToolExchange(ToolCall{Name: "calc", Payload: `{}`}, ToolCallResult{Output: "ok"})
+	items := thread.items.Slice()
+	call := items[0].(ToolCall)
+	result := items[1].(ToolCallResult)
+	if call.CallID == "" || result.CallID != call.CallID {
+		t.Fatalf("fallback ids not applied: call=%#v result=%#v", call, result)
+	}
+
+	thread = newTestThread(t)
+	thread.QueueSyntheticToolExchange(ToolCall{Name: "calc", Payload: `{}`}, ToolCallResult{CallID: "result-id", Output: "ok"})
+	if got := thread.items.Slice()[0].(ToolCall).CallID; got != "result-id" {
+		t.Fatalf("copied call id = %q, want result-id", got)
+	}
+}
+
+func TestQueueSyntheticToolExchangePanicsOnBasicMisuse(t *testing.T) {
+	assertPanic := func(name string, fn func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Fatalf("%s did not panic", name)
+			}
+		}()
+		fn()
+	}
+
+	thread := newTestThread(t)
+	assertPanic("empty name", func() {
+		thread.QueueSyntheticToolExchange(ToolCall{}, ToolCallResult{})
+	})
+	assertPanic("mismatched ids", func() {
+		thread.QueueSyntheticToolExchange(ToolCall{CallID: "a", Name: "calc"}, ToolCallResult{CallID: "b"})
+	})
 }
 
 func TestDelegateReceivesRawToolCallChunkAndFinalItems(t *testing.T) {

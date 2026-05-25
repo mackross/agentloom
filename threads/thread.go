@@ -230,6 +230,31 @@ func (t *Thread) QueueItem(v Item) {
 	t.captureSafeIfIdle()
 }
 
+func (t *Thread) QueueSyntheticToolExchange(call ToolCall, result ToolCallResult) {
+	if call.Name == "" || (call.CallID != "" && result.CallID != "" && call.CallID != result.CallID) {
+		panic(fmt.Sprintf("threads invalid synthetic tool exchange: call=%#v result=%#v", call, result))
+	}
+	id := call.CallID
+	if id == "" {
+		id = result.CallID
+	}
+	if id == "" {
+		if p, ok := t.executor.(SyntheticToolCallIDProvider); ok {
+			id = p.SyntheticToolCallID()
+		} else if x, ok := t.executor.(*ThreadExecutor); ok && x != nil {
+			if p, ok := x.streamer.(SyntheticToolCallIDProvider); ok {
+				id = p.SyntheticToolCallID()
+			}
+		}
+	}
+	if id == "" {
+		id = fmt.Sprintf("synthetic_tool_call_%d", t.mutationSeq+1)
+	}
+	call.CallID, result.CallID = id, id
+	t.QueueItem(call)
+	t.QueueItem(result)
+}
+
 func (t *Thread) hasRecoveryResultForToolCall(callID string) bool {
 	if callID == "" {
 		return false

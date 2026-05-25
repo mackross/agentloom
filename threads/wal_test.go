@@ -36,6 +36,23 @@ func TestRestoreFromCheckpointAndWALPreservesCoalescedUserItems(t *testing.T) {
 	}
 }
 
+func TestRestoreFromCheckpointAndWALPreservesSyntheticToolExchange(t *testing.T) {
+	thread := New()
+	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
+	if err != nil {
+		t.Fatalf("base checkpoint: %v", err)
+	}
+
+	thread.QueueSyntheticToolExchange(ToolCall{CallID: "synthetic", Name: "calc", Payload: `{}`}, ToolCallResult{Output: "ok"})
+	restored, err := RestoreFromCheckpointAndWAL(base, thread.WALAfter(base.Seq), RestoreOptions{})
+	if err != nil {
+		t.Fatalf("restore from checkpoint + wal: %v", err)
+	}
+	if !reflect.DeepEqual(snapshotThread(thread), snapshotThread(restored)) {
+		t.Fatalf("snapshot mismatch\nbefore=%#v\nafter=%#v", snapshotThread(thread), snapshotThread(restored))
+	}
+}
+
 func TestRestoreFromCheckpointAndWALReplaysStreamLifecycle(t *testing.T) {
 	thread := New()
 	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})

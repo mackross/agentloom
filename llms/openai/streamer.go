@@ -117,6 +117,10 @@ func (*ResponsesStreamer) Capabilities() threads.StreamerCapabilities {
 	return threads.StreamerCapabilities{AssistantPrefix: true, ToolResultSendPolicy: threads.ToolResultSendRequiresComplete}
 }
 
+func (*ResponsesStreamer) SyntheticToolCallID() string {
+	return fmt.Sprintf("call_%x", time.Now().UnixNano())
+}
+
 func (s *ResponsesStreamer) RegisterToolNormalizer(name string, normalizer threads.ToolNormalizer) {
 	s.normalizers.RegisterToolNormalizer(name, normalizer)
 }

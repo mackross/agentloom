@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	gschema "github.com/google/jsonschema-go/jsonschema"
 	openaiapi "github.com/openai/openai-go/v3"
@@ -63,6 +64,10 @@ func NewChatCompletionsStreamerWithClient(client openaiapi.Client, model string)
 
 func (*ChatCompletionsStreamer) Capabilities() threads.StreamerCapabilities {
 	return threads.StreamerCapabilities{AssistantPrefix: true}
+}
+
+func (*ChatCompletionsStreamer) SyntheticToolCallID() string {
+	return fmt.Sprintf("call_%x", time.Now().UnixNano())
 }
 
 func (s *ChatCompletionsStreamer) RegisterToolNormalizer(name string, normalizer threads.ToolNormalizer) {

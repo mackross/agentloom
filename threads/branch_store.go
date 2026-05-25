@@ -344,6 +344,15 @@ func (b *Branch) OnThreadStreamItemAppended(t *Thread, item Item) {
 	}
 }
 
+func (b *Branch) OnThreadExecutorError(t *Thread, err error) {
+	if b == nil || b.delegate == nil {
+		return
+	}
+	if d, ok := b.delegate.(ThreadExecutorErrorDelegate); ok {
+		d.OnThreadExecutorError(t, err)
+	}
+}
+
 // BranchStore creates, opens, lists, and deletes branch streams. It is
 // storage-only: it must not own live threads, event loops, executors, tools,
 // delegates, or goroutines.

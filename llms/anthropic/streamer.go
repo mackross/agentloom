@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	anthropicapi "github.com/anthropics/anthropic-sdk-go"
 	gschema "github.com/google/jsonschema-go/jsonschema"
@@ -68,6 +69,10 @@ func NewMessagesStreamerWithClient(client anthropicapi.Client, model string) *Me
 
 func (s *MessagesStreamer) Capabilities() threads.StreamerCapabilities {
 	return threads.StreamerCapabilities{AssistantPrefix: supportsAssistantPrefix(string(s.model)), ToolResultSendPolicy: threads.ToolResultSendRequiresComplete}
+}
+
+func (*MessagesStreamer) SyntheticToolCallID() string {
+	return fmt.Sprintf("toolu_%x", time.Now().UnixNano())
 }
 
 func (s *MessagesStreamer) RegisterToolNormalizer(name string, normalizer threads.ToolNormalizer) {

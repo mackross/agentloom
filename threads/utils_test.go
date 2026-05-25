@@ -9,6 +9,7 @@ import (
 
 type fakeStreamer struct {
 	capabilities StreamerCapabilities
+	syntheticID  string
 	runtime      fakeStreamerRuntime
 	replies      []streamReply
 	calls        int
@@ -130,6 +131,8 @@ func (r *fakeStreamerRuntime) Capabilities() StreamerCapabilities {
 func (r *fakeStreamerRuntime) RegisterToolNormalizer(string, ToolNormalizer) {}
 
 func (r *fakeStreamerRuntime) UnregisterToolNormalizer(string) {}
+
+func (r *fakeStreamerRuntime) SyntheticToolCallID() string { return r.owner.syntheticID }
 
 func (f *fakeStreamer) streamReq(req Req, emit func(Item) error) error {
 	f.calls++

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	cachegemini "github.com/mackross/agentloom/llms/cache/gemini"
 	"github.com/mackross/agentloom/llms/internal/streamerutil"
@@ -39,6 +40,10 @@ func NewGenerateContentStreamerWithClient(client *genai.Client, model string) *G
 
 func (*GenerateContentStreamer) Capabilities() threads.StreamerCapabilities {
 	return threads.StreamerCapabilities{}
+}
+
+func (*GenerateContentStreamer) SyntheticToolCallID() string {
+	return fmt.Sprintf("call_%x", time.Now().UnixNano())
 }
 
 func (s *GenerateContentStreamer) RegisterToolNormalizer(name string, normalizer threads.ToolNormalizer) {

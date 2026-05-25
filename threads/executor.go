@@ -25,6 +25,10 @@ const (
 	ToolResultSendRequiresComplete ToolResultSendPolicy = "requires_complete"
 )
 
+type SyntheticToolCallIDProvider interface {
+	SyntheticToolCallID() string
+}
+
 type LLMStreamer interface {
 	Capabilities() StreamerCapabilities
 	RegisterToolNormalizer(name string, normalizer ToolNormalizer)

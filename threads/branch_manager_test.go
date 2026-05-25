@@ -249,6 +249,43 @@ func TestBranchSetDelegateForwardsStreamItems(t *testing.T) {
 	}
 }
 
+func TestBranchSetDelegateForwardsExecutorErrors(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryBranchStore()
+	stored, err := store.CreateBranch(ctx, BranchCreateOptions{ID: "executor-error-forward"})
+	if err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+	if err := stored.Close(); err != nil {
+		t.Fatalf("Close stored: %v", err)
+	}
+
+	branch, err := NewDefaultBranchManager(store, "test").Open(ctx, "/branch/executor-error-forward")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer branch.Close()
+
+	want := errors.New("boom")
+	var got error
+	branch.SetDelegate(ThreadDelegateFuncs{
+		OnExecutorError: func(_ *Thread, err error) {
+			got = err
+		},
+	})
+	if err := branch.RunOnEventLoop(ctx, func(thread *Thread) error {
+		thread.SetExecutor(errorObserver{err: want})
+		thread.QueueItem(UserText("hi"))
+		thread.QueueItem(SendItem{})
+		return nil
+	}); err != nil {
+		t.Fatalf("RunOnEventLoop: %v", err)
+	}
+	if !errors.Is(got, want) {
+		t.Fatalf("expected forwarded executor error %v, got %v", want, got)
+	}
+}
+
 func TestBranchWaitUntilIdleReturnsAfterDelegate(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryBranchStore()
