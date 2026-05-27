@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -308,7 +307,10 @@ func shouldRetryWebSocketNewError(ctx context.Context, err error) bool {
 	if err == nil || ctx.Err() != nil {
 		return false
 	}
-	return !strings.Contains(err.Error(), "another response stream is already active")
+	if errors.Is(err, responses.ErrWebSocketStreamActive) {
+		return false
+	}
+	return responses.IsWebSocketRetryableError(err)
 }
 
 func shouldRetryResponseStreamError(ctx context.Context, err error, streamReq responseStreamRequest, emitted bool) bool {
@@ -321,8 +323,7 @@ func shouldRetryResponseStreamError(ctx context.Context, err error, streamReq re
 	if streamReq.conn == nil {
 		return false
 	}
-	return errors.Is(err, io.EOF) ||
-		strings.Contains(err.Error(), "connection is closed")
+	return responses.IsWebSocketRetryableError(err)
 }
 
 func (s *ResponsesStreamer) webSocketConn(ctx context.Context) (*responses.WebSocketConn, error) {
@@ -528,6 +529,11 @@ func requestInputItems(req threads.Req) (responses.ResponseInputParam, error) {
 			inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(string(v), responses.EasyInputMessageRoleUser))
 		case threads.AssistantText:
 			inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(string(v), responses.EasyInputMessageRoleAssistant))
+		case threads.ToolCallChunk:
+			// ToolCallChunk is a streaming artifact for partial parsing. The
+			// Responses API request history should contain the final ToolCall, not
+			// each chunk that preceded it.
+			continue
 		case threads.ToolCall:
 			inputItems = append(inputItems, responses.ResponseInputItemParamOfFunctionCall(v.Payload, v.CallID, v.Name))
 		case threads.ToolCallResult:

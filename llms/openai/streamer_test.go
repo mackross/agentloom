@@ -3,10 +3,8 @@ package openai
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"testing"
-	"fmt"
 	"io"
+	"testing"
 
 	gschema "github.com/google/jsonschema-go/jsonschema"
 	openaiapi "github.com/openai/openai-go/v3"
@@ -105,6 +103,8 @@ func TestRequestInputItemsMapsToolCallsAndResults(t *testing.T) {
 	items, err := requestInputItems(threads.Req{Items: []threads.Item{
 		threads.UserText("hello"),
 		threads.AssistantText("thinking"),
+		threads.ToolCallChunk{CallID: "c1", Name: "calculator", PayloadDelta: `{"a":`},
+		threads.ToolCallChunk{CallID: "c1", PayloadDelta: `19,"b":23}`},
 		threads.ToolCall{CallID: "c1", Name: "calculator", Payload: `{"a":19,"b":23}`},
 		threads.ToolCallResult{CallID: "c1", Output: "42"},
 	}})
@@ -112,7 +112,7 @@ func TestRequestInputItemsMapsToolCallsAndResults(t *testing.T) {
 		t.Fatalf("request input items: %v", err)
 	}
 	if len(items) != 4 {
-		t.Fatalf("expected 4 items, got %#v", items)
+		t.Fatalf("expected 4 requestable items after skipping streaming chunks, got %#v", items)
 	}
 	if items[2].OfFunctionCall == nil {
 		t.Fatalf("unexpected tool call input item: %#v", items[2])
@@ -185,37 +185,42 @@ func TestResponsesStreamerDefaultsToWebSocket(t *testing.T) {
 }
 
 func TestShouldRetryWebSocketNewError(t *testing.T) {
-	if !shouldRetryWebSocketNewError(t.Context(), errTestClosed) {
+	if !shouldRetryWebSocketNewError(t.Context(), responses.ErrWebSocketConnectionClosed) {
 		t.Fatalf("closed websocket error should be retried")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if shouldRetryWebSocketNewError(ctx, errTestClosed) {
+	if shouldRetryWebSocketNewError(ctx, responses.ErrWebSocketConnectionClosed) {
 		t.Fatalf("canceled context should not be retried")
 	}
-	if shouldRetryWebSocketNewError(t.Context(), errTestInFlight) {
+	if shouldRetryWebSocketNewError(t.Context(), responses.ErrWebSocketStreamActive) {
 		t.Fatalf("in-flight stream error should not be retried")
 	}
 }
 
 func TestShouldRetryResponseStreamError(t *testing.T) {
 	streamReq := responseStreamRequest{conn: &responses.WebSocketConn{}}
-	if !shouldRetryResponseStreamError(t.Context(), errTestEOFFrameHeader, streamReq, false) {
+	if !shouldRetryResponseStreamError(t.Context(), responses.ErrWebSocketConnectionClosed, streamReq, false) {
+		t.Fatalf("closed websocket error before emission should be retried")
+	}
+	if !shouldRetryResponseStreamError(t.Context(), &responses.WebSocketTransportError{Op: "read", Err: io.EOF}, streamReq, false) {
 		t.Fatalf("websocket EOF frame header error before emission should be retried")
 	}
-	if shouldRetryResponseStreamError(t.Context(), errTestEOFFrameHeader, streamReq, true) {
+	if !shouldRetryResponseStreamError(t.Context(), &responses.WebSocketCloseError{Status: 1006}, streamReq, false) {
+		t.Fatalf("websocket close error before emission should be retried")
+	}
+	if shouldRetryResponseStreamError(t.Context(), responses.ErrWebSocketConnectionClosed, streamReq, true) {
 		t.Fatalf("websocket EOF frame header error after emission should not be retried")
 	}
-	if shouldRetryResponseStreamError(t.Context(), errTestEOFFrameHeader, responseStreamRequest{}, false) {
+	if shouldRetryResponseStreamError(t.Context(), responses.ErrWebSocketConnectionClosed, responseStreamRequest{}, false) {
 		t.Fatalf("SSE stream error should not be retried as websocket")
 	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if shouldRetryResponseStreamError(ctx, responses.ErrWebSocketConnectionClosed, streamReq, false) {
+		t.Fatalf("canceled context should not be retried")
+	}
 }
-
-var (
-	errTestClosed         = errors.New("responses websocket: connection is closed")
-	errTestInFlight       = errors.New("responses websocket: another response stream is already active on this connection")
-	errTestEOFFrameHeader = fmt.Errorf("failed to get reader: failed to read frame header: %w", io.EOF)
-)
 
 func valueOrEmpty(v *string) string {
 	if v == nil {
