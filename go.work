@@ -1,0 +1,10 @@
+go 1.26.1
+
+use (
+	.
+	./voicethread
+)
+
+replace github.com/openai/openai-go/v3 => github.com/mackross/openai-go/v3 v3.33.1-0.20260527214400-34e1b3f60a33
+
+replace github.com/gomlx/onnx-gomlx => ./third_party/onnx-gomlx
