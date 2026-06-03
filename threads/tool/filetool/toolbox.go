@@ -7,6 +7,9 @@ type ToolboxConfig struct {
 	// MutationQueue is applied to Write and ApplyPatch when their individual
 	// configs do not specify a queue. When nil, DefaultMutationQueue is used.
 	MutationQueue *MutationQueue
+	// PathRestrictions is applied to all file tools when their individual
+	// configs do not specify restrictions. When nil, paths are unrestricted.
+	PathRestrictions *PathRestrictionConfig
 
 	Read       ReadConfig
 	Write      WriteConfig
@@ -19,14 +22,24 @@ func AddTools(c *tool.Catalog, cfg ToolboxConfig) *tool.Catalog {
 	if c == nil {
 		c = tool.NewCatalog()
 	}
-	AddRead(c, cfg.Read)
+	readCfg := cfg.Read
+	if readCfg.PathRestrictions == nil {
+		readCfg.PathRestrictions = cfg.PathRestrictions
+	}
+	AddRead(c, readCfg)
 	writeCfg := cfg.Write
 	if writeCfg.MutationQueue == nil {
 		writeCfg.MutationQueue = cfg.MutationQueue
 	}
+	if writeCfg.PathRestrictions == nil {
+		writeCfg.PathRestrictions = cfg.PathRestrictions
+	}
 	applyPatchCfg := cfg.ApplyPatch
 	if applyPatchCfg.MutationQueue == nil {
 		applyPatchCfg.MutationQueue = cfg.MutationQueue
+	}
+	if applyPatchCfg.PathRestrictions == nil {
+		applyPatchCfg.PathRestrictions = cfg.PathRestrictions
 	}
 	AddWrite(c, writeCfg)
 	AddApplyPatch(c, applyPatchCfg)

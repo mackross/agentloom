@@ -4,10 +4,14 @@ go 1.26.1
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.26.0
+	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/coder/websocket v1.8.13
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
 	github.com/google/jsonschema-go v0.4.2
 	github.com/openai/openai-go/v3 v3.33.0
+	github.com/vmihailenco/msgpack/v5 v5.4.1
+	golang.org/x/tools v0.42.0
+	google.golang.org/genai v1.57.0
 	modernc.org/sqlite v1.50.0
 )
 
@@ -32,13 +36,14 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
+	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	go.opencensus.io v0.24.0 // indirect
-	golang.org/x/crypto v0.40.0 // indirect
-	golang.org/x/net v0.41.0 // indirect
+	golang.org/x/crypto v0.48.0 // indirect
+	golang.org/x/mod v0.33.0 // indirect
+	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.27.0 // indirect
-	google.golang.org/genai v1.57.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240903143218-8af14fe29dc1 // indirect
 	google.golang.org/grpc v1.66.2 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect

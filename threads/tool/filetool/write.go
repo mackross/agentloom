@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	writeToolName        = "write"
-	writeToolDescription = "Create or overwrite a file"
-	writePathDescription = "Relative or absolute file path"
+	writeToolName           = "write"
+	writeToolDescription    = "Create or overwrite a file"
+	writePathDescription    = "Relative or absolute file path"
 	writeContentDescription = "Exact text content for entire file"
 )
 
@@ -36,6 +36,8 @@ type WriteConfig struct {
 	ContentDescription *string
 	// CWD resolves relative paths. Absolute paths are used as provided.
 	CWD string
+	// PathRestrictions optionally restricts writable paths.
+	PathRestrictions *PathRestrictionConfig
 	// Postprocess configures the file-content processing pipeline.
 	Postprocess PostprocessConfig
 	// ResultBuilder customizes the returned tool item. When nil, the stable text
@@ -123,6 +125,9 @@ func writeFile(ctx context.Context, cfg WriteConfig, args writeArgs) (WriteResul
 	modelPath := args.Path
 	if modelPath == "" {
 		return WriteResult{}, fmt.Errorf("write: path is required")
+	}
+	if err := checkPathAllowed(cfg.CWD, modelPath, cfg.PathRestrictions); err != nil {
+		return WriteResult{}, fmt.Errorf("write: %w", err)
 	}
 	fullPath, err := safePatchPath(cfg.CWD, modelPath)
 	if err != nil {

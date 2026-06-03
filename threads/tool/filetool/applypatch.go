@@ -67,6 +67,8 @@ type ApplyPatchConfig struct {
 	PatchTextDescription *string
 	// CWD resolves relative paths. Absolute paths are used as provided.
 	CWD string
+	// PathRestrictions optionally restricts patch source and destination paths.
+	PathRestrictions *PathRestrictionConfig
 	// Mode controls whether the model sees a Lark/freeform or JSON payload.
 	Mode ApplyPatchMode
 	// Postprocess configures the file-content processing pipeline.
@@ -171,6 +173,9 @@ func applyPatchHandler(cfg ApplyPatchConfig) tool.HandlerFunc {
 			if err != nil {
 				return err
 			}
+			if err := checkPatchChangesAllowed(cfg.CWD, changes, cfg.PathRestrictions); err != nil {
+				return err
+			}
 			postprocessPatchChanges(ctx, cfg.Postprocess, changes)
 			return applyPatch(changes)
 		})
@@ -184,6 +189,23 @@ func applyPatchHandler(cfg ApplyPatchConfig) tool.HandlerFunc {
 		}
 		return unsafeHandling(), ret(builder(call, result))
 	}
+}
+
+func checkPatchChangesAllowed(cwd string, changes []fileChange, restrictions *PathRestrictionConfig) error {
+	if restrictions == nil {
+		return nil
+	}
+	for _, change := range changes {
+		if err := checkPathAllowed(cwd, change.relative, restrictions); err != nil {
+			return err
+		}
+		if change.moveRel != "" {
+			if err := checkPathAllowed(cwd, change.moveRel, restrictions); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func decodePatchPayload(call tool.Call, mode ApplyPatchMode) (string, error) {
@@ -269,11 +291,11 @@ func buildApplyPatchResult(changes []fileChange) ApplyPatchResult {
 		diff.WriteString(change.diff)
 		diff.WriteByte('\n')
 		changeRes := ApplyPatchChangeResult{
-			Operation:      changeOperation(change),
-			Path:           changeOutputPath(change),
-			DisplayPath:    changeOutputDisplayPath(change),
-			OldPath:        changeRequestOldPath(change),
-			OldDisplayPath: changeRequestOldDisplayPath(change),
+			Operation:        changeOperation(change),
+			Path:             changeOutputPath(change),
+			DisplayPath:      changeOutputDisplayPath(change),
+			OldPath:          changeRequestOldPath(change),
+			OldDisplayPath:   changeRequestOldDisplayPath(change),
 			Diff:             change.diff,
 			Postprocess:      change.postprocess,
 			PostprocessError: change.postprocessError,

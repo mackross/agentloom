@@ -2,8 +2,8 @@ package filetool
 
 import (
 	"context"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -17,15 +17,15 @@ import (
 )
 
 const (
-	readToolName        = "read"
-	readToolDescription = "Read text contents of a file"
-	readPathDescription = "Relative or absolute file path"
+	readToolName          = "read"
+	readToolDescription   = "Read text contents of a file"
+	readPathDescription   = "Relative or absolute file path"
 	readOffsetDescription = "Read from line (1-indexed)."
-	readLimitDescription = "Lines to read. 0 = default limit."
+	readLimitDescription  = "Lines to read. 0 = default limit."
 
-	defaultReadMaxBytes = 128 * 1024
-	defaultBinaryReadLimit = 512
-	maxBinaryReadLimit     = 4096
+	defaultReadMaxBytes      = 128 * 1024
+	defaultBinaryReadLimit   = 512
+	maxBinaryReadLimit       = 4096
 	defaultTextByteReadLimit = 16 * 1024
 	maxTextByteReadLimit     = 64 * 1024
 )
@@ -42,6 +42,8 @@ type ReadConfig struct {
 	LimitDescription *string
 	// CWD resolves relative paths. Absolute paths are used as provided.
 	CWD string
+	// PathRestrictions optionally restricts readable paths.
+	PathRestrictions *PathRestrictionConfig
 	// MaxLines limits successful output by line count when positive.
 	MaxLines int
 	// MaxBytes is a safety cap to prevent very large files from being dropped
@@ -124,6 +126,9 @@ func readFile(cfg ReadConfig, args readArgs) (string, error) {
 	}
 	displayPath, opts := splitReadPathOptions(modelPath)
 	modelPath = displayPath
+	if err := checkPathAllowed(cfg.CWD, modelPath, cfg.PathRestrictions); err != nil {
+		return "", fmt.Errorf("read: %w", err)
+	}
 	fullPath := resolvePath(cfg.CWD, modelPath)
 	buf, err := os.ReadFile(fullPath)
 	if err != nil {

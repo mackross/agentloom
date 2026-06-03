@@ -38,6 +38,8 @@ type EditConfig struct {
 
 	CWD string
 
+	PathRestrictions *PathRestrictionConfig
+
 	Postprocess PostprocessConfig
 
 	ResultBuilder EditResultBuilder
@@ -135,6 +137,9 @@ func editFile(ctx context.Context, cfg EditConfig, args editArgs) (EditResult, e
 	modelPath := args.Path
 	if modelPath == "" || len(args.Edits) == 0 {
 		return EditResult{}, fmt.Errorf("edit: path and edits are required")
+	}
+	if err := checkPathAllowed(cfg.CWD, modelPath, cfg.PathRestrictions); err != nil {
+		return EditResult{}, fmt.Errorf("edit: %w", err)
 	}
 	fullPath, err := safePatchPath(cfg.CWD, modelPath)
 	if err != nil {
