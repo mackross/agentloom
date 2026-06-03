@@ -22,7 +22,15 @@ import (
 
 const (
 	BaseURL                              = "https://api.fireworks.ai/inference/v1"
+	DeepSeekV4ProModel                   = "accounts/fireworks/models/deepseek-v4-pro"
+	DeepSeekV4FlashModel                 = "accounts/fireworks/models/deepseek-v4-flash"
+	Kimi26Model                          = "accounts/fireworks/models/kimi-k2p6"
 	Kimi25Model                          = "accounts/fireworks/models/kimi-k2p5"
+	MiniMaxM27Model                      = "accounts/fireworks/models/minimax-m2p7"
+	MiniMaxM25Model                      = "accounts/fireworks/models/minimax-m2p5"
+	Qwen36PlusModel                      = "accounts/fireworks/models/qwen3p6-plus"
+	GLM51Model                           = "accounts/fireworks/models/glm-5p1"
+	GPTOSS120BModel                      = "accounts/fireworks/models/gpt-oss-120b"
 	DefaultModel                         = Kimi25Model
 	DefaultContextLengthExceededBehavior = "error"
 )
