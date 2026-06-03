@@ -412,11 +412,39 @@ func (b *Branch) SetExecutor(e *ThreadExecutor) {
 	})
 }
 
+func (b *Branch) ToolProvider() ToolProvider {
+	if b == nil || b.eventLoop == nil {
+		return b.thread.ToolProvider()
+	}
+	var p ToolProvider
+	if err := b.RunOnEventLoop(context.Background(), func(t Thread) error {
+		p = t.ToolProvider()
+		return nil
+	}); err != nil {
+		panic("threads branch tool provider: " + err.Error())
+	}
+	return p
+}
+
 func (b *Branch) SetToolProvider(p ToolProvider) {
 	b.mutate("set tool provider", func(t Thread) error {
 		t.SetToolProvider(p)
 		return nil
 	})
+}
+
+func (b *Branch) ToolResolver() ToolResolver {
+	if b == nil || b.eventLoop == nil {
+		return b.thread.ToolResolver()
+	}
+	var r ToolResolver
+	if err := b.RunOnEventLoop(context.Background(), func(t Thread) error {
+		r = t.ToolResolver()
+		return nil
+	}); err != nil {
+		panic("threads branch tool resolver: " + err.Error())
+	}
+	return r
 }
 
 func (b *Branch) SetToolResolver(r ToolResolver) {

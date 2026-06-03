@@ -24,7 +24,9 @@ type Thread interface {
 	SetDelegate(ThreadDelegate)
 	SetDurableStore(DurableStore)
 	SetExecutor(*ThreadExecutor)
+	ToolProvider() ToolProvider
 	SetToolProvider(ToolProvider)
+	ToolResolver() ToolResolver
 	SetToolResolver(ToolResolver)
 	AttachExecutorForRecoveryWithOptions(*ThreadExecutor, RecoveryOptions) error
 	CancelCurrentTurn() bool
@@ -134,8 +136,16 @@ func (t *thread) SetToolProvider(p ToolProvider) {
 	t.QueueItem(snap)
 }
 
+func (t *thread) ToolProvider() ToolProvider {
+	return t.tools
+}
+
 func (t *thread) SetToolResolver(r ToolResolver) {
 	t.resolver = r
+}
+
+func (t *thread) ToolResolver() ToolResolver {
+	return t.resolver
 }
 
 // CancelCurrentTurn cancels the active model stream and suppresses automatic
