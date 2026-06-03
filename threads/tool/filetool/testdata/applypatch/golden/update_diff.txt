@@ -1,0 +1,12 @@
+--- notes.txt (before)
++++ notes.txt (after)
+@@
+...
+ two
+ three
+ four
+-five
++FIVE
+ six
+ seven
+ eight

@@ -1,0 +1,2 @@
+Wrote sample/format.go
+gofmt: updated 3 lines

@@ -1,0 +1,9 @@
+Success. Updated the following files:
+A good.go
+	Imports:
+	+ fmt
+	gofmt: updated 5 lines
+A bad.go
+	go syntax: 2:11: expected '(', found '{'
+A also_bad.go
+	go syntax: 2:13: expected '(', found '{'

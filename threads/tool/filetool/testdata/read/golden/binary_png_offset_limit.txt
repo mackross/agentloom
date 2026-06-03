@@ -1,0 +1,4 @@
+[Binary file: 75 bytes. Showing bytes 16..32.]
+00000000  00 00 00 01 00 00 00 01  08 06 00 00 00 1f 15 c4  |................|
+
+[Binary output truncated after 32 of 75 bytes. Continue with path "tiny.png?read_options={\"mode\":\"binary\",\"byteOffset\":32,\"byteLimit\":16}".]

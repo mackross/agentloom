@@ -1,0 +1,2 @@
+edited bad.go
+go syntax: 3:11: expected '(', found '{'

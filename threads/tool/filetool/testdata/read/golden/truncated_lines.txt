@@ -1,0 +1,4 @@
+alpha
+beta
+
+[Output truncated after 2 of 4 lines. Call read again with offset 3 to continue.]

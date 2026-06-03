@@ -1,0 +1,8 @@
+--- main.go (before)
++++ main.go (after)
+@@
++package sample
++
++import "fmt"
++
++func main() { fmt.Println("hi") }

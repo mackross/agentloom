@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 
+	gschema "github.com/google/jsonschema-go/jsonschema"
+
 	"github.com/mackross/agentloom/threads"
 )
 
@@ -51,6 +53,11 @@ type catalogEntry struct {
 }
 
 func NewCatalog() *Catalog { return &Catalog{} }
+
+var (
+	_ threads.ToolProvider = (*Catalog)(nil)
+	_ threads.ToolResolver = (*Catalog)(nil)
+)
 
 func (c *Catalog) Add(spec Spec, h Handler) *Catalog {
 	c.init()
@@ -153,6 +160,19 @@ func (c *Catalog) Snapshot() Snapshot {
 	return snap
 }
 
+// ToolsSnapshot implements threads.ToolProvider for catalogs.
+func (c *Catalog) ToolsSnapshot(_ threads.Thread) threads.ToolsSnapshot {
+	c.init()
+	handlers := make([]threads.ToolHandlerBinding, 0, len(c.order))
+	for _, name := range c.order {
+		handlers = append(handlers, threads.ToolHandlerBinding{Name: name})
+	}
+	return threads.ToolsSnapshot{
+		Snapshot: c.Snapshot(),
+		Handlers: handlers,
+	}
+}
+
 func (c *Catalog) LoadTool(name string) (Handler, error) {
 	c.init()
 	entry, ok := c.entries[strings.TrimSpace(name)]
@@ -160,6 +180,12 @@ func (c *Catalog) LoadTool(name string) (Handler, error) {
 		return nil, fmt.Errorf("tool %q not found", name)
 	}
 	return entry.handler, nil
+}
+
+// ResolveTool implements threads.ToolResolver by dispatching calls to the
+// handler registered under call.Name.
+func (c *Catalog) ResolveTool(ctx context.Context, thread threads.Thread, call threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
+	return c.Dispatch(ctx, thread, Call(call))
 }
 
 func (c *Catalog) Dispatch(ctx context.Context, thread threads.Thread, call Call) (threads.ToolDispatch, error) {
@@ -240,6 +266,16 @@ func makeNameSet(names ...string) map[string]struct{} {
 }
 
 func cloneSpec(spec Spec) Spec {
+	if schema, ok := spec.Payload.(PayloadJSONSchema); ok {
+		clone := spec
+		s := gschema.Schema(schema)
+		if cloned := s.CloneSchemas(); cloned != nil {
+			clone.Payload = PayloadJSONSchema(*cloned)
+		} else {
+			clone.Payload = PayloadJSONSchema(s)
+		}
+		return clone
+	}
 	buf, err := json.Marshal(spec)
 	if err != nil {
 		panic(fmt.Sprintf("tool clone spec: %v", err))

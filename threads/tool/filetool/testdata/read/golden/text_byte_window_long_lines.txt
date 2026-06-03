@@ -1,0 +1,3 @@
+[Text byte window: 63 bytes. Showing bytes 21..31.]
+bbbbbbbbbb
+[Text byte window truncated after byte 31 of 63. Continue with path "long.txt?read_options={\"mode\":\"text\",\"byteOffset\":31,\"byteLimit\":10}".]

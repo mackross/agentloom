@@ -1,0 +1,7 @@
+read: tiny.png is not valid UTF-8 text
+Opening bytes:
+00000000  89 50 4e 47 0d 0a 1a 0a  00 00 00 0d 49 48 44 52  |.PNG........IHDR|
+00000010  00 00 00 01 00 00 00 01  08 06 00 00 00 1f 15 c4  |................|
+00000020  89 00 00 00 0d 49 44 41  54 78 9c 63 60 00 00 02  |.....IDATx.c`...|
+00000030  00 01 00 ff ff 03 00 00  06 00 05 57 bf ab 36 00  |...........W..6.|
+[Output omitted because this appears to be a binary file. To inspect binary contents, call read with path "tiny.png?read_options={\"mode\":\"binary\",\"byteOffset\":0,\"byteLimit\":512}". Optional binary read_options: byteOffset defaults to 0; byteLimit is file bytes to hexdump and defaults to 512, capped at 4096.]

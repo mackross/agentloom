@@ -1,0 +1,6 @@
+Success. Updated the following files:
+A main.go
+	Imports:
+	+ fmt
+	- strings
+	gofmt: updated 5 lines
