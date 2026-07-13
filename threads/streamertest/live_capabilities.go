@@ -76,6 +76,9 @@ func RunLiveCapabilityTests(t *testing.T, h LiveHarness) {
 
 	if h.Capabilities().ParallelToolCalls {
 		t.Run("parallel_tool_calls", func(t *testing.T) {
+			// Parallel only: no Tools.Allowed (that is OpenAI allowed_tools shape;
+			// see AllowedTools). Providers that only support parallel_tool_calls
+			// can opt into this without tool_choice.allowed_tools.
 			parallel := true
 			req := threads.Req{
 				Instruction: "Call both tools exactly once in the same response. Do not output any text. Do not wait for tool results.",
@@ -99,7 +102,6 @@ func RunLiveCapabilityTests(t *testing.T, h LiveHarness) {
 							}, Required: []string{"token"}}),
 						},
 					},
-					Allowed:  []string{"alpha_once", "beta_once"},
 					Parallel: &parallel,
 				},
 			}
@@ -112,6 +114,57 @@ func RunLiveCapabilityTests(t *testing.T, h LiveHarness) {
 				}
 				if attempt == 3 {
 					t.Skipf("did not observe both tool calls after %d attempts (finals=%s items=%s)", attempt, summarizeToolCalls(finals), summarizeItems(items))
+				}
+			}
+		})
+	}
+
+	if h.Capabilities().AllowedTools {
+		t.Run("allowed_tools", func(t *testing.T) {
+			// Tools.Allowed only (provider-specific tool_choice restriction).
+			// Offers a third tool that is not allowed so a correct allowed-tools
+			// mapping cannot call gamma_once.
+			req := threads.Req{
+				Instruction: "Call tools alpha_once and beta_once exactly once each in the same response. Do not call any other tools. Do not output any text.",
+				Items: []threads.Item{threads.UserText(
+					"Call tool alpha_once with token alpha and tool beta_once with token beta. Do not call gamma_once.",
+				)},
+				Tools: threads.ToolOfferSnapshot{
+					Offered: []threads.ToolSpec{
+						{
+							Name:        "alpha_once",
+							Description: "Records the alpha token.",
+							Payload: threads.ToolPayloadJSONSchema(gschema.Schema{Type: "object", Properties: map[string]*gschema.Schema{
+								"token": {Type: "string", Pattern: "^alpha$"},
+							}, Required: []string{"token"}}),
+						},
+						{
+							Name:        "beta_once",
+							Description: "Records the beta token.",
+							Payload: threads.ToolPayloadJSONSchema(gschema.Schema{Type: "object", Properties: map[string]*gschema.Schema{
+								"token": {Type: "string", Pattern: "^beta$"},
+							}, Required: []string{"token"}}),
+						},
+						{
+							Name:        "gamma_once",
+							Description: "Records the gamma token. Do not call this tool.",
+							Payload: threads.ToolPayloadJSONSchema(gschema.Schema{Type: "object", Properties: map[string]*gschema.Schema{
+								"token": {Type: "string", Pattern: "^gamma$"},
+							}, Required: []string{"token"}}),
+						},
+					},
+					Allowed: []string{"alpha_once", "beta_once"},
+				},
+			}
+
+			for attempt := 1; attempt <= 3; attempt++ {
+				items := collectLiveItems(t, h, req)
+				finals := finalToolCalls(items)
+				if hasToolCalls(finals, "alpha_once", "beta_once") && !hasToolCalls(finals, "gamma_once") {
+					return
+				}
+				if attempt == 3 {
+					t.Skipf("did not observe allowed tools only after %d attempts (finals=%s items=%s)", attempt, summarizeToolCalls(finals), summarizeItems(items))
 				}
 			}
 		})

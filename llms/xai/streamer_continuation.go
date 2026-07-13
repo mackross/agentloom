@@ -1,4 +1,4 @@
-package openai
+package xai
 
 import (
 	"crypto/sha256"

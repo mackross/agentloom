@@ -260,6 +260,7 @@ func (h openAILiveHarness) Capabilities() streamertest.Capabilities {
 		ToolCallChunks:      true,
 		AssistantTextChunks: true,
 		ParallelToolCalls:   true,
+		AllowedTools:        true, // OpenAI Responses tool_choice.allowed_tools
 	}
 }
 

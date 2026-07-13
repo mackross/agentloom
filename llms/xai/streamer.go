@@ -1,10 +1,14 @@
-package openai
+// Package xai adapts xAI Grok models to threads.Streamer via the Responses API.
+//
+// This package owns a forked copy of the Responses streamer (originally based on
+// llms/openai) so xAI-specific request shape and behavior can diverge freely.
+package xai
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -12,27 +16,21 @@ import (
 
 	gschema "github.com/google/jsonschema-go/jsonschema"
 	openaiapi "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
 
-	cacheopenai "github.com/mackross/agentloom/llms/cache/openai"
+	cachexai "github.com/mackross/agentloom/llms/cache/xai"
 	"github.com/mackross/agentloom/llms/internal/streamerutil"
 	"github.com/mackross/agentloom/threads"
 )
 
-const DefaultModel = "gpt-4.1-mini"
-
 const (
-	DefaultWebSocketMaxIdle = 2 * time.Minute
-	DefaultWebSocketMaxAge  = 55 * time.Minute
-)
-
-type ResponsesTransport string
-
-const (
-	ResponsesTransportWebSocket ResponsesTransport = "websocket"
-	ResponsesTransportSSE       ResponsesTransport = "sse"
+	// BaseURL is the default xAI OpenAI-compatible API root.
+	BaseURL = "https://api.x.ai/v1"
+	// DefaultModel is the default Grok frontier model.
+	DefaultModel = "grok-4.5"
 )
 
 type ResponsesStreamer struct {
@@ -40,15 +38,7 @@ type ResponsesStreamer struct {
 	model             string
 	Reasoning         shared.ReasoningParam
 	ServiceTier       responses.ResponseNewParamsServiceTier
-	Transport         ResponsesTransport
 	OnOutputTextDelta func(string)
-
-	// WebSocketMaxIdle controls how long an idle cached WebSocket connection is reused.
-	// Values less than or equal to zero use DefaultWebSocketMaxIdle.
-	WebSocketMaxIdle time.Duration
-	// WebSocketMaxAge controls the maximum lifetime of a cached WebSocket connection.
-	// Values less than or equal to zero use DefaultWebSocketMaxAge.
-	WebSocketMaxAge time.Duration
 
 	// UsePreviousResponseID enables continuation requests. When enabled,
 	// the streamer uses a prefix hash to detect append-only follow-up requests and
@@ -56,13 +46,20 @@ type ResponsesStreamer struct {
 	UsePreviousResponseID bool
 	// DisablePreviousResponseID disables continuation requests.
 	DisablePreviousResponseID bool
+	// Store controls the Responses store parameter. nil defaults to false.
+	// xAI constructors set true: previous_response_id requires stored responses.
+	Store *bool
+	// StreamToolCalls controls the xAI stream_tool_calls request field.
+	// nil omits the field; constructors set true so tool args stream as deltas
+	// when previous_response_id is disabled. When previous_response_id is enabled
+	// (the default), stream_tool_calls is omitted: xAI stores corrupted tool
+	// arguments for stream_tool_calls responses, and continuations then fail with
+	// "Invalid tool arguments... EOF while parsing a string".
+	StreamToolCalls *bool
 
 	normalizers threads.ToolNormalizers
 
 	mu                         sync.Mutex
-	wsConn                     *responses.WebSocketConn
-	wsCreatedAt                time.Time
-	wsLastUsed                 time.Time
 	continuation               responseContinuation
 	lastUsedPreviousResponseID bool
 }
@@ -76,7 +73,6 @@ type responseContinuation struct {
 
 type responseStreamRequest struct {
 	stream           responseStream
-	conn             *responses.WebSocketConn
 	inputItems       responses.ResponseInputParam
 	paramsHash       [32]byte
 	usedContinuation bool
@@ -95,7 +91,7 @@ type functionCallMeta struct {
 }
 
 func NewResponsesStreamer(model string) *ResponsesStreamer {
-	return NewResponsesStreamerWithClient(openaiapi.NewClient(), model)
+	return NewResponsesStreamerWithClient(newClientFromEnv(), model)
 }
 
 func NewResponsesStreamerWithClient(client openaiapi.Client, model string) *ResponsesStreamer {
@@ -103,13 +99,33 @@ func NewResponsesStreamerWithClient(client openaiapi.Client, model string) *Resp
 	if model == "" {
 		model = DefaultModel
 	}
+	store := true
+	streamTools := true
 	return &ResponsesStreamer{
-		client:           client,
-		model:            model,
-		Transport:        ResponsesTransportWebSocket,
-		WebSocketMaxIdle: DefaultWebSocketMaxIdle,
-		WebSocketMaxAge:  DefaultWebSocketMaxAge,
+		client:          client,
+		model:           model,
+		Store:           &store,
+		StreamToolCalls: &streamTools,
 	}
+}
+
+func newClientFromEnv() openaiapi.Client {
+	opts := []option.RequestOption{option.WithBaseURL(baseURLFromEnv())}
+	if apiKey := strings.TrimSpace(xaiAPIKey()); apiKey != "" {
+		opts = append(opts, option.WithAPIKey(apiKey))
+	}
+	return openaiapi.NewClient(opts...)
+}
+
+func baseURLFromEnv() string {
+	if base := strings.TrimSpace(os.Getenv("XAI_BASE_URL")); base != "" {
+		return strings.TrimRight(base, "/")
+	}
+	return BaseURL
+}
+
+func xaiAPIKey() string {
+	return strings.TrimSpace(os.Getenv("XAI_API_KEY"))
 }
 
 func (*ResponsesStreamer) Capabilities() threads.StreamerCapabilities {
@@ -133,14 +149,7 @@ func (s *ResponsesStreamer) StreamReq(req threads.Req, emit func(threads.Item) e
 }
 
 func (s *ResponsesStreamer) Close() error {
-	s.mu.Lock()
-	conn := s.wsConn
-	s.clearWebSocketConnLocked()
-	s.mu.Unlock()
-	if conn == nil {
-		return nil
-	}
-	return conn.Close()
+	return nil
 }
 
 func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Req, emit func(threads.Item) error) error {
@@ -167,9 +176,6 @@ func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Re
 	}
 	responseID, outputItems, err := s.consumeResponseStream(streamReq.stream, emitTracked)
 	if err != nil && shouldRetryResponseStreamError(ctx, err, streamReq, emitted) {
-		if streamReq.conn != nil {
-			s.dropWebSocketConn(streamReq.conn)
-		}
 		_ = streamReq.stream.Close()
 		if streamReq.usedContinuation {
 			s.clearContinuation()
@@ -182,15 +188,19 @@ func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Re
 		responseID, outputItems, err = s.consumeResponseStream(streamReq.stream, emitTracked)
 	}
 	if err != nil {
-		if streamReq.conn != nil {
-			s.dropWebSocketConn(streamReq.conn)
-		}
 		return err
 	}
 	if s.usePreviousResponseID() {
 		s.rememberContinuation(responseID, streamReq.inputItems, outputItems, streamReq.paramsHash)
 	}
 	return nil
+}
+
+func (s *ResponsesStreamer) storeResponses() bool {
+	if s.Store == nil {
+		return false
+	}
+	return *s.Store
 }
 
 func (s *ResponsesStreamer) responseParams(req threads.Req) (responses.ResponseNewParams, error) {
@@ -203,7 +213,7 @@ func (s *ResponsesStreamer) responseParams(req threads.Req) (responses.ResponseN
 		Model:     s.model,
 		Input:     responses.ResponseNewParamsInputUnion{OfInputItemList: inputItems},
 		Reasoning: s.Reasoning,
-		Store:     openaiapi.Bool(false),
+		Store:     openaiapi.Bool(s.storeResponses()),
 	}
 	if s.ServiceTier != "" {
 		params.ServiceTier = s.ServiceTier
@@ -228,11 +238,17 @@ func (s *ResponsesStreamer) responseParams(req threads.Req) (responses.ResponseN
 	if req.Tools.Parallel != nil {
 		params.ParallelToolCalls = openaiapi.Bool(*req.Tools.Parallel)
 	}
-	if s, ok := streamerutil.LastStringMetadata(req, cacheopenai.PromptCacheKeyKey); ok {
+	if s, ok := streamerutil.LastStringMetadata(req, cachexai.PromptCacheKeyKey); ok {
 		params.PromptCacheKey = openaiapi.String(s)
 	}
-	if s, ok := streamerutil.LastStringMetadata(req, cacheopenai.PromptCacheRetentionKey); ok {
+	if s, ok := streamerutil.LastStringMetadata(req, cachexai.PromptCacheRetentionKey); ok {
 		params.PromptCacheRetention = responses.ResponseNewParamsPromptCacheRetention(s)
+	}
+	// Prefer previous_response_id over stream_tool_calls: enabling both breaks
+	// multi-turn tool loops on xAI (stored function-call arguments become unusable).
+	if s.StreamToolCalls != nil && !s.usePreviousResponseID() {
+		// xAI/Grok: not on ResponseNewParams; inject via extra fields.
+		params.SetExtraFields(map[string]any{"stream_tool_calls": *s.StreamToolCalls})
 	}
 	return params, nil
 }
@@ -254,154 +270,25 @@ func (s *ResponsesStreamer) newResponseStream(ctx context.Context, params respon
 	s.mu.Unlock()
 
 	sr := responseStreamRequest{
+		stream:           s.client.Responses.NewStreaming(ctx, sendParams),
 		inputItems:       fullInputItems,
 		paramsHash:       paramsHash,
 		usedContinuation: usedContinuation,
 	}
-
-	switch s.Transport {
-	case "", ResponsesTransportWebSocket:
-		stream, conn, err := s.newWebSocketResponseStream(ctx, sendParams)
-		if err != nil {
-			return responseStreamRequest{}, err
-		}
-		sr.stream = stream
-		sr.conn = conn
-		return sr, nil
-	case ResponsesTransportSSE:
-		sr.stream = s.client.Responses.NewStreaming(ctx, sendParams)
-		return sr, nil
-	default:
-		return responseStreamRequest{}, fmt.Errorf("openai responses transport %q not supported", s.Transport)
-	}
-}
-
-func (s *ResponsesStreamer) newWebSocketResponseStream(ctx context.Context, params responses.ResponseNewParams) (*responses.WebSocketStream, *responses.WebSocketConn, error) {
-	conn, err := s.webSocketConn(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	stream, err := conn.New(ctx, params)
-	if err == nil {
-		return stream, conn, nil
-	}
-	if !shouldRetryWebSocketNewError(ctx, err) {
-		return nil, nil, err
-	}
-
-	s.dropWebSocketConn(conn)
-	conn, connErr := s.webSocketConn(ctx)
-	if connErr != nil {
-		return nil, nil, errors.Join(err, connErr)
-	}
-	stream, streamErr := conn.New(ctx, params)
-	if streamErr != nil {
-		s.dropWebSocketConn(conn)
-		return nil, nil, errors.Join(err, streamErr)
-	}
-	return stream, conn, nil
-}
-
-func shouldRetryWebSocketNewError(ctx context.Context, err error) bool {
-	if err == nil || ctx.Err() != nil {
-		return false
-	}
-	if errors.Is(err, responses.ErrWebSocketStreamActive) {
-		return false
-	}
-	return responses.IsWebSocketRetryableError(err)
+	return sr, nil
 }
 
 func shouldRetryResponseStreamError(ctx context.Context, err error, streamReq responseStreamRequest, emitted bool) bool {
 	if err == nil || emitted || ctx.Err() != nil {
 		return false
 	}
-	if streamReq.usedContinuation {
-		return true
-	}
-	if streamReq.conn == nil {
-		return false
-	}
-	return responses.IsWebSocketRetryableError(err)
-}
-
-func (s *ResponsesStreamer) webSocketConn(ctx context.Context) (*responses.WebSocketConn, error) {
-	now := time.Now()
-
-	s.mu.Lock()
-	conn := s.wsConn
-	if conn != nil && !s.webSocketConnExpiredLocked(now) {
-		s.wsLastUsed = now
-		s.mu.Unlock()
-		return conn, nil
-	}
-	if conn != nil {
-		s.clearWebSocketConnLocked()
-	}
-	s.mu.Unlock()
-	if conn != nil {
-		_ = conn.Close()
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now = time.Now()
-	if s.wsConn != nil {
-		if s.webSocketConnExpiredLocked(now) {
-			conn = s.wsConn
-			s.clearWebSocketConnLocked()
-			s.mu.Unlock()
-			_ = conn.Close()
-			s.mu.Lock()
-		} else {
-			s.wsLastUsed = now
-			return s.wsConn, nil
-		}
-	}
-	conn, err := s.client.Responses.ConnectWebSocket(ctx)
-	if err != nil {
-		return nil, err
-	}
-	s.wsConn = conn
-	s.wsCreatedAt = now
-	s.wsLastUsed = now
-	return conn, nil
-}
-
-func (s *ResponsesStreamer) webSocketConnExpiredLocked(now time.Time) bool {
-	if s.wsConn == nil {
-		return false
-	}
-	maxIdle := s.WebSocketMaxIdle
-	if maxIdle <= 0 {
-		maxIdle = DefaultWebSocketMaxIdle
-	}
-	maxAge := s.WebSocketMaxAge
-	if maxAge <= 0 {
-		maxAge = DefaultWebSocketMaxAge
-	}
-	return maxIdle > 0 && now.Sub(s.wsLastUsed) > maxIdle || maxAge > 0 && now.Sub(s.wsCreatedAt) > maxAge
-}
-
-func (s *ResponsesStreamer) clearWebSocketConnLocked() {
-	s.wsConn = nil
-	s.wsCreatedAt = time.Time{}
-	s.wsLastUsed = time.Time{}
-}
-
-func (s *ResponsesStreamer) dropWebSocketConn(conn *responses.WebSocketConn) {
-	s.mu.Lock()
-	if s.wsConn == conn {
-		s.clearWebSocketConnLocked()
-	}
-	s.mu.Unlock()
-	_ = conn.Close()
+	// Retry once without previous_response_id when a continuation request fails
+	// before any items were emitted (e.g. stale/invalid response id).
+	return streamReq.usedContinuation
 }
 
 func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit func(threads.Item) error) (string, responses.ResponseInputParam, error) {
 	functionCalls := map[string]functionCallMeta{}
-	customCalls := map[string]functionCallMeta{}
 	var responseID string
 	var outputItems responses.ResponseInputParam
 
@@ -440,24 +327,6 @@ func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit fu
 			if err := emit(call); err != nil {
 				return "", nil, err
 			}
-		case "response.custom_tool_call_input.delta":
-			if event.Delta == "" {
-				continue
-			}
-			callID, name := resolveFunctionCall(customCalls, event.ItemID, "")
-			if err := emit(threads.ToolCallChunk{CallID: callID, Name: name, PayloadDelta: event.Delta}); err != nil {
-				return "", nil, err
-			}
-		case "response.custom_tool_call_input.done":
-			callID, name := resolveFunctionCall(customCalls, event.ItemID, "")
-			call := threads.ToolCall{CallID: callID, Name: name, Payload: event.Input}
-			call, err := s.normalizers.NormalizeResponseToolCall(call)
-			if err != nil {
-				return "", nil, err
-			}
-			if err := emit(call); err != nil {
-				return "", nil, err
-			}
 		case "response.output_item.added", "response.output_item.done":
 			if event.Type == "response.output_item.done" {
 				if item, ok := outputItemInputParam(event.Item); ok {
@@ -465,12 +334,11 @@ func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit fu
 				}
 			}
 			rememberFunctionCall(functionCalls, event.Item)
-			rememberCustomCall(customCalls, event.Item)
 		case "error":
 			if event.Message != "" {
-				return "", nil, fmt.Errorf("openai responses stream error: %s", event.Message)
+				return "", nil, fmt.Errorf("xai responses stream error: %s", event.Message)
 			}
-			return "", nil, fmt.Errorf("openai responses stream error")
+			return "", nil, fmt.Errorf("xai responses stream error")
 		}
 	}
 
@@ -494,19 +362,6 @@ func rememberFunctionCall(functionCalls map[string]functionCallMeta, item respon
 	functionCalls[item.ID] = meta
 }
 
-func rememberCustomCall(customCalls map[string]functionCallMeta, item responses.ResponseOutputItemUnion) {
-	if item.Type != "custom_tool_call" || item.ID == "" {
-		return
-	}
-	meta := customCalls[item.ID]
-	if item.CallID != "" {
-		meta.callID = item.CallID
-	}
-	if item.Name != "" {
-		meta.name = item.Name
-	}
-	customCalls[item.ID] = meta
-}
 
 func resolveFunctionCall(functionCalls map[string]functionCallMeta, itemID, fallbackName string) (callID, name string) {
 	callID, name = itemID, fallbackName
@@ -539,7 +394,7 @@ func requestInputItems(req threads.Req) (responses.ResponseInputParam, error) {
 		case threads.ToolCallResult:
 			inputItems = append(inputItems, responses.ResponseInputItemParamOfFunctionCallOutput(v.CallID, v.Output))
 		default:
-			return nil, fmt.Errorf("openai request item not supported: %T", it)
+			return nil, fmt.Errorf("xai request item not supported: %T", it)
 		}
 	}
 	return inputItems, nil
@@ -549,20 +404,37 @@ func requestTools(snap threads.ToolOfferSnapshot) ([]responses.ToolUnionParam, e
 	if len(snap.Offered) == 0 {
 		return nil, nil
 	}
+	// xAI has no tool_choice.allowed_tools. When Allowed is set, only include those
+	// tools in the request (Weaver uses Allowed for enabled tools).
+	allowed := map[string]struct{}{}
+	filterAllowed := snap.Allowed != nil
+	if filterAllowed {
+		for _, name := range snap.Allowed {
+			allowed[name] = struct{}{}
+		}
+		if len(allowed) == 0 {
+			return nil, nil
+		}
+	}
 	out := make([]responses.ToolUnionParam, 0, len(snap.Offered))
 	for _, spec := range snap.Offered {
+		if filterAllowed {
+			if _, ok := allowed[spec.Name]; !ok {
+				continue
+			}
+		}
 		if spec.Payload == nil {
-			return nil, fmt.Errorf("openai tool %q payload not supported: %T", spec.Name, spec.Payload)
+			return nil, fmt.Errorf("xai tool %q payload not supported: %T", spec.Name, spec.Payload)
 		}
 		switch p := spec.Payload.(type) {
 		case threads.ToolPayloadJSONSchema:
 			params := map[string]any{}
 			b, err := json.Marshal(gschema.Schema(p))
 			if err != nil {
-				return nil, fmt.Errorf("openai tool %q schema: %w", spec.Name, err)
+				return nil, fmt.Errorf("xai tool %q schema: %w", spec.Name, err)
 			}
 			if err := json.Unmarshal(b, &params); err != nil {
-				return nil, fmt.Errorf("openai tool %q schema: %w", spec.Name, err)
+				return nil, fmt.Errorf("xai tool %q schema: %w", spec.Name, err)
 			}
 			normalizeStrictObjectSchemas(params)
 			f := &responses.FunctionToolParam{Name: spec.Name, Parameters: params, Strict: openaiapi.Bool(true)}
@@ -570,24 +442,8 @@ func requestTools(snap threads.ToolOfferSnapshot) ([]responses.ToolUnionParam, e
 				f.Description = openaiapi.String(spec.Description)
 			}
 			out = append(out, responses.ToolUnionParam{OfFunction: f})
-		case threads.ToolPayloadRegexp:
-			c := &responses.CustomToolParam{Name: spec.Name, Format: shared.CustomToolInputFormatParamOfGrammar(string(p), "regex")}
-			if spec.Description != "" {
-				c.Description = openaiapi.String(spec.Description)
-			}
-			out = append(out, responses.ToolUnionParam{OfCustom: c})
-		case threads.ToolPayloadLark:
-			c := &responses.CustomToolParam{Name: spec.Name, Format: shared.CustomToolInputFormatParamOfGrammar(string(p), "lark")}
-			if spec.Description != "" {
-				c.Description = openaiapi.String(spec.Description)
-			}
-			out = append(out, responses.ToolUnionParam{OfCustom: c})
 		default:
-			c := &responses.CustomToolParam{Name: spec.Name}
-			if spec.Description != "" {
-				c.Description = openaiapi.String(spec.Description)
-			}
-			out = append(out, responses.ToolUnionParam{OfCustom: c})
+			return nil, fmt.Errorf("xai tool %q payload not supported: %T (functions only)", spec.Name, spec.Payload)
 		}
 	}
 	return out, nil
@@ -674,60 +530,16 @@ func allowSchemaNull(v any) {
 	}
 }
 
+// requestToolChoice uses only xAI-supported modes: auto (omit), required, none.
+// Allowed is applied by filtering tools in requestTools, not via allowed_tools.
 func requestToolChoice(snap threads.ToolOfferSnapshot) (*responses.ResponseNewParamsToolChoiceUnion, error) {
-	if snap.Allowed == nil {
-		if snap.Required {
-			opt := param.NewOpt(responses.ToolChoiceOptionsRequired)
-			return &responses.ResponseNewParamsToolChoiceUnion{OfToolChoiceMode: opt}, nil
-		}
-		return nil, nil
-	}
-	if len(snap.Allowed) > 0 {
-		tools, err := requestAllowedTools(snap)
-		if err != nil {
-			return nil, err
-		}
-		mode := responses.ToolChoiceAllowedModeAuto
-		if snap.Required {
-			mode = responses.ToolChoiceAllowedModeRequired
-		}
-		return &responses.ResponseNewParamsToolChoiceUnion{OfAllowedTools: &responses.ToolChoiceAllowedParam{Mode: mode, Tools: tools}}, nil
+	if snap.Allowed != nil && len(snap.Allowed) == 0 {
+		opt := param.NewOpt(responses.ToolChoiceOptionsNone)
+		return &responses.ResponseNewParamsToolChoiceUnion{OfToolChoiceMode: opt}, nil
 	}
 	if snap.Required {
-		return nil, fmt.Errorf("openai tool choice cannot require an empty allowed tool set")
+		opt := param.NewOpt(responses.ToolChoiceOptionsRequired)
+		return &responses.ResponseNewParamsToolChoiceUnion{OfToolChoiceMode: opt}, nil
 	}
-	opt := param.NewOpt(responses.ToolChoiceOptionsNone)
-	return &responses.ResponseNewParamsToolChoiceUnion{OfToolChoiceMode: opt}, nil
-}
-
-func requestAllowedTools(snap threads.ToolOfferSnapshot) ([]map[string]any, error) {
-	out := make([]map[string]any, 0, len(snap.Allowed))
-	for _, name := range snap.Allowed {
-		kind, err := requestToolKind(snap, name)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, map[string]any{"type": kind, "name": name})
-	}
-	return out, nil
-}
-
-func requestToolKind(snap threads.ToolOfferSnapshot, name string) (string, error) {
-	for _, spec := range snap.Offered {
-		if spec.Name != name {
-			continue
-		}
-		if spec.Payload == nil {
-			return "", fmt.Errorf("openai tool %q payload not supported: %T", name, spec.Payload)
-		}
-		switch spec.Payload.(type) {
-		case threads.ToolPayloadJSONSchema:
-			return "function", nil
-		case threads.ToolPayloadRegexp, threads.ToolPayloadLark:
-			return "custom", nil
-		default:
-			return "custom", nil
-		}
-	}
-	return "", fmt.Errorf("openai tool %q not offered", name)
+	return nil, nil
 }

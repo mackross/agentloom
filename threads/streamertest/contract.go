@@ -14,7 +14,12 @@ import (
 type Capabilities struct {
 	ToolCallChunks      bool
 	AssistantTextChunks bool
-	ParallelToolCalls   bool
+	// ParallelToolCalls means the provider can emit multiple tool calls in one
+	// response when Tools.Parallel is true. This does not set Tools.Allowed.
+	ParallelToolCalls bool
+	// AllowedTools means the provider accepts Tools.Allowed (e.g. OpenAI
+	// Responses tool_choice.allowed_tools). Independent of ParallelToolCalls.
+	AllowedTools bool
 }
 
 type Harness interface {

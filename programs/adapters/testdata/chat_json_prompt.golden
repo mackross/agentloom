@@ -1,0 +1,24 @@
+Signature: answer_question
+
+Input JSON:
+{
+  "question": "What changed?",
+  "context": "A programs package was added."
+}
+
+Output JSON Schema:
+{
+  "type": "object",
+  "properties": {
+    "answer": {
+      "type": "string",
+      "description": "concise answer"
+    }
+  },
+  "required": [
+    "answer"
+  ],
+  "additionalProperties": false
+}
+
+Return only JSON matching the output schema.

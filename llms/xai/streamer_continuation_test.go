@@ -1,4 +1,4 @@
-package openai
+package xai
 
 import (
 	"encoding/json"
@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
 	gschema "github.com/google/jsonschema-go/jsonschema"
 	openaiapi "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -18,47 +17,47 @@ import (
 )
 
 func TestResponsesStreamerPreviousResponseIDRetriesFullRequestOnContinuationError(t *testing.T) {
+	// SSE-only: first call succeeds with a tool call; second uses previous_response_id
+	// and gets a stream error before emission; third is the full-history fallback.
 	requests := make(chan []byte, 3)
 	requestCount := 0
 	var requestMu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			t.Errorf("websocket accept: %v", err)
+		body := mustReadAll(t, r.Body)
+		requests <- append([]byte(nil), body...)
+
+		requestMu.Lock()
+		requestCount++
+		count := requestCount
+		requestMu.Unlock()
+		raw := parseObservedRawRequest(t, body)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		if count == 1 {
+			if _, ok := raw["previous_response_id"]; ok {
+				t.Errorf("first request had previous_response_id: %s", body)
+			}
+			_, _ = w.Write([]byte("" +
+				"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n" +
+				"data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"lookup\",\"arguments\":\"\",\"status\":\"in_progress\"}}\n\n" +
+				"data: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"fc_1\",\"name\":\"lookup\",\"arguments\":\"{}\"}\n\n" +
+				"data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"lookup\",\"arguments\":\"{}\",\"status\":\"completed\"}}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\n\n" +
+				"data: [DONE]\n\n"))
 			return
 		}
-		defer conn.Close(websocket.StatusNormalClosure, "")
-
-		for {
-			_, body, err := conn.Read(r.Context())
-			if err != nil {
-				return
-			}
-			requests <- append([]byte(nil), body...)
-			requestMu.Lock()
-			requestCount++
-			count := requestCount
-			requestMu.Unlock()
-			raw := parseObservedRawRequest(t, body)
-
-			if count == 1 {
-				_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"response.created","response":{"id":"resp_1"}}`))
-				_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","arguments":"","status":"in_progress"}}`))
-				_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"response.function_call_arguments.done","item_id":"fc_1","name":"lookup","arguments":"{}"}`))
-				_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"lookup","arguments":"{}","status":"completed"}}`))
-				_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"response.completed","response":{"id":"resp_1"}}`))
-				continue
-			}
-
-			if stringValue(raw["previous_response_id"]) != "" {
-				_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"error","message":"bad previous_response_id"}`))
-				continue
-			}
-
-			_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"response.created","response":{"id":"resp_2"}}`))
-			_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"response.output_text.delta","delta":"ok","item_id":"msg_2"}`))
-			_ = conn.Write(r.Context(), websocket.MessageText, []byte(`{"type":"response.completed","response":{"id":"resp_2"}}`))
+		if stringValue(raw["previous_response_id"]) != "" {
+			// Fail continuation before any output item is emitted so retry kicks in.
+			_, _ = w.Write([]byte("" +
+				"data: {\"type\":\"error\",\"message\":\"bad previous_response_id\"}\n\n" +
+				"data: [DONE]\n\n"))
+			return
 		}
+		_, _ = w.Write([]byte("" +
+			"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_2\"}}\n\n" +
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\",\"item_id\":\"msg_2\"}\n\n" +
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_2\"}}\n\n" +
+			"data: [DONE]\n\n"))
 	}))
 	defer server.Close()
 
@@ -140,9 +139,7 @@ func parseObservedRawRequest(t testing.TB, body []byte) map[string]any {
 }
 
 func TestResponsesStreamerPreviousResponseIDOmitsInstructionsWithToolsSSE(t *testing.T) {
-	// xAI (and potentially other Responses backends) reject requests that set both
-	// instructions and previous_response_id. Continuation must strip instructions
-	// while still carrying tool call results as the input delta.
+	// xAI rejects requests that set both instructions and previous_response_id.
 	requests := make(chan []byte, 2)
 	requestCount := 0
 	var requestMu sync.Mutex
@@ -166,6 +163,11 @@ func TestResponsesStreamerPreviousResponseIDOmitsInstructionsWithToolsSSE(t *tes
 			}
 			if _, ok := raw["previous_response_id"]; ok {
 				t.Errorf("first request had previous_response_id: %s", body)
+			}
+			// previous_response_id is on; stream_tool_calls must be omitted so xAI
+			// stores continuable function-call arguments.
+			if _, ok := raw["stream_tool_calls"]; ok {
+				t.Errorf("first request stream_tool_calls = %#v, want omitted with previous_response_id", raw["stream_tool_calls"])
 			}
 			_, _ = w.Write([]byte("" +
 				"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_tool_1\"}}\n\n" +
@@ -201,7 +203,6 @@ func TestResponsesStreamerPreviousResponseIDOmitsInstructionsWithToolsSSE(t *tes
 		option.WithMaxRetries(0),
 	)
 	streamer := NewResponsesStreamerWithClient(client, "test-model")
-	streamer.Transport = ResponsesTransportSSE
 
 	tools := threads.ToolOfferSnapshot{Offered: []threads.ToolSpec{{
 		Name:        "echo",
@@ -275,4 +276,29 @@ func mustReadAll(t testing.TB, r io.Reader) []byte {
 		t.Fatalf("read body: %v", err)
 	}
 	return body
+}
+
+func objectSlice(t testing.TB, raw any) []map[string]any {
+	t.Helper()
+	if raw == nil {
+		return nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("expected array payload, got %#v", raw)
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("expected object payload, got %#v", item)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func stringValue(v any) string {
+	s, _ := v.(string)
+	return s
 }
