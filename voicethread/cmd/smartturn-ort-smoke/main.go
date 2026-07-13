@@ -7,59 +7,38 @@ import (
 	"log"
 	"time"
 
-	"github.com/mackross/agentloom/voicethread/smartturn"
+	st "github.com/gonnx-models/smartturn"
+	"github.com/mackross/gonnx"
 	ort "github.com/shota3506/onnxruntime-purego/onnxruntime"
 )
 
 func main() {
-	libPath := flag.String("lib", "", "path to libonnxruntime; empty extracts bundled library to temp")
-	modelPath := flag.String("model", "voicethread/models/smart-turn-v3/smart-turn-v3.2-cpu.onnx", "Smart Turn ONNX model path")
 	runs := flag.Int("runs", 10, "number of inference runs")
 	threads := flag.Int("threads", 1, "ORT intra-op threads")
 	provider := flag.String("provider", "", "optional execution provider to append; empty uses ORT default CPU provider")
 	flag.Parse()
-	if *libPath == "" {
-		var err error
-		*libPath, err = smartturn.BundledONNXRuntimeLibraryPath()
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-
-	runtime, err := ort.NewRuntime(*libPath, 23)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer runtime.Close()
-
-	fmt.Printf("ort version: %s api=%d\n", runtime.GetVersionString(), runtime.GetAPIVersion())
-	providers, err := runtime.GetAvailableProviders()
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("providers: %v\n", providers)
-
-	env, err := runtime.NewEnv("smartturn-ort-smoke", ort.LoggingLevelWarning)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer env.Close()
 
 	opts := &ort.SessionOptions{IntraOpNumThreads: *threads}
 	if *provider != "" {
 		opts.ExecutionProviders = []string{*provider}
 	}
-	session, err := runtime.NewSession(env, *modelPath, opts)
+	session, err := st.OpenSession(gonnx.WithSessionOptions(opts))
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer session.Close()
 
+	fmt.Printf("ort version: %s api=%d\n", session.Runtime.GetVersionString(), session.Runtime.GetAPIVersion())
+	providers, err := session.Runtime.GetAvailableProviders()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("providers: %v\n", providers)
 	fmt.Printf("inputs:  %v\n", session.InputNames())
 	fmt.Printf("outputs: %v\n", session.OutputNames())
 
-	features := make([]float32, 1*80*800)
-	input, err := ort.NewTensorValue(runtime, features, []int64{1, 80, 800})
+	features := make([]float32, st.FeatureSize*st.NumFrames)
+	input, err := gonnx.Tensor(session.Runtime, features, 1, st.FeatureSize, st.NumFrames)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -75,7 +54,7 @@ func main() {
 			log.Fatal(err)
 		}
 		out := outputs["logits"]
-		data, shape, err := ort.GetTensorData[float32](out)
+		data, shape, err := gonnx.TensorData[float32](out)
 		out.Close()
 		if err != nil {
 			log.Fatal(err)

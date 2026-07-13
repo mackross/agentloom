@@ -10,7 +10,7 @@ import (
 	"os"
 	"sort"
 
-	"github.com/mackross/agentloom/voicethread/smartturn"
+	smartturn "github.com/gonnx-models/smartturn"
 )
 
 func main() {

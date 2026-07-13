@@ -1,11 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/base64"
 	"encoding/binary"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,16 +20,18 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/gonnx-models/silero"
+	st "github.com/gonnx-models/smartturn"
 	kopus "github.com/kazzmir/opus-go/opus"
 	"github.com/mackross/agentloom/threads"
 	"github.com/mackross/agentloom/threads/tool"
-	"github.com/mackross/agentloom/voicethread/smartturn"
 	"github.com/mackross/agentloom/voicethread"
+	"github.com/mackross/gonnx"
 	pionopus "github.com/pion/opus"
 	"github.com/pion/rtp"
-	resampling "github.com/tphakala/go-audio-resampler"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
+	resampling "github.com/tphakala/go-audio-resampler"
 )
 
 //go:embed static/*
@@ -39,12 +41,12 @@ const rtpAudioLevelExtensionURI = "urn:ietf:params:rtp-hdrext:ssrc-audio-level"
 const continuePrompt = "Please continue from exactly where you were interrupted. Do not restart from the beginning; continue with the next words or next item after the last audible assistant text."
 
 type clientMessage struct {
-	Type         string `json:"type"`
-	Text         string `json:"text,omitempty"`
-	ItemID       string `json:"item_id,omitempty"`
-	ContentIndex *int   `json:"content_index,omitempty"`
-	AudioEndMS   int    `json:"audio_end_ms,omitempty"`
-	ClientTimeMS int64  `json:"client_time_ms,omitempty"`
+	Type         string  `json:"type"`
+	Text         string  `json:"text,omitempty"`
+	ItemID       string  `json:"item_id,omitempty"`
+	ContentIndex *int    `json:"content_index,omitempty"`
+	AudioEndMS   int     `json:"audio_end_ms,omitempty"`
+	ClientTimeMS int64   `json:"client_time_ms,omitempty"`
 	Value        float64 `json:"value,omitempty"`
 }
 
@@ -444,7 +446,7 @@ func rememberAssistantItemState(states map[string]assistantItemState, mu *sync.M
 	if st.transcript == "" {
 		st.transcript = old.transcript
 	}
-states[raw.Item.ID] = st
+	states[raw.Item.ID] = st
 	mu.Unlock()
 }
 
@@ -670,24 +672,24 @@ type audioBridge struct {
 	// Recent assistant audio at 24 kHz, recorded at the point we actually write
 	// frames to the browser. This is only a cheap echo-reference gate for local
 	// auto-interrupts; browser WebRTC AEC is still the primary echo canceller.
-	recentOutputPCM24 []int16
-	turnSensitivity   float64
+	recentOutputPCM24    []int16
+	turnSensitivity      float64
 	echoGuardSensitivity float64
-	echoSuppressLastLog time.Time
-	echoSuppressCount   int
+	echoSuppressLastLog  time.Time
+	echoSuppressCount    int
 
 	outputCodec string
 }
 
 func newAudioBridge(outputCodec string) *audioBridge {
 	return &audioBridge{
-		browserIn: make(chan []int16, 256),
-		openAIOut: make(chan outputAudioChunk, 128),
-		clearOut:  make(chan struct{}, 8),
-		stopOut:     make(chan chan outputStopResult, 8),
-		closed:      make(chan struct{}),
-		outputCodec: outputCodec,
-		turnSensitivity: defaultTurnSensitivity(),
+		browserIn:            make(chan []int16, 256),
+		openAIOut:            make(chan outputAudioChunk, 128),
+		clearOut:             make(chan struct{}, 8),
+		stopOut:              make(chan chan outputStopResult, 8),
+		closed:               make(chan struct{}),
+		outputCodec:          outputCodec,
+		turnSensitivity:      defaultTurnSensitivity(),
 		echoGuardSensitivity: defaultEchoGuardSensitivity(),
 	}
 }
@@ -1021,26 +1023,26 @@ func rtpAudioLevel(h rtp.Header, extID int) (level int, vad bool, ok bool) {
 }
 
 type localTurnDetector struct {
-	smart          *smartturn.Detector
-	vad            *smartturn.SileroVAD
-	threshold      float64
-	speechStartMS  int
-	bargeInWakeRMS float64
+	smart                   *st.Detector
+	vad                     *silero.VAD
+	threshold               float64
+	speechStartMS           int
+	bargeInWakeRMS          float64
 	bargeInWakeVADThreshold float64
-	checkpoints    []turnCheckpoint
-	inSpeech       bool
-	currentlySpeech bool
-	committed      bool
-	speechMS       int
-	silenceMS      int
-	nextCheckpoint int
-	vadPCM16       []int16
-	turnPCM16      []int16
-	lastSpeechLog  time.Time
-	lastStopAt      time.Time
-	interruptSpeechMS int
-	turnSpeechMS      int
-	interruptedTurn   bool
+	checkpoints             []turnCheckpoint
+	inSpeech                bool
+	currentlySpeech         bool
+	committed               bool
+	speechMS                int
+	silenceMS               int
+	nextCheckpoint          int
+	vadPCM16                []int16
+	turnPCM16               []int16
+	lastSpeechLog           time.Time
+	lastStopAt              time.Time
+	interruptSpeechMS       int
+	turnSpeechMS            int
+	interruptedTurn         bool
 }
 
 type turnCheckpoint struct {
@@ -1049,35 +1051,35 @@ type turnCheckpoint struct {
 }
 
 type localTurnDecision struct {
-	stop       bool
-	interrupt  bool
-	message    string
+	stop        bool
+	interrupt   bool
+	message     string
 	interrupted bool
-	audioMS    int
-	speechMS   int
-	rms        float64
-	likelyWord bool
+	audioMS     int
+	speechMS    int
+	rms         float64
+	likelyWord  bool
 }
 
 func newLocalTurnDetector() (*localTurnDetector, error) {
-	modelPath := envDefault("SMART_TURN_MODEL", "voicethread/models/smart-turn-v3/smart-turn-v3.2-cpu.onnx")
-	det, err := smartturn.NewDetector(smartturn.DetectorConfig{ModelPath: modelPath, Threads: envInt("SMART_TURN_THREADS", 1)})
+	threads := envInt("SMART_TURN_THREADS", 1)
+	det, err := st.Open(gonnx.WithThreads(threads))
 	if err != nil {
 		return nil, err
 	}
-	vad, err := smartturn.NewSileroVAD(smartturn.SileroVADConfig{Threads: envInt("SMART_TURN_THREADS", 1)})
+	vad, err := silero.Open(gonnx.WithThreads(threads))
 	if err != nil {
 		det.Close()
 		return nil, err
 	}
 	return &localTurnDetector{
-		smart:         det,
-		vad:           vad,
-		threshold:     envFloat("LOCAL_VAD_THRESHOLD", 0.5),
-		speechStartMS: envInt("LOCAL_VAD_SPEECH_START_MS", 80),
-		bargeInWakeRMS: envFloat("LOCAL_TURN_BARGE_IN_WAKE_RMS", 0.006),
+		smart:                   det,
+		vad:                     vad,
+		threshold:               envFloat("LOCAL_VAD_THRESHOLD", 0.5),
+		speechStartMS:           envInt("LOCAL_VAD_SPEECH_START_MS", 80),
+		bargeInWakeRMS:          envFloat("LOCAL_TURN_BARGE_IN_WAKE_RMS", 0.006),
 		bargeInWakeVADThreshold: envFloat("LOCAL_TURN_BARGE_IN_WAKE_VAD_THRESHOLD", envFloat("LOCAL_TURN_INTERRUPT_VAD_THRESHOLD", 0.98)),
-		checkpoints:   smartTurnCheckpointsForSensitivity(defaultTurnSensitivity()),
+		checkpoints:             smartTurnCheckpointsForSensitivity(defaultTurnSensitivity()),
 	}, nil
 }
 
@@ -1096,19 +1098,19 @@ func (d *localTurnDetector) Observe(ctx context.Context, pcm24 []int16, assistan
 	}
 	d.vadPCM16 = append(d.vadPCM16, downsample24To16(pcm24)...)
 	var decision localTurnDecision
-	for len(d.vadPCM16) >= smartturn.SileroChunkSamples {
-		chunk := d.vadPCM16[:smartturn.SileroChunkSamples]
+	for len(d.vadPCM16) >= silero.ChunkSamples {
+		chunk := d.vadPCM16[:silero.ChunkSamples]
 		if dec := d.observeVADChunk(ctx, chunk, assistantActive, suppressInterrupt, emit); dec.stop || dec.interrupt {
 			decision = dec
 		}
-		copy(d.vadPCM16, d.vadPCM16[smartturn.SileroChunkSamples:])
-		d.vadPCM16 = d.vadPCM16[:len(d.vadPCM16)-smartturn.SileroChunkSamples]
+		copy(d.vadPCM16, d.vadPCM16[silero.ChunkSamples:])
+		d.vadPCM16 = d.vadPCM16[:len(d.vadPCM16)-silero.ChunkSamples]
 	}
 	return decision
 }
 
 func (d *localTurnDetector) observeVADChunk(ctx context.Context, pcm16 []int16, assistantActive bool, suppressInterrupt bool, emit func(voicethread.Event)) localTurnDecision {
-	const chunkMS = smartturn.SileroChunkSamples * 1000 / smartturn.SampleRate
+	const chunkMS = silero.ChunkSamples * 1000 / silero.SampleRate
 	// Cheap wake gate: avoid running Silero continuously on room silence. While
 	// already inside a turn, always run Silero so trailing silence is measured
 	// by the model. Outside a turn, only call Silero if there is enough raw
@@ -1116,7 +1118,7 @@ func (d *localTurnDetector) observeVADChunk(ctx context.Context, pcm16 []int16, 
 	if !d.inSpeech && pcmRMS(pcm16) < envFloat("LOCAL_VAD_WAKE_RMS", 0.003) {
 		return localTurnDecision{}
 	}
-	prob, _, err := d.vad.ProbabilityPCM16(ctx, pcm16, smartturn.SampleRate)
+	prob, _, err := d.vad.ProbabilityPCM16(ctx, pcm16, silero.SampleRate)
 	if err != nil {
 		emit(voicethread.Event{Type: "error", Message: "silero vad: " + err.Error()})
 		return localTurnDecision{}
@@ -1215,18 +1217,18 @@ func (d *localTurnDetector) observeVADChunk(ctx context.Context, pcm16 []int16, 
 	}
 	d.nextCheckpoint++
 	start := time.Now()
-	result, err := d.smart.PredictPCM16(ctx, d.turnPCM16, smartturn.SampleRate)
+	result, err := d.smart.PredictPCM16(ctx, d.turnPCM16, st.SampleRate)
 	if err != nil {
 		emit(voicethread.Event{Type: "error", Message: "smartturn: " + err.Error()})
 		return localTurnDecision{}
 	}
-	totalAudioMS := len(d.turnPCM16) * 1000 / smartturn.SampleRate
+	totalAudioMS := len(d.turnPCM16) * 1000 / st.SampleRate
 	msg := fmt.Sprintf("smartturn silence_ms=%d audio_ms=%d p=%.3f threshold=%.2f complete=%v inference_ms=%d wall_ms=%d",
 		d.silenceMS, totalAudioMS, result.Probability, cp.threshold, result.Probability >= float32(cp.threshold), result.Duration.Milliseconds(), time.Since(start).Milliseconds())
 	log.Print(msg)
 	emit(voicethread.Event{Type: "debug", Message: msg})
 	if result.Probability >= float32(cp.threshold) {
-		audioMS := len(d.turnPCM16) * 1000 / smartturn.SampleRate
+		audioMS := len(d.turnPCM16) * 1000 / st.SampleRate
 		speechMS := d.turnSpeechMS
 		rms := pcmRMS(d.turnPCM16)
 		interrupted := d.interruptedTurn
@@ -1970,7 +1972,7 @@ func noStore(next http.Handler) http.Handler {
 func exampleTools() *tool.Catalog {
 	catalog := tool.NewCatalog()
 
-	timeSpec, timeHandler := tool.JSON("get_time", "Get the current local time.", func(ctx context.Context, thread *threads.Thread, call tool.Call, args struct{}) tool.Item {
+	timeSpec, timeHandler := tool.JSON("get_time", "Get the current local time.", func(ctx context.Context, thread threads.Thread, call tool.Call, args struct{}) tool.Item {
 		return tool.ResultText(call, time.Now().Format(time.RFC1123))
 	})
 	catalog.Add(timeSpec, timeHandler)
@@ -1978,7 +1980,7 @@ func exampleTools() *tool.Catalog {
 	type echoArgs struct {
 		Text string `json:"text" jsonschema:"text to echo back"`
 	}
-	echoSpec, echoHandler := tool.JSON("echo", "Echo text back to the user.", func(ctx context.Context, thread *threads.Thread, call tool.Call, args echoArgs) tool.Item {
+	echoSpec, echoHandler := tool.JSON("echo", "Echo text back to the user.", func(ctx context.Context, thread threads.Thread, call tool.Call, args echoArgs) tool.Item {
 		return tool.ResultText(call, fmt.Sprintf("echo: %s", args.Text))
 	})
 	catalog.Add(echoSpec, echoHandler)

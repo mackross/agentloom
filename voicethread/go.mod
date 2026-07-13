@@ -10,15 +10,17 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/gomlx/gomlx v0.27.3
 	github.com/gomlx/onnx-gomlx v0.4.2
+	github.com/gonnx-models/silero v0.0.0-20260603183243-401cfdf597e7
+	github.com/gonnx-models/smartturn v0.0.0-20260603164801-dfad562fd312
 	github.com/kazzmir/opus-go v1.3.0
 	github.com/mackross/agentloom v0.0.0
+	github.com/mackross/gonnx v0.0.0-20260603163958-e25610185131
 	github.com/pion/opus v0.0.0-20260521201147-ee1d1deea2f6
 	github.com/pion/rtp v1.10.2
 	github.com/pion/webrtc/v4 v4.2.13
 	github.com/shota3506/onnxruntime-purego v0.0.0-20260315223538-8db8bd7424b2
 	github.com/tphakala/go-audio-resampler v1.3.0
 	golang.org/x/oauth2 v0.36.0
-	gonum.org/v1/gonum v0.17.0
 )
 
 require (
@@ -50,6 +52,7 @@ require (
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
+	gonum.org/v1/gonum v0.17.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 )
