@@ -81,17 +81,21 @@ type ThreadSnapshot struct {
 }
 
 type SnapshotItem struct {
-	Type      string         `json:"kind"`
-	Text      string         `json:"text,omitempty"`
-	ID        string         `json:"id,omitempty"`
-	Name      string         `json:"name,omitempty"`
-	Mode      string         `json:"mode,omitempty"`
-	Recovery  string         `json:"recovery,omitempty"`
-	Recovered bool           `json:"recovered,omitempty"`
-	Args      string         `json:"args,omitempty"`
-	Output    string         `json:"output,omitempty"`
-	Data      string         `json:"data,omitempty"`
-	Tools     *ToolsSnapshot `json:"tools,omitempty"`
+	Type         string                `json:"kind"`
+	Text         string                `json:"text,omitempty"`
+	Provider     string                `json:"provider,omitempty"`
+	Visibility   ReasoningVisibility   `json:"visibility,omitempty"`
+	Summary      string                `json:"summary,omitempty"`
+	Opaque       []byte                `json:"opaque,omitempty"`
+	ID           string                `json:"id,omitempty"`
+	Name         string                `json:"name,omitempty"`
+	Mode         string                `json:"mode,omitempty"`
+	Recovery     string                `json:"recovery,omitempty"`
+	Recovered    bool                  `json:"recovered,omitempty"`
+	Args         string                `json:"args,omitempty"`
+	Output       string                `json:"output,omitempty"`
+	Data         string                `json:"data,omitempty"`
+	Tools        *ToolsSnapshot        `json:"tools,omitempty"`
 	SafeRollback *ToolCallSafeRollback `json:"safe_rollback,omitempty"`
 }
 
@@ -151,6 +155,9 @@ func RestoreThreadSnapshot(snapshot ThreadSnapshot) (*thread, error) {
 		return nil, fmt.Errorf("stream insertion index: %w", err)
 	}
 	t.cb.setState(snapshot.State)
+	if snapshot.State == StateIdle && len(t.cb.pendingToolCalls(&t.items)) > 0 {
+		t.cb.setState(StateAwaitingToolResults)
+	}
 	t.captureSafeIfRestorable()
 
 	return t, nil
@@ -297,6 +304,8 @@ func itemToSnapshotItem(v Item) (SnapshotItem, error) {
 		return SnapshotItem{Type: "user_text", Text: string(x)}, nil
 	case AssistantText:
 		return SnapshotItem{Type: "assistant_text", Text: string(x)}, nil
+	case ReasoningItem:
+		return SnapshotItem{Type: "reasoning", Provider: x.Provider, ID: x.ID, Visibility: x.Visibility, Text: x.Text, Summary: x.Summary, Opaque: append([]byte(nil), x.Opaque...)}, nil
 	case PreviousItemMetadata:
 		data, err := encodeToolData(x)
 		if err != nil {
@@ -351,6 +360,8 @@ func snapshotItemToItem(raw SnapshotItem) (Item, error) {
 		return UserText(raw.Text), nil
 	case "assistant_text":
 		return AssistantText(raw.Text), nil
+	case "reasoning":
+		return ReasoningItem{Provider: raw.Provider, ID: raw.ID, Visibility: raw.Visibility, Text: raw.Text, Summary: raw.Summary, Opaque: append([]byte(nil), raw.Opaque...)}, nil
 	case "item_meta":
 		data, err := decodeToolData(raw.Data)
 		if err != nil {
@@ -453,11 +464,7 @@ func nodeAt(nodes []*item[Item], idx int) (*item[Item], error) {
 func cloneSnapshot(s ThreadSnapshot) ThreadSnapshot {
 	items := make([]SnapshotItem, 0, len(s.Items))
 	for _, item := range s.Items {
-		if item.Tools != nil {
-			snap := cloneToolsSnapshot(*item.Tools)
-			item.Tools = &snap
-		}
-		items = append(items, item)
+		items = append(items, cloneSnapshotItem(item))
 	}
 	return ThreadSnapshot{
 		Version:         s.Version,
@@ -474,9 +481,6 @@ func (t *thread) appendWAL(op string, item Item) {
 		return
 	}
 	ev := WALEvent{Seq: t.mutationSeq, Op: op}
-	if op == walOpEndStream && t.cb.awaitToolResults {
-		ev.State = StateAwaitingToolResults
-	}
 	if op == walOpQueueItem || op == walOpQueueItemBeforeSend || op == walOpAppendStreamItem {
 		raw, err := itemToSnapshotItem(item)
 		if err != nil {
@@ -533,7 +537,6 @@ func (t *thread) applyWALEvent(ev WALEvent) error {
 		}
 		return t.appendStreamItem(v)
 	case walOpEndStream:
-		t.cb.awaitToolResults = ev.State == StateAwaitingToolResults
 		return t.endStreaming()
 	default:
 		return fmt.Errorf("unsupported wal op: %q", ev.Op)

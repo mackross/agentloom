@@ -52,7 +52,6 @@ type thread struct {
 	tools          ToolProvider
 	resolver       ToolResolver
 	loop           *EventLoop
-	policy         ToolResultSendPolicy
 	resolvingTools bool
 	toolCancelMu   sync.Mutex
 	toolCancels    map[string]*toolCancel
@@ -352,15 +351,12 @@ func (t *thread) appendStreamItem(v Item) error {
 
 func (t *thread) endStreaming() error {
 	t.mutationSeq++
-	if !t.replayingWAL {
-		t.cb.awaitToolResults = t.policy == ToolResultSendRequiresComplete && len(t.cb.pendingToolCalls(&t.items)) > 0
-	}
 	// Persist end_stream before the state-change callback can queue follow-on
 	// items. If we crash in that callback, replaying this WAL prefix cleanly
 	// restores the requested-tool boundary; later tool-resolution items only
 	// appear if their own WAL entries were durably appended.
 	t.appendWAL(walOpEndStream, nil)
-	if err := t.cb.endStreaming(); err != nil {
+	if err := t.cb.endStreaming(&t.items); err != nil {
 		return err
 	}
 	return nil

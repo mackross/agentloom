@@ -135,6 +135,7 @@ func TestSnapshotRoundTripPreservesToolCallStartedItems(t *testing.T) {
 	thread := newThread()
 	thread.QueueItem(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
 	thread.QueueItem(ToolCallStarted{CallID: "c1", Continue: ToolContinueManual})
+	thread.cb.setState(StateAwaitingToolResults)
 
 	snap, err := thread.Snapshot()
 	if err != nil {
@@ -222,6 +223,29 @@ func TestSnapshotRoundTripRestoresToolResultItemsAsCanonicalThreadBlocks(t *test
 	}
 }
 
+func TestRestoreLegacyIdleSnapshotNormalizesPendingToolCallsToAwaiting(t *testing.T) {
+	snapshot := ThreadSnapshot{
+		Version: serializedThreadVersion,
+		State:   StateIdle,
+		Items: []SnapshotItem{
+			{Type: "user_text", Text: "hello"},
+			{Type: "send"},
+			{Type: "tool_call", ID: "c1", Name: "calc", Args: `{}`},
+		},
+		IPIndex:         2,
+		QueueStartIndex: -1,
+		StreamInsIndex:  -1,
+	}
+
+	restored, err := RestoreThreadSnapshot(snapshot)
+	if err != nil {
+		t.Fatalf("restore legacy snapshot: %v", err)
+	}
+	if got := restored.State(); got != StateAwaitingToolResults {
+		t.Fatalf("restored state = %q, want %q", got, StateAwaitingToolResults)
+	}
+}
+
 func TestWALReplayPreservesRollbackableToolResult(t *testing.T) {
 	const hint = `<tool_call_hint tool="calc">Retry with valid JSON.</tool_call_hint>`
 
@@ -231,6 +255,8 @@ func TestWALReplayPreservesRollbackableToolResult(t *testing.T) {
 		Output: "invalid JSON",
 		SafeRollback: &ToolCallSafeRollback{
 			SteeringHint: hint,
+			RetryAttempt: 2,
+			MaxRetries:   3,
 		},
 	})
 
@@ -238,7 +264,7 @@ func TestWALReplayPreservesRollbackableToolResult(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected one WAL event, got %#v", events)
 	}
-	if got := events[0].Item; got.SafeRollback == nil || got.SafeRollback.SteeringHint != hint {
+	if got := events[0].Item; got.SafeRollback == nil || got.SafeRollback.SteeringHint != hint || got.SafeRollback.RetryAttempt != 2 || got.SafeRollback.MaxRetries != 3 {
 		t.Fatalf("WAL item lost rollback metadata: %#v", got)
 	}
 
@@ -254,9 +280,61 @@ func TestWALReplayPreservesRollbackableToolResult(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected ToolCallResult, got %T", items[0])
 	}
-	if got.SafeRollback == nil || got.SafeRollback.SteeringHint != hint {
+	if got.SafeRollback == nil || got.SafeRollback.SteeringHint != hint || got.SafeRollback.RetryAttempt != 2 || got.SafeRollback.MaxRetries != 3 {
 		t.Fatalf("restored result lost rollback metadata: %#v", got)
 	}
+}
+
+func TestMemoryDurableStoreLoadDoesNotAliasSafeRollbackMetadata(t *testing.T) {
+	t.Run("checkpoint", func(t *testing.T) {
+		store := NewMemoryDurableStore(Checkpoint{Snapshot: ThreadSnapshot{
+			Version:         serializedThreadVersion,
+			State:           StateIdle,
+			IPIndex:         -1,
+			QueueStartIndex: -1,
+			StreamInsIndex:  -1,
+			Items: []SnapshotItem{{
+				Type: "tool_result",
+				ID:   "c1",
+				SafeRollback: &ToolCallSafeRollback{
+					SteeringHint: "original",
+					RetryAttempt: 1,
+					MaxRetries:   2,
+				},
+			}},
+		}})
+
+		loaded, _ := store.Load()
+		loaded.Snapshot.Items[0].SafeRollback.SteeringHint = "mutated"
+		loadedAgain, _ := store.Load()
+		if got := loadedAgain.Snapshot.Items[0].SafeRollback.SteeringHint; got != "original" {
+			t.Fatalf("loaded checkpoint mutated stored rollback metadata: got %q", got)
+		}
+	})
+
+	t.Run("wal", func(t *testing.T) {
+		store := NewMemoryDurableStore(Checkpoint{})
+		store.AppendWALDiff([]WALEvent{{
+			Seq: 1,
+			Op:  walOpQueueItem,
+			Item: SnapshotItem{
+				Type: "tool_result",
+				ID:   "c1",
+				SafeRollback: &ToolCallSafeRollback{
+					SteeringHint: "original",
+					RetryAttempt: 1,
+					MaxRetries:   2,
+				},
+			},
+		}})
+
+		_, loaded := store.Load()
+		loaded[0].Item.SafeRollback.SteeringHint = "mutated"
+		_, loadedAgain := store.Load()
+		if got := loadedAgain[0].Item.SafeRollback.SteeringHint; got != "original" {
+			t.Fatalf("loaded WAL mutated stored rollback metadata: got %q", got)
+		}
+	})
 }
 
 func snapshotThread(t *thread) threadSnapshot {

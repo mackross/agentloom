@@ -371,8 +371,8 @@ func TestAttachExecutorForRecoveryResolvesRequestedToolAfterEndStreamRestore(t *
 	if err != nil {
 		t.Fatalf("restore end-stream checkpoint and wal: %v", err)
 	}
-	if got := restored.State(); got != StateIdle {
-		t.Fatalf("expected restored state idle, got %q", got)
+	if got := restored.State(); got != StateAwaitingToolResults {
+		t.Fatalf("expected restored state awaiting tool results, got %q", got)
 	}
 
 	resolverCalls := 0
@@ -926,7 +926,6 @@ func TestAttachExecutorForRecoveryAcceptsAwaitingToolResults(t *testing.T) {
 	thread := newThread()
 	thread.SetToolProvider(staticToolProvider{snap: testToolsSnapshot("calc", "calculate")})
 	streamer := newFakeStreamer()
-	streamer.capabilities.ToolResultSendPolicy = ToolResultSendRequiresComplete
 	streamer.Reply(func(b *streamBuilder) {
 		b.Emit(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
 	})
@@ -952,7 +951,6 @@ func TestAttachExecutorForRecoveryAcceptsAwaitingToolResults(t *testing.T) {
 			}
 		})
 	})
-	followup.capabilities.ToolResultSendPolicy = ToolResultSendRequiresComplete
 	if err := restored.AttachExecutorForRecovery(NewThreadExecutor(followup.Streamer())); err != nil {
 		t.Fatalf("attach executor for recovery: %v", err)
 	}
@@ -1037,8 +1035,8 @@ func TestRestoreAfterEndStreamCrashKeepsToolCallRequestedUntilStartedItemPersist
 	if err != nil {
 		t.Fatalf("restore from checkpoint + wal: %v", err)
 	}
-	if got := restored.State(); got != StateIdle {
-		t.Fatalf("expected idle after end_stream prefix restore, got %q", got)
+	if got := restored.State(); got != StateAwaitingToolResults {
+		t.Fatalf("expected awaiting tool results after end_stream prefix restore, got %q", got)
 	}
 
 	pending := requirePendingToolCall(t, restored)
@@ -1171,7 +1169,7 @@ func TestThreadExecutorReportsStreamerCapabilities(t *testing.T) {
 	exec := NewThreadExecutor(streamer.Streamer())
 
 	got := exec.StreamerCapabilities()
-	if got.AssistantPrefix || got.ToolResultSendPolicy != "" {
+	if got.AssistantPrefix {
 		t.Fatalf("expected assistant-prefix capability to be false, got %#v", got)
 	}
 }

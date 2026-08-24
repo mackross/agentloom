@@ -123,9 +123,9 @@ follow-up request.
 
 - Runtime states: this overview lists `idle`, `construct_llm_request`,
   `receiving_stream`, and `stream_complete`, but current code also has
-  `awaiting_tool_results`. That state is entered when a streamer requires all
-  tool results before the pending follow-up send may advance. Decision: doc
-  update.
+  `awaiting_tool_results`. That state is entered whenever the preceding model
+  response has unfinished tool calls; no pending follow-up send advances until
+  every call has a terminal result. Decision: doc update.
 - Tool continuation: the statement that tool results are automatically followed
   by a new `SendItem{}` describes only the default `ToolContinueAuto` path.
   `ToolContinueManual`, `CancelCurrentTurn`, or an already-pending send can

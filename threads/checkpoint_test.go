@@ -144,7 +144,6 @@ func TestCheckpointUnsafeRestoreRequiresExplicitOptIn(t *testing.T) {
 func TestCheckpointSkipPreservesAwaitingToolResults(t *testing.T) {
 	thread := newThread()
 	streamer := newFakeStreamer()
-	streamer.capabilities.ToolResultSendPolicy = ToolResultSendRequiresComplete
 	streamer.Reply(func(b *streamBuilder) {
 		b.Emit(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
 	})

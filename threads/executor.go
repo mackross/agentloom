@@ -14,16 +14,18 @@ type Req struct {
 }
 
 type StreamerCapabilities struct {
-	AssistantPrefix      bool
-	ToolResultSendPolicy ToolResultSendPolicy
+	AssistantPrefix bool
+	Reasoning       ReasoningStrategy
 }
 
-type ToolResultSendPolicy string
+type ReasoningStrategy [2]string
 
-const (
-	ToolResultSendPermissive       ToolResultSendPolicy = ""
-	ToolResultSendRequiresComplete ToolResultSendPolicy = "requires_complete"
-)
+func ReasoningForProvider(provider string) ReasoningStrategy {
+	return ReasoningStrategy{provider}
+}
+func ReasoningForCurrentTurn(provider string) ReasoningStrategy {
+	return ReasoningStrategy{provider, "current"}
+}
 
 type SyntheticToolCallIDProvider interface {
 	SyntheticToolCallID() string
@@ -87,7 +89,6 @@ func (x *ThreadExecutor) OnControlBlockStateChange(t *thread, _, to State) error
 		return nil
 	}
 	caps := x.StreamerCapabilities()
-	t.policy = caps.ToolResultSendPolicy
 	in := t.requestSnapshotWithBuilder(x.requestBuilder, caps)
 	if err := t.beginStreaming(); err != nil {
 		return err

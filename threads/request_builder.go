@@ -1,6 +1,9 @@
 package threads
 
-import "reflect"
+import (
+	"reflect"
+	"sort"
+)
 
 type RequestBuilder interface {
 	Build(items []Item, caps StreamerCapabilities) Req
@@ -12,6 +15,12 @@ type defaultRequestBuilder struct{}
 
 func (defaultRequestBuilder) Build(items []Item, caps StreamerCapabilities) Req {
 	items = projectRollbackableToolFailures(items, caps)
+	lastUser := -1
+	for i, item := range items {
+		if _, ok := item.(UserText); ok {
+			lastUser = i
+		}
+	}
 	req := Req{Items: make([]Item, 0, len(items)), ItemMeta: make([]map[string]any, 0, len(items))}
 	appendReq := func(it Item, meta map[string]any) {
 		n := len(req.Items)
@@ -38,6 +47,9 @@ func (defaultRequestBuilder) Build(items []Item, caps StreamerCapabilities) Req 
 		if _, ok := it.(PreviousItemMetadata); ok {
 			continue
 		}
+		if reasoning, ok := it.(ReasoningItem); ok && (caps.Reasoning[0] == "" || reasoning.Provider != caps.Reasoning[0] || caps.Reasoning[1] != "" && i <= lastUser) {
+			continue
+		}
 		if !it.Emit() {
 			continue
 		}
@@ -60,78 +72,151 @@ func (defaultRequestBuilder) Build(items []Item, caps StreamerCapabilities) Req 
 // projectRollbackableToolFailures lowers the durable thread IR into the request
 // shape preferred by streamers that can continue from an assistant prefix.
 //
-// A rollbackable tool result is still a normal tool result in the durable log:
-// conservative streamers see the failed ToolCall plus its corrective
-// ToolCallResult. When assistant-prefix continuation is available and the
-// request contains exactly one tool call, we can instead safely hide that failed
-// call/result from the next model request and inject the caller-provided steering
-// hint as UserText at the removed call's position. Repeated failed tool calls
-// are not rolled back until a new user message or a successful tool result
-// establishes a fresh boundary. If there are multiple tool calls since that
-// boundary, this function leaves the request unchanged to avoid projecting away
-// unrelated parallel work.
+// A rollbackable tool result is still a normal tool result in the durable log.
+// Once every call has a terminal result, assistant-prefix streamers can hide the
+// rollbackable call/result pairs while retaining successful parallel siblings.
+// The latest failed round contributes its exact steering hints; a later
+// successful round removes those hints. A user message starts a new projection
+// segment, so earlier failures remain ordinary history.
 func projectRollbackableToolFailures(items []Item, caps StreamerCapabilities) []Item {
 	if !caps.AssistantPrefix {
 		return items
 	}
 
-	type rollbackCandidate struct {
-		callID string
-		hint   string
+	type callInfo struct {
+		name  string
+		batch int
+		index int
+	}
+	type hintInfo struct {
+		text  string
+		index int
+	}
+	type toolRound struct {
+		hints    []hintInfo
+		hasOther bool
 	}
 
-	currentSegmentToolCalls := 0
-	var candidate rollbackCandidate
-	resetCurrentSegment := func() {
-		currentSegmentToolCalls = 0
-		candidate = rollbackCandidate{}
-	}
-	for _, it := range items {
-		if _, ok := it.(UserText); ok {
-			resetCurrentSegment()
-			continue
+	segmentStart := 0
+	for i, item := range items {
+		if _, ok := item.(UserText); ok {
+			segmentStart = i + 1
 		}
-		if result, ok := it.(ToolCallResult); ok {
-			if result.SafeRollback != nil {
-				candidate = rollbackCandidate{callID: result.CallID, hint: result.SafeRollback.SteeringHint}
-				continue
+	}
+
+	calls := make(map[string]callInfo)
+	results := make(map[string]ToolCallResult)
+	resultIndexes := make(map[string]int)
+	batch := -1
+	needBatch := true
+	for i, item := range items {
+		switch value := item.(type) {
+		case UserText:
+			needBatch = true
+		case ToolCall:
+			if needBatch {
+				batch++
+				needBatch = false
 			}
-			resetCurrentSegment()
-			continue
-		}
-		if _, ok := it.(ToolCall); ok {
-			currentSegmentToolCalls++
+			calls[value.CallID] = callInfo{name: value.Name, batch: batch, index: i}
+		case ToolCallResult:
+			results[value.CallID] = value
+			resultIndexes[value.CallID] = i
+			needBatch = true
 		}
 	}
-	if currentSegmentToolCalls != 1 || candidate.callID == "" {
+	for callID := range calls {
+		if _, ok := results[callID]; !ok {
+			return items
+		}
+	}
+
+	batchRounds := make(map[int]map[string]*toolRound)
+	rollbackCalls := make(map[string]struct{})
+	for callID, info := range calls {
+		result := results[callID]
+		if info.index < segmentStart || resultIndexes[callID] < segmentStart {
+			continue
+		}
+		byTool := batchRounds[info.batch]
+		if byTool == nil {
+			byTool = make(map[string]*toolRound)
+			batchRounds[info.batch] = byTool
+		}
+		round := byTool[info.name]
+		if round == nil {
+			round = &toolRound{}
+			byTool[info.name] = round
+		}
+		if result.SafeRollback == nil {
+			round.hasOther = true
+			continue
+		}
+		rollbackCalls[callID] = struct{}{}
+		round.hints = append(round.hints, hintInfo{
+			text:  result.SafeRollback.SteeringHint,
+			index: resultIndexes[callID],
+		})
+	}
+	if len(rollbackCalls) == 0 {
 		return items
 	}
 
-	out := make([]Item, 0, len(items))
-	for _, it := range items {
-		switch v := it.(type) {
-		case ToolCall:
-			if v.CallID != candidate.callID {
-				out = append(out, it)
+	active := make(map[string][]hintInfo)
+	batchIDs := make([]int, 0, len(batchRounds))
+	for batchID := range batchRounds {
+		batchIDs = append(batchIDs, batchID)
+	}
+	sort.Ints(batchIDs)
+	for _, batchID := range batchIDs {
+		for name, round := range batchRounds[batchID] {
+			if len(round.hints) > 0 {
+				active[name] = round.hints
 				continue
 			}
-			if candidate.hint != "" {
-				out = append(out, UserText(candidate.hint))
+			if round.hasOther {
+				delete(active, name)
 			}
+		}
+	}
+
+	out := make([]Item, 0, len(items))
+	skipMetadata := false
+	for _, item := range items {
+		if _, ok := item.(PreviousItemMetadata); ok {
+			if skipMetadata {
+				continue
+			}
+			out = append(out, item)
+			continue
+		}
+		skipMetadata = false
+		callID := ""
+		switch value := item.(type) {
+		case ToolCall:
+			callID = value.CallID
 		case ToolCallResolving:
-			if v.CallID != candidate.callID {
-				out = append(out, it)
-			}
+			callID = value.CallID
 		case ToolCallStarted:
-			if v.CallID != candidate.callID {
-				out = append(out, it)
-			}
+			callID = value.CallID
 		case ToolCallResult:
-			if v.CallID != candidate.callID {
-				out = append(out, it)
-			}
-		default:
-			out = append(out, it)
+			callID = value.CallID
+		}
+		if _, remove := rollbackCalls[callID]; remove {
+			skipMetadata = item.Emit()
+			continue
+		}
+		out = append(out, item)
+	}
+
+	var hints []hintInfo
+	for _, toolHints := range active {
+		hints = append(hints, toolHints...)
+	}
+	sort.Slice(hints, func(i, j int) bool { return hints[i].index < hints[j].index })
+	for _, hint := range hints {
+		if hint.text != "" {
+			out = append(out, UserText(hint.text))
 		}
 	}
 	return out

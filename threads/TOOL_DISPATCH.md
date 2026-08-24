@@ -464,7 +464,6 @@ actually happened.
   unimplemented. Decision: doc update plus future for those modes.
 - Automatic continuation has two important implementation details not captured
   above: when a send is already pending, tool-resolution items are inserted
-  before that send instead of always queuing a new one; and streamers that report
-  `ToolResultSendRequiresComplete` can place the thread in
-  `awaiting_tool_results` until all pending tool calls have results. Decision:
+  before that send instead of always queuing a new one; and the thread remains
+  in `awaiting_tool_results` until all pending tool calls have results. Decision:
   doc update.

@@ -750,10 +750,9 @@ func TestInterleavedToolCallChunksCoalesceByCallID(t *testing.T) {
 	}
 }
 
-func TestToolResultSendPolicyGating(t *testing.T) {
+func TestToolResultsGateFollowupUntilAllComplete(t *testing.T) {
 	tests := []struct {
 		name        string
-		policy      ToolResultSendPolicy
 		calls       []ToolCall
 		results     []Item
 		wantSend    bool
@@ -762,14 +761,12 @@ func TestToolResultSendPolicyGating(t *testing.T) {
 		resultFirst bool
 	}{
 		{
-			name:      "strict waits for missing single result",
-			policy:    ToolResultSendRequiresComplete,
+			name:      "waits for missing single result",
 			calls:     []ToolCall{{CallID: "c1", Name: "calc", Payload: `{"a":1}`}},
 			wantState: StateAwaitingToolResults,
 		},
 		{
-			name:      "strict sends after single result",
-			policy:    ToolResultSendRequiresComplete,
+			name:      "sends after single result",
 			calls:     []ToolCall{{CallID: "c1", Name: "calc", Payload: `{"a":1}`}},
 			results:   []Item{ToolCallResult{CallID: "c1", Output: "1"}},
 			wantSend:  true,
@@ -777,8 +774,7 @@ func TestToolResultSendPolicyGating(t *testing.T) {
 			wantItems: []Item{UserText("hello"), ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`}, ToolCallResult{CallID: "c1", Output: "1"}},
 		},
 		{
-			name:   "strict waits for all parallel results",
-			policy: ToolResultSendRequiresComplete,
+			name: "waits for all parallel results",
 			calls: []ToolCall{
 				{CallID: "c1", Name: "alpha", Payload: `{"a":1}`},
 				{CallID: "c2", Name: "beta", Payload: `{"b":2}`},
@@ -787,16 +783,25 @@ func TestToolResultSendPolicyGating(t *testing.T) {
 			wantState: StateAwaitingToolResults,
 		},
 		{
-			name: "permissive allows partial send",
+			name: "sends after all parallel results",
 			calls: []ToolCall{
 				{CallID: "c1", Name: "alpha", Payload: `{"a":1}`},
 				{CallID: "c2", Name: "beta", Payload: `{"b":2}`},
 			},
-			results:     []Item{ToolCallResult{CallID: "c1", Output: "1"}},
+			results: []Item{
+				ToolCallResult{CallID: "c1", Output: "1"},
+				ToolCallResult{CallID: "c2", Output: "2"},
+			},
 			wantSend:    true,
 			wantState:   StateIdle,
 			resultFirst: true,
-			wantItems:   []Item{UserText("hello"), ToolCall{CallID: "c1", Name: "alpha", Payload: `{"a":1}`}, ToolCall{CallID: "c2", Name: "beta", Payload: `{"b":2}`}, ToolCallResult{CallID: "c1", Output: "1"}},
+			wantItems: []Item{
+				UserText("hello"),
+				ToolCall{CallID: "c1", Name: "alpha", Payload: `{"a":1}`},
+				ToolCall{CallID: "c2", Name: "beta", Payload: `{"b":2}`},
+				ToolCallResult{CallID: "c1", Output: "1"},
+				ToolCallResult{CallID: "c2", Output: "2"},
+			},
 		},
 	}
 
@@ -804,7 +809,6 @@ func TestToolResultSendPolicyGating(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			thread := newTestThread(t)
 			streamer := newFakeStreamer()
-			streamer.capabilities.ToolResultSendPolicy = tt.policy
 			streamer.Reply(func(b *streamBuilder) {
 				for _, call := range tt.calls {
 					b.Emit(call)
@@ -850,10 +854,9 @@ func TestToolResultSendPolicyGating(t *testing.T) {
 	}
 }
 
-func TestStrictToolResultPolicyMovesResultsBeforeHeldSendBoundary(t *testing.T) {
+func TestToolResultInvariantMovesResultsBeforeHeldSendBoundary(t *testing.T) {
 	thread := newTestThread(t)
 	streamer := newFakeStreamer()
-	streamer.capabilities.ToolResultSendPolicy = ToolResultSendRequiresComplete
 	streamer.Reply(func(b *streamBuilder) {
 		b.Emit(ToolCall{CallID: "c1", Name: "alpha", Payload: `{"a":1}`})
 		b.Emit(ToolCall{CallID: "c2", Name: "beta", Payload: `{"b":2}`})
@@ -891,7 +894,6 @@ func TestAwaitingToolResultsIsNotIdle(t *testing.T) {
 	idleCalls := 0
 	thread.SetDelegate(ThreadDelegateFuncs{OnIdle: func(Thread) { idleCalls++ }})
 	streamer := newFakeStreamer()
-	streamer.capabilities.ToolResultSendPolicy = ToolResultSendRequiresComplete
 	streamer.Reply(func(b *streamBuilder) {
 		b.Emit(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
 	})

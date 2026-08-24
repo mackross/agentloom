@@ -57,6 +57,11 @@ func cloneWALEvents(events []WALEvent) []WALEvent {
 }
 
 func cloneSnapshotItem(item SnapshotItem) SnapshotItem {
+	item.Opaque = append([]byte(nil), item.Opaque...)
+	if item.SafeRollback != nil {
+		rollback := *item.SafeRollback
+		item.SafeRollback = &rollback
+	}
 	if item.Tools != nil {
 		tools := cloneToolsSnapshot(*item.Tools)
 		item.Tools = &tools

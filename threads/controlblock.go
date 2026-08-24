@@ -20,7 +20,6 @@ type controlBlock struct {
 	streamInsertionPoint *item[Item]
 	streamToolCalls      map[string]*item[Item]
 	queueStartItem       *item[Item]
-	awaitToolResults     bool
 }
 
 type cbTransition struct {
@@ -45,7 +44,7 @@ type cbStateHandler interface {
 	AdvanceNext(items cbItems) cbTransition
 	BeginStreaming() cbTransition
 	AppendStreamItem(items cbItems, v Item) cbTransition
-	EndStreaming() cbTransition
+	EndStreaming(items cbItems) cbTransition
 }
 
 // cbItems is the narrow thread-item storage surface the control block reads/writes.
@@ -125,7 +124,7 @@ func (s idleState) AppendStreamItem(_ cbItems, _ Item) cbTransition {
 	return noChangeTransition(s.controlBlock)
 }
 
-func (s idleState) EndStreaming() cbTransition {
+func (s idleState) EndStreaming(_ cbItems) cbTransition {
 	return noChangeTransition(s.controlBlock)
 }
 
@@ -156,7 +155,7 @@ func (s constructLLMRequestState) AppendStreamItem(_ cbItems, _ Item) cbTransiti
 	return noChangeTransition(s.controlBlock)
 }
 
-func (s constructLLMRequestState) EndStreaming() cbTransition {
+func (s constructLLMRequestState) EndStreaming(_ cbItems) cbTransition {
 	return noChangeTransition(s.controlBlock)
 }
 
@@ -232,15 +231,15 @@ func (s receivingStreamState) AppendStreamItem(items cbItems, v Item) cbTransiti
 	return cbTransition{From: from, To: cb.state, Changed: false}
 }
 
-func (s receivingStreamState) EndStreaming() cbTransition {
+func (s receivingStreamState) EndStreaming(items cbItems) cbTransition {
 	cb := s.controlBlock
 	from := cb.state
 	cb.streamInsertionPoint = nil
 	cb.streamToolCalls = nil
 	cb.setState(StateStreamComplete)
-	if cb.awaitToolResults {
+	if len(cb.pendingToolCalls(items)) > 0 {
 		cb.setState(StateAwaitingToolResults)
-	} else if cb.canEnterIdle() {
+	} else {
 		cb.setState(StateIdle)
 	}
 	return cbTransition{From: from, To: cb.state, Changed: from != cb.state}
@@ -278,12 +277,10 @@ func (s awaitingToolResultsState) AdvanceNext(items cbItems) cbTransition {
 	}
 	cb.ip = cb.nextItemAfterIP(items)
 	if _, ok := cb.ip.Item.(SendItem); ok {
-		cb.awaitToolResults = false
 		cb.setState(StateConstructLLMRequest)
 	}
 	cb.syncQueueStartToIP()
 	if cb.state == StateAwaitingToolResults && cb.nextItemAfterIP(items) == nil && len(cb.pendingToolCalls(items)) == 0 {
-		cb.awaitToolResults = false
 		cb.setState(StateIdle)
 	}
 	return cbTransition{From: from, To: cb.state, Changed: from != cb.state}
@@ -295,7 +292,7 @@ func (s awaitingToolResultsState) BeginStreaming() cbTransition {
 func (s awaitingToolResultsState) AppendStreamItem(_ cbItems, _ Item) cbTransition {
 	return noChangeTransition(s.controlBlock)
 }
-func (s awaitingToolResultsState) EndStreaming() cbTransition {
+func (s awaitingToolResultsState) EndStreaming(_ cbItems) cbTransition {
 	return noChangeTransition(s.controlBlock)
 }
 
@@ -321,7 +318,7 @@ func (s streamCompleteState) AppendStreamItem(_ cbItems, _ Item) cbTransition {
 	return noChangeTransition(s.controlBlock)
 }
 
-func (s streamCompleteState) EndStreaming() cbTransition {
+func (s streamCompleteState) EndStreaming(_ cbItems) cbTransition {
 	return noChangeTransition(s.controlBlock)
 }
 
@@ -365,13 +362,9 @@ func (cb *controlBlock) appendStreamItem(items cbItems, v Item) error {
 	return cb.emitStateChange(tr)
 }
 
-func (cb *controlBlock) endStreaming() error {
-	tr := cb.cbStateHandler.EndStreaming()
+func (cb *controlBlock) endStreaming(items cbItems) error {
+	tr := cb.cbStateHandler.EndStreaming(items)
 	return cb.emitStateChange(tr)
-}
-
-func (cb *controlBlock) canEnterIdle() bool {
-	return true
 }
 
 func queueItemTransition(cb *controlBlock, items cbItems, v Item) cbTransition {

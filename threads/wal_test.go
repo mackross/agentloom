@@ -154,8 +154,8 @@ func TestRestoreFromCheckpointAndWALTrimsPendingStartedToolTailByDefault(t *test
 	if err != nil {
 		t.Fatalf("restore from checkpoint + wal: %v", err)
 	}
-	if got := restored.State(); got != StateIdle {
-		t.Fatalf("expected idle after trim, got %q", got)
+	if got := restored.State(); got != StateAwaitingToolResults {
+		t.Fatalf("expected awaiting tool results after trim, got %q", got)
 	}
 	if got := toolLifecycleTypes(restored, "c1"); !reflect.DeepEqual(got, []string{"tool_call"}) {
 		t.Fatalf("unexpected restored tool lifecycle after trim: %#v", got)
@@ -310,7 +310,6 @@ func TestRestoreFromCheckpointAndWALReplaysAwaitingToolResults(t *testing.T) {
 		t.Fatalf("base checkpoint: %v", err)
 	}
 	streamer := newFakeStreamer()
-	streamer.capabilities.ToolResultSendPolicy = ToolResultSendRequiresComplete
 	streamer.Reply(func(b *streamBuilder) {
 		b.Emit(ToolCall{CallID: "c1", Name: "calc", Payload: `{"a":1}`})
 	})
@@ -321,6 +320,32 @@ func TestRestoreFromCheckpointAndWALReplaysAwaitingToolResults(t *testing.T) {
 	restored, err := RestoreFromCheckpointAndWAL(base, thread.WALAfter(base.Seq), RestoreOptions{})
 	if err != nil {
 		t.Fatalf("restore from checkpoint + wal: %v", err)
+	}
+	if got := restored.State(); got != StateAwaitingToolResults {
+		t.Fatalf("restored state = %q, want %q", got, StateAwaitingToolResults)
+	}
+}
+
+func TestReplayLegacyEndStreamDerivesAwaitingToolResultsFromItems(t *testing.T) {
+	base := Checkpoint{Snapshot: ThreadSnapshot{
+		Version:         serializedThreadVersion,
+		State:           StateIdle,
+		IPIndex:         -1,
+		QueueStartIndex: -1,
+		StreamInsIndex:  -1,
+	}}
+	wal := []WALEvent{
+		{Seq: 1, Op: walOpQueueItem, Item: SnapshotItem{Type: "user_text", Text: "hello"}},
+		{Seq: 2, Op: walOpQueueItem, Item: SnapshotItem{Type: "send"}},
+		{Seq: 3, Op: walOpBeginStream},
+		{Seq: 4, Op: walOpAppendStreamItem, Item: SnapshotItem{Type: "tool_call", ID: "c1", Name: "calc", Args: `{}`}},
+		// Version-one WALs created under the old permissive default omitted State.
+		{Seq: 5, Op: walOpEndStream},
+	}
+
+	restored, err := RestoreFromCheckpointAndWAL(base, wal, RestoreOptions{})
+	if err != nil {
+		t.Fatalf("restore legacy wal: %v", err)
 	}
 	if got := restored.State(); got != StateAwaitingToolResults {
 		t.Fatalf("restored state = %q, want %q", got, StateAwaitingToolResults)

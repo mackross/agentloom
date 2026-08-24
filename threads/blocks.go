@@ -1,6 +1,17 @@
 package threads
 
+const ReasoningVisibilityHidden ReasoningVisibility = ""
+const ReasoningVisibilitySummary ReasoningVisibility = "summary"
+const ReasoningVisibilityText ReasoningVisibility = "text"
+
 type (
+	ReasoningVisibility string
+	ReasoningItem       struct {
+		Provider, ID, Text, Summary string
+		Visibility                  ReasoningVisibility
+		Opaque                      []byte
+	}
+
 	// AssistantInstruction sets the instruction for a model (in some models this
 	// is known as the system prompt). The latest queued AssistantInstruction will
 	// be the one that is used.
@@ -96,6 +107,8 @@ type ToolCallResult struct {
 // requests, so it should favor clarity and completeness over brevity.
 type ToolCallSafeRollback struct {
 	SteeringHint string `json:"steering_hint,omitempty"`
+	RetryAttempt int    `json:"retry_attempt,omitempty"`
+	MaxRetries   int    `json:"max_retries,omitempty"`
 }
 
 // ToolsSnapshot is the durable helper boundary for tool routing.
@@ -109,14 +122,15 @@ type ToolsSnapshot struct {
 // instruction pointer advances to it.
 type SendItem struct{}
 
-func (UserText) Emit() bool                       { return true }
-func (AssistantText) Emit() bool                  { return true }
-func (PreviousItemMetadata) Emit() bool           { return false }
-func (AssistantInstruction) Emit() bool           { return false }
-func (ToolCallChunk) Emit() bool                  { return false }
-func (ToolCall) Emit() bool                       { return true }
-func (ToolCallResolving) Emit() bool              { return false }
-func (ToolCallStarted) Emit() bool                { return false }
-func (ToolCallResult) Emit() bool                 { return true }
-func (ToolsSnapshot) Emit() bool                  { return false }
-func (SendItem) Emit() bool                       { return false }
+func (UserText) Emit() bool             { return true }
+func (AssistantText) Emit() bool        { return true }
+func (ReasoningItem) Emit() bool        { return true }
+func (PreviousItemMetadata) Emit() bool { return false }
+func (AssistantInstruction) Emit() bool { return false }
+func (ToolCallChunk) Emit() bool        { return false }
+func (ToolCall) Emit() bool             { return true }
+func (ToolCallResolving) Emit() bool    { return false }
+func (ToolCallStarted) Emit() bool      { return false }
+func (ToolCallResult) Emit() bool       { return true }
+func (ToolsSnapshot) Emit() bool        { return false }
+func (SendItem) Emit() bool             { return false }

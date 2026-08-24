@@ -71,7 +71,7 @@ func TestNewStreamerForModelUsesAnthropicForClaudeModels(t *testing.T) {
 }
 
 func TestNewStreamerForModelUsesFireworksForFireworksModels(t *testing.T) {
-	const model = fireworkswrap.Kimi25Model
+	const model = fireworkswrap.Kimi3Model
 
 	streamer, gotModel := newStreamerForModel(model)
 
@@ -133,7 +133,7 @@ func TestSwitchModelIfIdleRequiresProviderKey(t *testing.T) {
 }
 
 func TestHasProviderAPIKeyAcceptsEitherFireworksEnv(t *testing.T) {
-	model := fireworkswrap.Kimi25Model
+	model := fireworkswrap.Kimi3Model
 	t.Setenv("FIREWORKS_API_KEY", "")
 	t.Setenv("FIREWORKS_AI_API_KEY", "legacy-key")
 
