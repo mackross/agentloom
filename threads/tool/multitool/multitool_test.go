@@ -117,6 +117,40 @@ func TestJSONSubtoolValidatesAndBuildsThreadToolCall(t *testing.T) {
 	}
 }
 
+func TestJSONSubtoolRejectsSchemaInvalidInputBeforeHandler(t *testing.T) {
+	type args struct {
+		Value string `json:"value"`
+	}
+	called := false
+	mt := New(Setup{}, Config{Subtools: []Subtool{
+		JSONHandler[args](SubtoolSpec{Command: "echo-json"}, "inner_echo", tool.HandlerFunc(func(context.Context, threads.Thread, tool.Call, tool.ReturnItem) (tool.Handling, error) {
+			called = true
+			return tool.Handling{}, nil
+		})),
+	}})
+
+	dispatch, err := mt.ResolveTool(context.Background(), nil, threads.ToolCall{
+		CallID: "c1",
+		Name:   mt.Setup().Name,
+		Payload: `echo-json
+
+{"other":"value"}`,
+	}, nil)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if called {
+		t.Fatal("handler ran for schema-invalid JSON input")
+	}
+	result := dispatch.Items[0].(threads.ToolCallResult)
+	if result.SafeRollback == nil || !strings.Contains(result.Output, "tool schema") {
+		t.Fatalf("result = %#v, want rollbackable schema error", result)
+	}
+	if !strings.Contains(result.SafeRollback.SteeringHint, `command="echo-json"`) {
+		t.Fatalf("command-specific hint was not preserved:\n%s", result.SafeRollback.SteeringHint)
+	}
+}
+
 func TestJSONSubtoolReturnsUsefulParseError(t *testing.T) {
 	type args struct {
 		Value string `json:"value" jsonschema:"value to echo"`
@@ -142,6 +176,9 @@ func TestJSONSubtoolReturnsUsefulParseError(t *testing.T) {
 	result := dispatch.Items[0].(threads.ToolCallResult)
 	if result.SafeRollback == nil {
 		t.Fatalf("expected rollbackable JSON parse error: %#v", result)
+	}
+	if result.SafeRollback.RetryAttempt != 1 || result.SafeRollback.MaxRetries != tool.DefaultJSONValidationMaxRetries {
+		t.Fatalf("unexpected rollback metadata: %#v", result.SafeRollback)
 	}
 	for _, want := range []string{
 		`<tool_call_hint tool="tool" command="echo-json">`,

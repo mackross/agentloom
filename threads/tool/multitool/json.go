@@ -14,10 +14,11 @@ func jsonSubtool[T any](spec SubtoolSpec, toolName string, fn func(context.Conte
 	if fn == nil {
 		panic("multitool: nil JSON subtool handler")
 	}
+	validation := tool.NewJSONValidation(tool.PayloadFor[T]().(tool.PayloadJSONSchema), tool.DefaultJSONValidationMaxRetries)
 	return Func(spec, func(ctx context.Context, thread threads.Thread, call ToolCall, ret tool.ReturnItem) (tool.Handling, error) {
-		inner, args, ok := parseJSONInput[T](call, spec, toolName, ret)
+		inner, args, handling, ok := parseJSONInput[T](thread, &validation, call, spec, toolName, ret)
 		if !ok {
-			return tool.Handling{}, nil
+			return handling, nil
 		}
 		return fn(ctx, thread, inner, args, ret)
 	})
@@ -46,7 +47,7 @@ func JSONHandler[T any](spec SubtoolSpec, toolName string, h tool.Handler) Subto
 	})
 }
 
-func parseJSONInput[T any](call ToolCall, spec SubtoolSpec, toolName string, ret tool.ReturnItem) (threads.ToolCall, T, bool) {
+func parseJSONInput[T any](thread threads.Thread, validation *tool.JSONValidation, call ToolCall, spec SubtoolSpec, toolName string, ret tool.ReturnItem) (threads.ToolCall, T, tool.Handling, bool) {
 	var zero T
 	if toolName == "" {
 		if call.Command != nil {
@@ -61,27 +62,25 @@ func parseJSONInput[T any](call ToolCall, spec SubtoolSpec, toolName string, ret
 	if raw == "" {
 		raw = "{}"
 	}
-	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		_ = ret(jsonInputErrorResult[T](call, spec, err))
-		return threads.ToolCall{}, zero, false
+	validationCall := tool.Call(call.toThreadToolCall(call.Name, raw))
+	result, continueMode := validation.ValidateInto(thread, validationCall, &args, func(err error) string {
+		detail := strings.TrimPrefix(err.Error(), "invalid JSON arguments: ")
+		output := fmt.Sprintf("invalid JSON input for command %q: %s", commandName(call), detail)
+		return jsonInputErrorHint[T](call, spec, output)
+	})
+	if result != nil {
+		detail := strings.TrimPrefix(result.Output, "invalid JSON arguments: ")
+		result.Output = fmt.Sprintf("invalid JSON input for command %q: %s", commandName(call), detail)
+		result.Data = nil
+		_ = ret(*result)
+		return threads.ToolCall{}, zero, tool.Handling{Continue: continueMode}, false
 	}
 	canonical, err := json.Marshal(args)
 	if err != nil {
-		_ = ret(jsonInputErrorResult[T](call, spec, err))
-		return threads.ToolCall{}, zero, false
+		_ = ret(tool.ResultError(validationCall, fmt.Errorf("encode JSON input for command %q: %w", commandName(call), err)))
+		return threads.ToolCall{}, zero, tool.Handling{Continue: threads.ToolContinueManual}, false
 	}
-	return call.toThreadToolCall(toolName, string(canonical)), args, true
-}
-
-func jsonInputErrorResult[T any](call ToolCall, spec SubtoolSpec, err error) threads.ToolCallResult {
-	output := fmt.Sprintf("invalid JSON input for command %q: %v", commandName(call), err)
-	return threads.ToolCallResult{
-		CallID: call.CallID,
-		Output: output,
-		SafeRollback: &threads.ToolCallSafeRollback{
-			SteeringHint: jsonInputErrorHint[T](call, spec, output),
-		},
-	}
+	return call.toThreadToolCall(toolName, string(canonical)), args, tool.Handling{}, true
 }
 
 func jsonInputErrorHint[T any](call ToolCall, spec SubtoolSpec, output string) string {

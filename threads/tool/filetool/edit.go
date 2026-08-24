@@ -204,7 +204,7 @@ func applyExactEdits(raw string, edits []editReplacement, path string) (string, 
 	for i, e := range edits {
 		oldText, newText := normalizeLineEndings(e.OldText), normalizeLineEndings(e.NewText)
 		if oldText == "" {
-			return "", ending, fmt.Errorf("edits[%d].oldText must not be empty", i)
+			return "", ending, fmt.Errorf("edits[%d].oldText must not be empty; use the write tool to create or overwrite a file", i)
 		}
 		if oldText == newText {
 			return "", ending, fmt.Errorf("no changes made to %s", path)

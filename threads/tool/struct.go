@@ -12,6 +12,7 @@ import (
 // It implements threads.ToolProvider and threads.ToolResolver, so it can be
 // installed directly with Thread.SetToolProvider and Thread.SetToolResolver.
 type StructTool[T any] struct {
+	JSONValidation
 	spec     Spec
 	delegate StructToolDelegate[T]
 }
@@ -25,11 +26,13 @@ type StructToolDelegate[T any] interface {
 //
 // If delegate is nil, successful calls return a simple "ok" tool result.
 func NewStructTool[T any](name, desc string, delegate StructToolDelegate[T]) *StructTool[T] {
+	payload := PayloadFor[T]().(PayloadJSONSchema)
 	return &StructTool[T]{
+		JSONValidation: NewJSONValidation(payload, DefaultJSONValidationMaxRetries),
 		spec: Spec{
 			Name:        name,
 			Description: desc,
-			Payload:     PayloadFor[T](),
+			Payload:     payload,
 		},
 		delegate: delegate,
 	}
@@ -53,13 +56,11 @@ func (s *StructTool[T]) ResolveTool(ctx context.Context, thread threads.Thread, 
 		return threads.ToolDispatch{}, fmt.Errorf("tool %q not found", call.Name)
 	}
 	var args T
-	if err := call.UnmarshalJSON(&args); err != nil {
+	if result, continueMode := s.ValidateInto(thread, Call(call), &args, nil); result != nil {
 		return threads.ToolDispatch{
 			Started:  true,
-			Continue: threads.ToolContinueManual,
-			Items: []threads.Item{
-				ResultError(call, fmt.Errorf("tool %q payload: %w", call.Name, err)),
-			},
+			Continue: continueMode,
+			Items:    []threads.Item{*result},
 		}, nil
 	}
 	item := Item(ResultText(call, "ok"))
