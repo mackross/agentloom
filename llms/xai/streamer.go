@@ -31,7 +31,7 @@ const (
 	// BaseURL is the default xAI OpenAI-compatible API root.
 	BaseURL = "https://api.x.ai/v1"
 	// DefaultModel is the default Grok frontier model.
-	DefaultModel = "grok-4.5"
+	DefaultModel = "grok-4.6"
 )
 
 const reasoningProvider = "xai.responses"

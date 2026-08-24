@@ -56,7 +56,7 @@ func TestResponsesStreamerSendsStoreTrueAndSSE(t *testing.T) {
 		option.WithHTTPClient(server.Client()),
 		option.WithMaxRetries(0),
 	)
-	streamer := NewResponsesStreamerWithClient(client, "grok-4.5")
+	streamer := NewResponsesStreamerWithClient(client, "grok-4.6")
 	var got string
 	if err := streamer.StreamReq(threads.Req{
 		Items: []threads.Item{threads.UserText("hello")},
@@ -78,7 +78,7 @@ func TestResponsesStreamerSendsStoreTrueAndSSE(t *testing.T) {
 		if err := json.Unmarshal(body, &raw); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
-		if raw["model"] != "grok-4.5" {
+		if raw["model"] != "grok-4.6" {
 			t.Fatalf("model = %#v", raw["model"])
 		}
 		if raw["store"] != true {
@@ -113,7 +113,7 @@ func TestResponsesStreamerStreamToolCallsOnlyWhenPreviousResponseIDDisabled(t *t
 		option.WithHTTPClient(server.Client()),
 		option.WithMaxRetries(0),
 	)
-	streamer := NewResponsesStreamerWithClient(client, "grok-4.5")
+	streamer := NewResponsesStreamerWithClient(client, "grok-4.6")
 	streamer.DisablePreviousResponseID = true
 	if err := streamer.StreamReq(threads.Req{
 		Items: []threads.Item{threads.UserText("hello")},
