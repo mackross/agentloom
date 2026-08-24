@@ -21,19 +21,16 @@ import (
 	"github.com/mackross/agentloom/threads"
 )
 
-const GPTOSS20BModel = "accounts/fireworks/models/gpt-oss-20b"
-
 func TestLiveChatCompletionsStrictToolSchemaPromptManipulation(t *testing.T) {
-	if os.Getenv("RUN_LIVE_API_TESTS") != "1" {
-		t.Skip("set RUN_LIVE_API_TESTS=1 to run live API tests")
-	}
 	if fireworksAPIKey() == "" {
-		t.Skip("FIREWORKS_API_KEY is not set")
+		t.Fatal("FIREWORKS_API_KEY is not set")
+	}
+	if os.Getenv("RUN_FIREWORKS_STRICT_SCHEMA_PROBES") != "1" {
+		t.Skip("set RUN_FIREWORKS_STRICT_SCHEMA_PROBES=1 to run exploratory Fireworks strict-schema probes")
 	}
 
 	models := []string{
-		Kimi25Model,
-		GPTOSS20BModel,
+		DeepSeekV4FlashModel,
 	}
 	cases := []strictProbeCase{
 		{
@@ -150,11 +147,11 @@ func TestLiveChatCompletionsStrictToolSchemaPromptManipulation(t *testing.T) {
 }
 
 func TestLiveChatCompletionsStrictToolSchemaFailureHunt(t *testing.T) {
-	if os.Getenv("RUN_LIVE_API_TESTS") != "1" {
-		t.Skip("set RUN_LIVE_API_TESTS=1 to run live API tests")
-	}
 	if fireworksAPIKey() == "" {
-		t.Skip("FIREWORKS_API_KEY is not set")
+		t.Fatal("FIREWORKS_API_KEY is not set")
+	}
+	if os.Getenv("RUN_FIREWORKS_STRICT_SCHEMA_PROBES") != "1" {
+		t.Skip("set RUN_FIREWORKS_STRICT_SCHEMA_PROBES=1 to run exploratory Fireworks strict-schema probes")
 	}
 
 	huntCases := []strictProbeCase{
@@ -242,11 +239,15 @@ func TestLiveChatCompletionsStrictToolSchemaFailureHunt(t *testing.T) {
 	for _, tc := range huntCases {
 		tc := tc
 		t.Run(tc.Name, func(t *testing.T) {
+			if tc.Name == "one_of_branch_merge" {
+				t.Skip("Fireworks ticket filed for strict tool calls with root-level oneOf schemas; request ID chatcmpl-80d00b8419bc4642aa822cb3b5101873")
+			}
+
 			for _, profile := range profiles {
 				profile := profile
 				t.Run(profile.Name, func(t *testing.T) {
 					for attempt := 1; attempt <= attempts; attempt++ {
-						got, err := runStrictProbeWithRetryOptions(GPTOSS20BModel, tc.Req(), boolPtr(true), profile)
+						got, err := runStrictProbeWithRetryOptions(DeepSeekV4FlashModel, tc.Req(), boolPtr(true), profile)
 						if err != nil {
 							t.Fatalf("attempt %d %s: %v", attempt, profile.Name, err)
 						}
@@ -343,7 +344,7 @@ func runStrictProbeWithRetryOptions(model string, req threads.Req, strict *bool,
 }
 
 func streamReqWithToolStrict(model string, req threads.Req, strict *bool, options strictProbeRequestOptions, emit func(threads.Item) error) error {
-	messages, err := requestMessages(req)
+	messages, err := conversationMessages(req)
 	if err != nil {
 		return err
 	}
@@ -361,7 +362,7 @@ func streamReqWithToolStrict(model string, req threads.Req, strict *bool, option
 		params.Tools = tools
 	}
 
-	toolChoice, err := requestToolChoice(req.Tools)
+	toolChoice, err := fireworksToolSelection(req.Tools)
 	if err != nil {
 		return err
 	}
@@ -380,7 +381,9 @@ func streamReqWithToolStrict(model string, req threads.Req, strict *bool, option
 
 	opts := []option.RequestOption{option.WithJSONSet("context_length_exceeded_behavior", DefaultContextLengthExceededBehavior)}
 	client := newClientFromEnv()
-	stream := client.Chat.Completions.NewStreaming(context.Background(), params, opts...)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	stream := client.Chat.Completions.NewStreaming(ctx, params, opts...)
 	defer stream.Close()
 
 	toolsInFlight := map[toolKey]*toolState{}
@@ -388,8 +391,8 @@ func streamReqWithToolStrict(model string, req threads.Req, strict *bool, option
 		chunk := stream.Current()
 		for _, choice := range chunk.Choices {
 			for _, deltaTool := range choice.Delta.ToolCalls {
-				key := toolKey{choiceIndex: choice.Index, toolIndex: clampToolIndex(deltaTool.Index)}
-				state := ensureToolState(toolsInFlight, key)
+				key := toolKey{choiceIndex: choice.Index, toolIndex: nonNegativeToolIndex(deltaTool.Index)}
+				state := ensureToolCallState(toolsInFlight, key)
 				if deltaTool.ID != "" {
 					state.callID = deltaTool.ID
 				}
@@ -408,7 +411,7 @@ func streamReqWithToolStrict(model string, req threads.Req, strict *bool, option
 			}
 
 			if choice.FinishReason == "tool_calls" {
-				if err := emitFinalToolCalls(toolsInFlight, choice.Index, emit); err != nil {
+				if err := finishChoiceToolCalls(toolsInFlight, choice.Index, emit); err != nil {
 					return err
 				}
 			}
@@ -418,11 +421,11 @@ func streamReqWithToolStrict(model string, req threads.Req, strict *bool, option
 	if err := stream.Err(); err != nil {
 		return err
 	}
-	return emitRemainingToolCalls(toolsInFlight, emit)
+	return finishRemainingToolCalls(toolsInFlight, emit)
 }
 
 func requestToolsWithStrict(snap threads.ToolOfferSnapshot, strict *bool) ([]openaiapi.ChatCompletionToolUnionParam, error) {
-	specs, err := filteredTools(snap)
+	specs, err := requestToolSpecs(snap)
 	if err != nil {
 		return nil, err
 	}
@@ -436,7 +439,7 @@ func requestToolsWithStrict(snap threads.ToolOfferSnapshot, strict *bool) ([]ope
 		if !ok {
 			return nil, fmt.Errorf("fireworks tool %q payload not supported: %T", spec.Name, spec.Payload)
 		}
-		parameters, err := requestFunctionParameters(spec.Name, payload)
+		parameters, err := fireworksToolInputSchema(spec.Name, payload)
 		if err != nil {
 			return nil, err
 		}

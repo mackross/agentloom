@@ -74,7 +74,7 @@ func Fail(message string) Event {
 	return Event{Err: message}
 }
 
-func RunContractTests(t *testing.T, h Harness) {
+func Run(t *testing.T, h Harness) {
 	t.Helper()
 
 	t.Run("forwards_request_items_and_instruction", func(t *testing.T) {

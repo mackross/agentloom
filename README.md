@@ -160,9 +160,10 @@ and includes the subtool description, usage, and JSON schema in the steering hin
 
 ## Provider capabilities
 
-Streamers report capabilities such as assistant-prefix continuation and tool-result send
-policy. The request builder uses these capabilities to choose safe request projections,
-including rollbackable tool failure repair.
+Streamers report whether they support assistant-prefix continuation. The request builder
+uses that capability for rollbackable tool failure repair. Independently of provider, the
+thread holds a follow-up request until every tool call in the preceding response has a
+terminal result.
 
 ## Durability and recovery
 
@@ -196,13 +197,13 @@ Most tests are offline. Live tests are behind the `live` build tag and provider 
 variables.
 
 ```sh
-RUN_LIVE_API_TESTS=1 OPENAI_API_KEY=... go test -tags live ./llms/openai ./threads
+OPENAI_API_KEY=... go test -tags live ./llms/openai ./threads
 ```
 
 For the OpenAI multitool repair test:
 
 ```sh
-RUN_LIVE_API_TESTS=1 OPENAI_API_KEY=... OPENAI_MULTITOOL_LIVE_MODEL=gpt-5.5 \
+OPENAI_API_KEY=... OPENAI_MULTITOOL_LIVE_MODEL=gpt-5.5 \
   go test -tags live ./threads -run TestLiveMultitoolLarkJSONRepairWithOpenAIResponses -count=1 -v
 ```
 

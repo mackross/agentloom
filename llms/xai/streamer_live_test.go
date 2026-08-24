@@ -10,16 +10,13 @@ import (
 	gschema "github.com/google/jsonschema-go/jsonschema"
 
 	"github.com/mackross/agentloom/threads"
-	"github.com/mackross/agentloom/threads/streamertest"
+	"github.com/mackross/agentloom/threads/streamerlivetest"
 )
 
 func requireLiveXAI(t *testing.T) string {
 	t.Helper()
-	if os.Getenv("RUN_LIVE_API_TESTS") != "1" {
-		t.Skip("set RUN_LIVE_API_TESTS=1 to run live API tests")
-	}
 	if strings.TrimSpace(os.Getenv("XAI_API_KEY")) == "" {
-		t.Skip("XAI_API_KEY is not set")
+		t.Fatal("XAI_API_KEY is not set")
 	}
 	model := strings.TrimSpace(os.Getenv("XAI_MODEL"))
 	if model == "" {
@@ -28,32 +25,26 @@ func requireLiveXAI(t *testing.T) string {
 	return model
 }
 
-// TestLiveResponsesStreamerCapabilities runs the shared streamertest suite.
+// TestLiveCapabilities runs the shared streamerlivetest suite.
 // ParallelToolCalls is on (no Tools.Allowed). AllowedTools stays off: xAI does
 // not accept OpenAI Responses tool_choice.allowed_tools.
-func TestLiveResponsesStreamerCapabilities(t *testing.T) {
+func TestLiveCapabilities(t *testing.T) {
 	model := requireLiveXAI(t)
-	streamertest.RunLiveCapabilityTests(t, xaiSharedLiveHarness{
+	streamerlivetest.Run(t, xaiSharedLiveHarness{
 		streamer: NewResponsesStreamer(model),
 	})
 }
 
 type xaiSharedLiveHarness struct {
-	streamer *ResponsesStreamer
-}
-
-func (h xaiSharedLiveHarness) Capabilities() streamertest.Capabilities {
 	// Public xAI docs say streaming function calls may arrive as a single frame;
-	// streamertest SKIPs (does not fail) if multi-chunk tool args never appear.
+	// streamerlivetest skips (does not fail) if multi-chunk tool args never appear.
 	// Default streamer omits stream_tool_calls when previous_response_id is on
 	// (xAI stores broken tool args otherwise), so multi-chunk tool args are
-	// usually absent here; keep the capability flag so a future fix is probed.
-	return streamertest.Capabilities{
-		ToolCallChunks:      true,
-		AssistantTextChunks: true,
-		ParallelToolCalls:   true,
-		AllowedTools:        false,
-	}
+	// usually absent here; keep the opt-in so a future fix is probed.
+	streamerlivetest.SupportsToolCallChunking
+	streamerlivetest.SupportsAssistantTextChunking
+	streamerlivetest.SupportsParallelToolCalls
+	streamer *ResponsesStreamer
 }
 
 func (h xaiSharedLiveHarness) Stream(t testing.TB, req threads.Req, emit func(threads.Item) error) error {
@@ -145,5 +136,3 @@ func assistantText(items []threads.Item) string {
 	}
 	return b.String()
 }
-
-

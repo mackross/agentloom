@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	gschema "github.com/google/jsonschema-go/jsonschema"
+	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/mackross/agentloom/threads"
 )
@@ -14,6 +15,7 @@ import (
 func TestLiveResponsesWithPreviousResponseID(t *testing.T) {
 	model := requireLiveXAI(t)
 	streamer := NewResponsesStreamer(model) // default: store=true, previous_response_id enabled
+	streamer.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffortMedium, Summary: shared.ReasoningSummaryAuto}
 
 	tools := threads.ToolOfferSnapshot{
 		Offered: []threads.ToolSpec{{
@@ -31,6 +33,7 @@ func TestLiveResponsesWithPreviousResponseID(t *testing.T) {
 
 	const instruction = "You are testing tool continuation. If fewer than three number_lookup tool results are present, call number_lookup for the next missing step and output no text. If three results are present, answer with only: done 1 2 3"
 	items := []threads.Item{threads.UserText("Use number_lookup exactly three times, one call per response, for steps one, two, and three in order. Do not answer until all three tool results are provided.")}
+	sawReasoning := false
 
 	// Three tool turns: each must produce a tool call; turns 2+ must use previous_response_id.
 	for turn, output := range []string{"1", "2", "3"} {
@@ -53,6 +56,9 @@ func TestLiveResponsesWithPreviousResponseID(t *testing.T) {
 		items = append(items, got...)
 		var call threads.ToolCall
 		for _, item := range got {
+			if _, ok := item.(threads.ReasoningItem); ok {
+				sawReasoning = true
+			}
 			if tc, ok := item.(threads.ToolCall); ok {
 				call = tc
 				break
@@ -81,5 +87,13 @@ func TestLiveResponsesWithPreviousResponseID(t *testing.T) {
 	}
 	if text := assistantText(got); !strings.Contains(text, "done") {
 		t.Fatalf("final text = %q, want to contain done", text)
+	}
+	if !sawReasoning {
+		t.Fatal("tool loop emitted no reasoning item")
+	}
+	items = append(items, got...)
+	items = append(items, threads.UserText("Reply only: acknowledged"))
+	if err := streamer.StreamReq(threads.Req{Items: items}, func(threads.Item) error { return nil }); err != nil {
+		t.Fatalf("new user turn after reasoning replay failed: %v", err)
 	}
 }

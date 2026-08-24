@@ -12,36 +12,27 @@ import (
 )
 
 func TestLiveThreadsChatExampleWithOpenAIResponses(t *testing.T) {
-	if os.Getenv("RUN_LIVE_API_TESTS") != "1" {
-		t.Skip("set RUN_LIVE_API_TESTS=1 to run live API tests")
-	}
 	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) == "" {
-		t.Skip("OPENAI_API_KEY is not set")
+		t.Fatal("OPENAI_API_KEY is not set")
 	}
 
 	runLiveChatExampleTest(t, "gpt-5.2", "live-example-openai-ok-42")
 }
 
 func TestLiveThreadsChatExampleWithAnthropicMessages(t *testing.T) {
-	if os.Getenv("RUN_LIVE_API_TESTS") != "1" {
-		t.Skip("set RUN_LIVE_API_TESTS=1 to run live API tests")
-	}
 	if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" {
-		t.Skip("ANTHROPIC_API_KEY is not set")
+		t.Fatal("ANTHROPIC_API_KEY is not set")
 	}
 
 	runLiveChatExampleTest(t, "claude-sonnet-4-6", "live-example-anthropic-ok-42")
 }
 
-func TestLiveThreadsChatExampleWithFireworksKimi25(t *testing.T) {
-	if os.Getenv("RUN_LIVE_API_TESTS") != "1" {
-		t.Skip("set RUN_LIVE_API_TESTS=1 to run live API tests")
-	}
-	if !hasProviderAPIKey(fireworkswrap.Kimi25Model) {
-		t.Skip("FIREWORKS_API_KEY is not set")
+func TestLiveThreadsChatExampleWithFireworksKimi3(t *testing.T) {
+	if !hasProviderAPIKey(fireworkswrap.Kimi3Model) {
+		t.Fatal("FIREWORKS_API_KEY is not set")
 	}
 
-	runLiveChatExampleTest(t, fireworkswrap.Kimi25Model, "live-example-fireworks-ok-42")
+	runLiveChatExampleTest(t, fireworkswrap.Kimi3Model, "live-example-fireworks-ok-42")
 }
 
 func runLiveChatExampleTest(t testing.TB, model, token string) {

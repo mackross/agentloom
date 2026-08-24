@@ -19,11 +19,8 @@ import (
 )
 
 func TestLiveThreadExecutesCalculatorToolWithOpenAIResponses(t *testing.T) {
-	if os.Getenv("RUN_LIVE_API_TESTS") != "1" {
-		t.Skip("set RUN_LIVE_API_TESTS=1 to run live API tests")
-	}
 	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) == "" {
-		t.Skip("OPENAI_API_KEY is not set")
+		t.Fatal("OPENAI_API_KEY is not set")
 	}
 	model := strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
 	if model == "" {
@@ -95,11 +92,8 @@ func TestLiveThreadExecutesCalculatorToolWithOpenAIResponses(t *testing.T) {
 }
 
 func TestLiveMultitoolLarkJSONRepairWithOpenAIResponses(t *testing.T) {
-	if os.Getenv("RUN_LIVE_API_TESTS") != "1" {
-		t.Skip("set RUN_LIVE_API_TESTS=1 to run live API tests")
-	}
 	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) == "" {
-		t.Skip("OPENAI_API_KEY is not set")
+		t.Fatal("OPENAI_API_KEY is not set")
 	}
 	model := strings.TrimSpace(os.Getenv("OPENAI_MULTITOOL_LIVE_MODEL"))
 	if model == "" {
@@ -113,9 +107,9 @@ func TestLiveMultitoolLarkJSONRepairWithOpenAIResponses(t *testing.T) {
 
 	successes := 0
 	mt := multitool.New(multitool.Setup{
-		Name: "multi",
+		Name:        "multi",
 		Description: "Call one command. Available command: create-ticket. Use the command name on the first line and JSON input after a blank line.",
-		Mode: multitool.ModeLark,
+		Mode:        multitool.ModeLark,
 	}, multitool.Config{Subtools: []multitool.Subtool{
 		multitool.JSONHandler[ticketArgs](multitool.SubtoolSpec{
 			Command:     "create-ticket",

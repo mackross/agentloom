@@ -15,14 +15,24 @@ import (
 
 	cachecerebras "github.com/mackross/agentloom/llms/cache/cerebras"
 	"github.com/mackross/agentloom/threads"
-	"github.com/mackross/agentloom/threads/streamertest"
+	"github.com/mackross/agentloom/threads/streamerlivetest"
 )
 
-func TestLiveChatCompletionsStreamerCapabilities(t *testing.T) {
+func TestLiveCapabilities(t *testing.T) {
 	requireLiveCerebras(t)
 
-	streamer := NewChatCompletionsStreamer(DefaultModel)
-	streamertest.RunLiveCapabilityTests(t, cerebrasLiveHarness{streamer: streamer})
+	model := strings.TrimSpace(os.Getenv("CEREBRAS_MODEL"))
+	if model == "" {
+		model = DefaultModel
+	}
+	reasoningStreamer := NewChatCompletionsStreamer(model)
+	reasoningStreamer.ReasoningFormat = "parsed"
+	reasoningStreamer.ReasoningEffort = "high"
+	h := cerebrasLiveHarness{
+		SupportsReasoningToolLoop: streamerlivetest.SupportsReasoningToolLoop{Streamer: reasoningStreamer},
+		streamer:                  NewChatCompletionsStreamer(DefaultModel),
+	}
+	streamerlivetest.Run(t, h)
 }
 
 func TestLiveChatCompletionsCerebrasUniqueOptions(t *testing.T) {
@@ -30,9 +40,9 @@ func TestLiveChatCompletionsCerebrasUniqueOptions(t *testing.T) {
 
 	t.Run("reasoning_hidden_raw_and_effort", func(t *testing.T) {
 		cases := []struct {
-			name   string
-			format string
-			effort string
+			name     string
+			format   string
+			effort   string
 			allow400 bool
 		}{
 			{name: "hidden_low", format: "hidden", effort: "low"},
@@ -71,15 +81,6 @@ func TestLiveChatCompletionsCerebrasUniqueOptions(t *testing.T) {
 		if calls != 1 {
 			t.Fatalf("prediction callback calls = %d, want 1", calls)
 		}
-	})
-
-	t.Run("clear_thinking_glm", func(t *testing.T) {
-		clearThinking := false
-		streamer := NewChatCompletionsStreamer(GLM47Model)
-		streamer.ReasoningFormat = "hidden"
-		streamer.ReasoningEffort = "none"
-		streamer.ClearThinking = &clearThinking
-		liveTextRequest(t, streamer, "Reply with only: ok")
 	})
 
 	t.Run("service_tier_queue_threshold_and_prompt_cache_key", func(t *testing.T) {
@@ -202,7 +203,7 @@ func TestLiveChatCompletionsToolCallStreaming(t *testing.T) {
 func TestLiveChatCompletionsToolSchemaAdditionalPropertiesOnlyObjectField(t *testing.T) {
 	requireLiveCerebras(t)
 
-	streamer := NewChatCompletionsStreamer(GLM47Model)
+	streamer := NewChatCompletionsStreamer(Gemma4_31BModel)
 	err := streamer.StreamReq(threads.Req{
 		Instruction: "Reply with only: ok. Do not call tools.",
 		Items: []threads.Item{
@@ -231,11 +232,8 @@ func TestLiveChatCompletionsToolSchemaAdditionalPropertiesOnlyObjectField(t *tes
 
 func requireLiveCerebras(t testing.TB) {
 	t.Helper()
-	if os.Getenv("RUN_LIVE_API_TESTS") != "1" {
-		t.Skip("set RUN_LIVE_API_TESTS=1 to run live API tests")
-	}
 	if cerebrasAPIKey() == "" {
-		t.Skip("CEREBRAS_API_KEY is not set")
+		t.Fatal("CEREBRAS_API_KEY is not set")
 	}
 }
 
@@ -269,8 +267,8 @@ func assistantText(items []threads.Item) string {
 
 func livePromptCacheCachedTokens(t testing.TB, key, reasoningFormat, prefix string) int64 {
 	t.Helper()
-	streamer := NewChatCompletionsStreamer(GLM47Model)
-	streamer.ReasoningEffort = "none"
+	streamer := NewChatCompletionsStreamer(DefaultModel)
+	streamer.ReasoningEffort = "low"
 	streamer.ReasoningFormat = reasoningFormat
 
 	req := threads.Req{
@@ -280,7 +278,7 @@ func livePromptCacheCachedTokens(t testing.TB, key, reasoningFormat, prefix stri
 			cachecerebras.PromptCacheKey(key),
 		},
 	}
-	messages, err := requestMessages(req)
+	messages, err := conversationMessages(req)
 	if err != nil {
 		t.Fatalf("build prompt-cache messages: %v", err)
 	}
@@ -294,7 +292,7 @@ func livePromptCacheCachedTokens(t testing.TB, key, reasoningFormat, prefix stri
 		},
 		PromptCacheKey: openaiapi.String(key),
 	}
-	opts, err := streamer.requestOptions()
+	opts, err := streamer.cerebrasRequestOptions()
 	if err != nil {
 		t.Fatalf("build prompt-cache request options: %v", err)
 	}
@@ -329,13 +327,9 @@ func livePromptCacheCachedTokens(t testing.TB, key, reasoningFormat, prefix stri
 }
 
 type cerebrasLiveHarness struct {
+	streamerlivetest.SupportsAssistantTextChunking
+	streamerlivetest.SupportsReasoningToolLoop
 	streamer *ChatCompletionsStreamer
-}
-
-func (cerebrasLiveHarness) Capabilities() streamertest.Capabilities {
-	return streamertest.Capabilities{
-		AssistantTextChunks: true,
-	}
 }
 
 func (h cerebrasLiveHarness) Stream(t testing.TB, req threads.Req, emit func(threads.Item) error) error {

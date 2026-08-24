@@ -23,11 +23,8 @@ type liveSignatureOutput struct {
 }
 
 func TestLiveChatJSONOpenAI(t *testing.T) {
-	if os.Getenv("RUN_LIVE_API_TESTS") != "1" {
-		t.Skip("set RUN_LIVE_API_TESTS=1 to run live API tests")
-	}
 	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) == "" {
-		t.Skip("OPENAI_API_KEY is not set")
+		t.Fatal("OPENAI_API_KEY is not set")
 	}
 
 	model := strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
