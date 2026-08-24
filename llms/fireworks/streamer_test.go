@@ -17,14 +17,38 @@ import (
 )
 
 func TestChatCompletionsStreamerContract(t *testing.T) {
-	streamertest.RunContractTests(t, fireworksContractHarness{})
+	streamertest.Run(t, fireworksContractHarness{})
 }
 
 func TestChatCompletionsStreamerReportsAssistantPrefixCapability(t *testing.T) {
 	streamer := NewChatCompletionsStreamerWithClient(openaiapi.Client{}, "")
 
-	if got := streamer.Capabilities(); !got.AssistantPrefix || got.ToolResultSendPolicy != threads.ToolResultSendPermissive {
+	if got := streamer.Capabilities(); !got.AssistantPrefix {
 		t.Fatalf("expected assistant-prefix capability, got %#v", got)
+	}
+}
+
+func TestRequestMessagesGroupsAdjacentParallelToolCalls(t *testing.T) {
+	messages, err := conversationMessages(threads.Req{Items: []threads.Item{
+		threads.ToolCall{CallID: "c1", Name: "alpha", Payload: `{"value":1}`},
+		threads.ToolCall{CallID: "c2", Name: "beta", Payload: `{"value":2}`},
+	}})
+	if err != nil {
+		t.Fatalf("requestMessages: %v", err)
+	}
+	buf, err := json.Marshal(messages)
+	if err != nil {
+		t.Fatalf("marshal messages: %v", err)
+	}
+	var raw []map[string]any
+	if err := json.Unmarshal(buf, &raw); err != nil {
+		t.Fatalf("decode messages: %v", err)
+	}
+	if len(raw) != 1 {
+		t.Fatalf("assistant messages = %d, want one grouped parallel message: %s", len(raw), buf)
+	}
+	if calls := objectSlice(t, raw[0]["tool_calls"]); len(calls) != 2 {
+		t.Fatalf("grouped tool calls = %d, want 2: %s", len(calls), buf)
 	}
 }
 
@@ -170,6 +194,8 @@ func encodeChatCompletionStreamEvents(t testing.TB, events []streamertest.Event)
 		}
 
 		switch v := ev.Item.(type) {
+		case threads.ReasoningItem:
+			appendChunk(map[string]any{"id": "chatcmpl_test", "object": "chat.completion.chunk", "created": 0, "model": "test-model", "choices": []any{map[string]any{"index": 0, "finish_reason": nil, "delta": map[string]any{"reasoning_content": v.Text}}}})
 		case threads.AssistantText:
 			appendChunk(map[string]any{
 				"id":      "chatcmpl_test",

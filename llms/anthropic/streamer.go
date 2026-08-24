@@ -32,6 +32,7 @@ type MessagesStreamer struct {
 	UseAutoCache       bool
 	EagerToolStreaming bool
 	ServiceTier        anthropicapi.MessageNewParamsServiceTier
+	Thinking           anthropicapi.ThinkingConfigParamUnion
 	OnOutputTextDelta  func(string)
 	normalizers        threads.ToolNormalizers
 }
@@ -68,7 +69,7 @@ func NewMessagesStreamerWithClient(client anthropicapi.Client, model string) *Me
 }
 
 func (s *MessagesStreamer) Capabilities() threads.StreamerCapabilities {
-	return threads.StreamerCapabilities{AssistantPrefix: supportsAssistantPrefix(string(s.model)), ToolResultSendPolicy: threads.ToolResultSendRequiresComplete}
+	return threads.StreamerCapabilities{AssistantPrefix: supportsAssistantPrefix(string(s.model)), Reasoning: threads.ReasoningForCurrentTurn("anthropic.messages")}
 }
 
 func (*MessagesStreamer) SyntheticToolCallID() string {
@@ -109,7 +110,7 @@ func (s *MessagesStreamer) StreamReqContext(ctx context.Context, req threads.Req
 		return err
 	}
 
-	messages, err := requestMessages(req)
+	messages, err := conversationMessages(req)
 	if err != nil {
 		return err
 	}
@@ -119,6 +120,7 @@ func (s *MessagesStreamer) StreamReqContext(ctx context.Context, req threads.Req
 		MaxTokens:   s.MaxTokens,
 		Messages:    messages,
 		ServiceTier: s.ServiceTier,
+		Thinking:    s.Thinking,
 	}
 	if req.Instruction != "" {
 		params.System = []anthropicapi.TextBlockParam{{Text: req.Instruction}}
@@ -135,7 +137,7 @@ func (s *MessagesStreamer) StreamReqContext(ctx context.Context, req threads.Req
 		params.Tools = tools
 	}
 
-	choice := requestToolChoice(req.Tools, len(tools) > 0)
+	choice := anthropicToolSelection(req.Tools, len(tools) > 0)
 	if choice != nil {
 		params.ToolChoice = *choice
 	}
@@ -183,12 +185,30 @@ func (s *MessagesStreamer) StreamReqContext(ctx context.Context, req threads.Req
 				}
 			}
 		case anthropicapi.ContentBlockStopEvent:
+			if v.Index < 0 || int(v.Index) >= len(acc.Content) {
+				return fmt.Errorf("anthropic content block index out of range: %d", v.Index)
+			}
+			switch block := acc.Content[v.Index].AsAny().(type) {
+			case anthropicapi.ThinkingBlock:
+				if block.Thinking == "" || block.Signature == "" {
+					return fmt.Errorf("anthropic thinking block requires thinking and signature")
+				}
+				if err := emit(threads.ReasoningItem{Provider: "anthropic.messages", Visibility: threads.ReasoningVisibilitySummary, Summary: block.Thinking, Opaque: []byte(block.Signature)}); err != nil {
+					return err
+				}
+				continue
+			case anthropicapi.RedactedThinkingBlock:
+				if block.Data == "" {
+					return fmt.Errorf("anthropic redacted thinking block requires data")
+				}
+				if err := emit(threads.ReasoningItem{Provider: "anthropic.messages", Visibility: threads.ReasoningVisibilityHidden, Opaque: []byte(block.Data)}); err != nil {
+					return err
+				}
+				continue
+			}
 			meta, ok := toolCalls[v.Index]
 			if !ok {
 				continue
-			}
-			if v.Index < 0 || int(v.Index) >= len(acc.Content) {
-				return fmt.Errorf("anthropic content block index out of range: %d", v.Index)
 			}
 			block, ok := acc.Content[v.Index].AsAny().(anthropicapi.ToolUseBlock)
 			if !ok {
@@ -229,7 +249,7 @@ type observedMessage struct {
 	blocks []anthropicapi.ContentBlockParamUnion
 }
 
-func requestMessages(req threads.Req) ([]anthropicapi.MessageParam, error) {
+func conversationMessages(req threads.Req) ([]anthropicapi.MessageParam, error) {
 	var grouped []observedMessage
 	appendBlock := func(role messageRole, block anthropicapi.ContentBlockParamUnion) {
 		if len(grouped) > 0 && grouped[len(grouped)-1].role == role {
@@ -278,6 +298,21 @@ func requestMessages(req threads.Req) ([]anthropicapi.MessageParam, error) {
 			appendBlock(messageRoleUser, b)
 		case threads.AssistantText:
 			appendBlock(messageRoleAssistant, anthropicapi.NewTextBlock(string(v)))
+		case threads.ReasoningItem:
+			switch v.Visibility {
+			case threads.ReasoningVisibilitySummary:
+				if v.Summary == "" || len(v.Opaque) == 0 || v.Text != "" {
+					return nil, fmt.Errorf("anthropic thinking reasoning requires summary and signature")
+				}
+				appendBlock(messageRoleAssistant, anthropicapi.NewThinkingBlock(string(v.Opaque), v.Summary))
+			case threads.ReasoningVisibilityHidden:
+				if len(v.Opaque) == 0 || v.Summary != "" || v.Text != "" {
+					return nil, fmt.Errorf("anthropic redacted reasoning requires data only")
+				}
+				appendBlock(messageRoleAssistant, anthropicapi.NewRedactedThinkingBlock(string(v.Opaque)))
+			default:
+				return nil, fmt.Errorf("anthropic reasoning visibility %q is not supported", v.Visibility)
+			}
 		case threads.ToolCall:
 			input, err := decodeToolInput(v.Payload)
 			if err != nil {
@@ -337,7 +372,7 @@ func decodeToolInput(payload string) (any, error) {
 }
 
 func requestTools(snap threads.ToolOfferSnapshot, eagerInputStreaming bool) ([]anthropicapi.ToolUnionParam, error) {
-	specs, err := filteredTools(snap)
+	specs, err := requestToolSpecs(snap)
 	if err != nil {
 		return nil, err
 	}
@@ -352,7 +387,7 @@ func requestTools(snap threads.ToolOfferSnapshot, eagerInputStreaming bool) ([]a
 		}
 		switch p := spec.Payload.(type) {
 		case threads.ToolPayloadJSONSchema:
-			schema, err := requestToolInputSchema(spec.Name, p)
+			schema, err := anthropicToolInputSchema(spec.Name, p)
 			if err != nil {
 				return nil, err
 			}
@@ -374,7 +409,7 @@ func requestTools(snap threads.ToolOfferSnapshot, eagerInputStreaming bool) ([]a
 	return out, nil
 }
 
-func filteredTools(snap threads.ToolOfferSnapshot) ([]threads.ToolSpec, error) {
+func requestToolSpecs(snap threads.ToolOfferSnapshot) ([]threads.ToolSpec, error) {
 	if snap.Allowed == nil {
 		return append([]threads.ToolSpec(nil), snap.Offered...), nil
 	}
@@ -398,7 +433,7 @@ func filteredTools(snap threads.ToolOfferSnapshot) ([]threads.ToolSpec, error) {
 	return out, nil
 }
 
-func requestToolInputSchema(name string, schema threads.ToolPayloadJSONSchema) (anthropicapi.ToolInputSchemaParam, error) {
+func anthropicToolInputSchema(name string, schema threads.ToolPayloadJSONSchema) (anthropicapi.ToolInputSchemaParam, error) {
 	params := map[string]any{}
 	buf, err := json.Marshal(gschema.Schema(schema))
 	if err != nil {
@@ -407,7 +442,7 @@ func requestToolInputSchema(name string, schema threads.ToolPayloadJSONSchema) (
 	if err := json.Unmarshal(buf, &params); err != nil {
 		return anthropicapi.ToolInputSchemaParam{}, fmt.Errorf("anthropic tool %q schema: %w", name, err)
 	}
-	closeObjectSchemas(params)
+	normalizeAnthropicToolSchema(params)
 	if kind := strings.TrimSpace(stringValue(params["type"])); kind != "" && kind != "object" {
 		return anthropicapi.ToolInputSchemaParam{}, fmt.Errorf("anthropic tool %q schema type must be object, got %q", name, kind)
 	}
@@ -428,7 +463,7 @@ func requestToolInputSchema(name string, schema threads.ToolPayloadJSONSchema) (
 	return input, nil
 }
 
-func closeObjectSchemas(v any) {
+func normalizeAnthropicToolSchema(v any) {
 	switch x := v.(type) {
 	case map[string]any:
 		if x["type"] == "object" {
@@ -437,16 +472,16 @@ func closeObjectSchemas(v any) {
 			}
 		}
 		for _, child := range x {
-			closeObjectSchemas(child)
+			normalizeAnthropicToolSchema(child)
 		}
 	case []any:
 		for _, child := range x {
-			closeObjectSchemas(child)
+			normalizeAnthropicToolSchema(child)
 		}
 	}
 }
 
-func requestToolChoice(snap threads.ToolOfferSnapshot, hasTools bool) *anthropicapi.ToolChoiceUnionParam {
+func anthropicToolSelection(snap threads.ToolOfferSnapshot, hasTools bool) *anthropicapi.ToolChoiceUnionParam {
 	if !hasTools {
 		return nil
 	}

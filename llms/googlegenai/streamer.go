@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
 	cachegemini "github.com/mackross/agentloom/llms/cache/gemini"
@@ -39,7 +40,7 @@ func NewGenerateContentStreamerWithClient(client *genai.Client, model string) *G
 }
 
 func (*GenerateContentStreamer) Capabilities() threads.StreamerCapabilities {
-	return threads.StreamerCapabilities{}
+	return threads.StreamerCapabilities{Reasoning: threads.ReasoningForCurrentTurn("google.gemini")}
 }
 
 func (*GenerateContentStreamer) SyntheticToolCallID() string {
@@ -64,17 +65,18 @@ func (s *GenerateContentStreamer) StreamReqContext(ctx context.Context, req thre
 		return err
 	}
 
-	contents, err := requestContents(req)
+	contents, err := conversationContents(req)
 	if err != nil {
 		return err
 	}
 
-	config, err := s.generateContentConfig(req)
+	config, err := s.geminiRequestConfig(req)
 	if err != nil {
 		return err
 	}
 
 	emittedCalls := map[string]bool{}
+	textTail := map[int32]bool{}
 	for resp, err := range s.client.Models.GenerateContentStream(ctx, s.model, contents, &config) {
 		if err != nil {
 			return err
@@ -87,16 +89,45 @@ func (s *GenerateContentStreamer) StreamReqContext(ctx context.Context, req thre
 				if part == nil {
 					continue
 				}
-				if part.Text != "" {
+				if part.Thought {
+					textTail[cand.Index] = false
+					if part.FunctionCall != nil {
+						return fmt.Errorf("googlegenai thought signature is attached to a function call")
+					}
+					if err := emit(threads.ReasoningItem{Provider: "google.gemini", Visibility: threads.ReasoningVisibilitySummary, Summary: part.Text, Opaque: append([]byte(nil), part.ThoughtSignature...)}); err != nil {
+						return err
+					}
+					continue
+				}
+				hasText, hasCall := part.Text != "", part.FunctionCall != nil
+				if len(part.ThoughtSignature) > 0 {
+					signatureOnly := reflect.DeepEqual(part, &genai.Part{ThoughtSignature: part.ThoughtSignature})
+					if signatureOnly && textTail[cand.Index] {
+						if err := emit(threads.ReasoningItem{Provider: "google.gemini", Visibility: threads.ReasoningVisibilityHidden, Opaque: append([]byte(nil), part.ThoughtSignature...)}); err != nil {
+							return err
+						}
+						textTail[cand.Index] = false
+						continue
+					}
+					if hasText == hasCall {
+						return fmt.Errorf("googlegenai thought signature has no single associated part")
+					}
+					if err := emit(threads.ReasoningItem{Provider: "google.gemini", Visibility: threads.ReasoningVisibilityHidden, Opaque: append([]byte(nil), part.ThoughtSignature...)}); err != nil {
+						return err
+					}
+				}
+				if hasText {
 					if s.OnOutputTextDelta != nil {
 						s.OnOutputTextDelta(part.Text)
 					}
 					if err := emit(threads.AssistantText(part.Text)); err != nil {
 						return err
 					}
+					textTail[cand.Index] = true
 				}
-				if part.FunctionCall != nil {
-					call, err := functionCallItem(part.FunctionCall)
+				if hasCall {
+					textTail[cand.Index] = false
+					call, err := geminiToolCall(part.FunctionCall)
 					if err != nil {
 						return err
 					}
@@ -122,7 +153,7 @@ func (s *GenerateContentStreamer) StreamReqContext(ctx context.Context, req thre
 	return nil
 }
 
-func (s *GenerateContentStreamer) generateContentConfig(req threads.Req) (genai.GenerateContentConfig, error) {
+func (s *GenerateContentStreamer) geminiRequestConfig(req threads.Req) (genai.GenerateContentConfig, error) {
 	config := s.Config
 	if req.Instruction != "" {
 		config.SystemInstruction = genai.NewContentFromText(req.Instruction, genai.RoleUser)
@@ -134,7 +165,7 @@ func (s *GenerateContentStreamer) generateContentConfig(req threads.Req) (genai.
 	if len(tools) > 0 {
 		config.Tools = append(append([]*genai.Tool(nil), config.Tools...), tools...)
 	}
-	toolConfig := requestToolConfig(req.Tools, len(tools) > 0)
+	toolConfig := geminiToolSelection(req.Tools, len(tools) > 0)
 	if toolConfig != nil {
 		config.ToolConfig = toolConfig
 	}
@@ -144,7 +175,7 @@ func (s *GenerateContentStreamer) generateContentConfig(req threads.Req) (genai.
 	return config, nil
 }
 
-func requestContents(req threads.Req) ([]*genai.Content, error) {
+func conversationContents(req threads.Req) ([]*genai.Content, error) {
 	var out []*genai.Content
 	callNames := map[string]string{}
 	appendPart := func(role genai.Role, part *genai.Part) {
@@ -154,20 +185,58 @@ func requestContents(req threads.Req) ([]*genai.Content, error) {
 		}
 		out = append(out, genai.NewContentFromParts([]*genai.Part{part}, role))
 	}
+	var pendingSignature []byte
+	appendAssistantPart := func(part *genai.Part) {
+		part.ThoughtSignature = pendingSignature
+		pendingSignature = nil
+		appendPart(genai.RoleModel, part)
+	}
 
-	for _, item := range req.Items {
+	for i, item := range req.Items {
+		if len(pendingSignature) > 0 {
+			if _, text := item.(threads.AssistantText); !text {
+				if _, call := item.(threads.ToolCall); !call {
+					return nil, fmt.Errorf("googlegenai thought signature is not followed by assistant text or tool call")
+				}
+			}
+		}
 		switch v := item.(type) {
 		case threads.UserText:
 			appendPart(genai.RoleUser, genai.NewPartFromText(string(v)))
 		case threads.AssistantText:
-			appendPart(genai.RoleModel, genai.NewPartFromText(string(v)))
+			appendAssistantPart(genai.NewPartFromText(string(v)))
+		case threads.ReasoningItem:
+			if v.Visibility == threads.ReasoningVisibilitySummary {
+				appendPart(genai.RoleModel, &genai.Part{Text: v.Summary, Thought: true, ThoughtSignature: append([]byte(nil), v.Opaque...)})
+				continue
+			}
+			if v.Visibility != threads.ReasoningVisibilityHidden || len(v.Opaque) == 0 || len(pendingSignature) > 0 {
+				return nil, fmt.Errorf("googlegenai reasoning item cannot be associated")
+			}
+			if i+1 < len(req.Items) {
+				switch req.Items[i+1].(type) {
+				case threads.AssistantText, threads.ToolCall:
+					pendingSignature = append([]byte(nil), v.Opaque...)
+					continue
+				}
+			}
+			if i > 0 {
+				if _, ok := req.Items[i-1].(threads.AssistantText); ok && len(out) > 0 {
+					parts := out[len(out)-1].Parts
+					if part := parts[len(parts)-1]; part.Text != "" && len(part.ThoughtSignature) == 0 {
+						part.ThoughtSignature = append([]byte(nil), v.Opaque...)
+						continue
+					}
+				}
+			}
+			return nil, fmt.Errorf("googlegenai reasoning item cannot be associated")
 		case threads.ToolCall:
-			args, err := decodeObject(v.Payload)
+			args, err := geminiToolArguments(v.Payload)
 			if err != nil {
 				return nil, fmt.Errorf("googlegenai tool call %q payload: %w", v.Name, err)
 			}
 			callNames[v.CallID] = v.Name
-			appendPart(genai.RoleModel, &genai.Part{FunctionCall: &genai.FunctionCall{
+			appendAssistantPart(&genai.Part{FunctionCall: &genai.FunctionCall{
 				ID:   v.CallID,
 				Name: v.Name,
 				Args: args,
@@ -187,11 +256,14 @@ func requestContents(req threads.Req) ([]*genai.Content, error) {
 			return nil, fmt.Errorf("googlegenai request item not supported: %T", item)
 		}
 	}
+	if len(pendingSignature) > 0 {
+		return nil, fmt.Errorf("googlegenai thought signature has no associated part")
+	}
 	return out, nil
 }
 
 func requestTools(snap threads.ToolOfferSnapshot) ([]*genai.Tool, error) {
-	specs, err := filteredTools(snap)
+	specs, err := requestToolSpecs(snap)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +290,7 @@ func requestTools(snap threads.ToolOfferSnapshot) ([]*genai.Tool, error) {
 	return []*genai.Tool{{FunctionDeclarations: decls}}, nil
 }
 
-func filteredTools(snap threads.ToolOfferSnapshot) ([]threads.ToolSpec, error) {
+func requestToolSpecs(snap threads.ToolOfferSnapshot) ([]threads.ToolSpec, error) {
 	if len(snap.Allowed) == 0 {
 		return snap.Offered, nil
 	}
@@ -237,7 +309,7 @@ func filteredTools(snap threads.ToolOfferSnapshot) ([]threads.ToolSpec, error) {
 	return out, nil
 }
 
-func requestToolConfig(snap threads.ToolOfferSnapshot, hasTools bool) *genai.ToolConfig {
+func geminiToolSelection(snap threads.ToolOfferSnapshot, hasTools bool) *genai.ToolConfig {
 	if !hasTools {
 		return nil
 	}
@@ -259,7 +331,7 @@ func requestToolConfig(snap threads.ToolOfferSnapshot, hasTools bool) *genai.Too
 	return &genai.ToolConfig{FunctionCallingConfig: cfg}
 }
 
-func functionCallItem(call *genai.FunctionCall) (threads.ToolCall, error) {
+func geminiToolCall(call *genai.FunctionCall) (threads.ToolCall, error) {
 	payload, err := json.Marshal(call.Args)
 	if err != nil {
 		return threads.ToolCall{}, fmt.Errorf("googlegenai tool call %q args: %w", call.Name, err)
@@ -271,7 +343,7 @@ func functionCallItem(call *genai.FunctionCall) (threads.ToolCall, error) {
 	return threads.ToolCall{CallID: callID, Name: call.Name, Payload: string(payload)}, nil
 }
 
-func decodeObject(raw string) (map[string]any, error) {
+func geminiToolArguments(raw string) (map[string]any, error) {
 	if raw == "" {
 		return map[string]any{}, nil
 	}

@@ -8,7 +8,7 @@ import (
 )
 
 func TestRequestMessagesUsesAnthropicCacheControlMetadata(t *testing.T) {
-	msgs, err := requestMessages(threads.Req{
+	msgs, err := conversationMessages(threads.Req{
 		Items:    []threads.Item{threads.UserText("cached")},
 		ItemMeta: []map[string]any{cacheanthropic.Ephemeral1h()},
 	})

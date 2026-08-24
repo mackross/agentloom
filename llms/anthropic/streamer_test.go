@@ -17,7 +17,7 @@ import (
 )
 
 func TestMessagesStreamerContract(t *testing.T) {
-	streamertest.RunContractTests(t, anthropicContractHarness{})
+	streamertest.Run(t, anthropicContractHarness{})
 }
 
 func TestMessagesStreamerReportsAssistantPrefixCapability(t *testing.T) {
@@ -33,7 +33,7 @@ func TestMessagesStreamerReportsAssistantPrefixCapability(t *testing.T) {
 
 	for _, tt := range tests {
 		streamer := NewMessagesStreamerWithClient(anthropicapi.Client{}, tt.model)
-		if got := streamer.Capabilities(); got.AssistantPrefix != tt.want || got.ToolResultSendPolicy != threads.ToolResultSendRequiresComplete {
+		if got := streamer.Capabilities(); got.AssistantPrefix != tt.want {
 			t.Fatalf("assistant-prefix capability for %q = %#v, want %v", tt.model, got, tt.want)
 		}
 	}
@@ -208,6 +208,23 @@ func encodeMessageStreamEvents(t testing.TB, events []streamertest.Event) string
 		}
 
 		switch v := ev.Item.(type) {
+		case threads.ReasoningItem:
+			var block map[string]any
+			if err := json.Unmarshal(v.Opaque, &block); err != nil {
+				t.Fatalf("unmarshal reasoning block: %v", err)
+			}
+			index := nextIndex
+			nextIndex++
+			start := block
+			if block["type"] == "thinking" {
+				start = map[string]any{"type": "thinking", "thinking": "", "signature": ""}
+			}
+			appendEvent("content_block_start", map[string]any{"type": "content_block_start", "index": index, "content_block": start})
+			if block["type"] == "thinking" {
+				appendEvent("content_block_delta", map[string]any{"type": "content_block_delta", "index": index, "delta": map[string]any{"type": "thinking_delta", "thinking": block["thinking"]}})
+				appendEvent("content_block_delta", map[string]any{"type": "content_block_delta", "index": index, "delta": map[string]any{"type": "signature_delta", "signature": block["signature"]}})
+			}
+			appendEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": index})
 		case threads.AssistantText:
 			index := nextIndex
 			nextIndex++

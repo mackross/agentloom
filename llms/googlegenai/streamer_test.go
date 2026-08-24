@@ -14,7 +14,7 @@ import (
 )
 
 func TestGenerateContentStreamerContract(t *testing.T) {
-	streamertest.RunContractTests(t, googlegenaiContractHarness{})
+	streamertest.Run(t, googlegenaiContractHarness{})
 }
 
 type googlegenaiContractHarness struct{}
@@ -80,6 +80,23 @@ func encodeGenerateContentStreamEvents(t testing.TB, events []streamertest.Event
 		}
 		var part map[string]any
 		switch v := event.Item.(type) {
+		case signedGeminiPart:
+			switch item := v.item.(type) {
+			case nil:
+				part = map[string]any{}
+			case threads.AssistantText:
+				part = map[string]any{"text": string(item)}
+			case threads.ToolCall:
+				var args map[string]any
+				if err := json.Unmarshal([]byte(item.Payload), &args); err != nil {
+					t.Fatalf("unmarshal signed tool payload: %v", err)
+				}
+				part = map[string]any{"functionCall": map[string]any{"id": item.CallID, "name": item.Name, "args": args}}
+			default:
+				t.Fatalf("unsupported signed part: %T", v.item)
+			}
+			part["thought"] = v.thought
+			part["thoughtSignature"] = v.signature
 		case threads.AssistantText:
 			part = map[string]any{"text": string(v)}
 		case threads.ToolCall:

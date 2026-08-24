@@ -28,10 +28,11 @@ import (
 const (
 	BaseURL = "https://api.cerebras.ai/v1"
 
-	GLM47Model      = "zai-glm-4.7"
-	GPTOSS120BModel = "gpt-oss-120b"
-	Llama31_8BModel = "llama3.1-8b"
-	Qwen3235BModel  = "qwen-3-235b-a22b-instruct-2507"
+	Gemma4_31BModel   = "gemma-4-31b"
+	GPTOSS120BModel   = "gpt-oss-120b"
+	Llama31_8BModel   = "llama3.1-8b"
+	Qwen3235BModel    = "qwen-3-235b-a22b-instruct-2507"
+	reasoningProvider = "cerebras.chat"
 
 	DefaultModel = GPTOSS120BModel
 )
@@ -50,15 +51,12 @@ type ChatCompletionsStreamer struct {
 	ReasoningFormat string
 	Temperature     *float64
 
-	// ClearThinking is supported by Cerebras only for zai-glm-4.7.
-	ClearThinking *bool
-
 	// ServiceTier accepts Cerebras values: priority, default, auto, and flex.
 	ServiceTier    string
 	QueueThreshold string
 
 	// Prediction must not be used with tools; Cerebras predicted outputs are a text
-	// regeneration optimization for gpt-oss-120b and zai-glm-4.7.
+	// regeneration optimization for models that support predicted outputs.
 	Prediction PredictionFunc
 
 	GzipCompressionLevel int
@@ -90,7 +88,7 @@ func NewChatCompletionsStreamerWithClient(client openaiapi.Client, model string)
 }
 
 func (*ChatCompletionsStreamer) Capabilities() threads.StreamerCapabilities {
-	return threads.StreamerCapabilities{AssistantPrefix: true}
+	return threads.StreamerCapabilities{AssistantPrefix: true, Reasoning: threads.ReasoningForCurrentTurn(reasoningProvider)}
 }
 
 func (*ChatCompletionsStreamer) SyntheticToolCallID() string {
@@ -134,12 +132,12 @@ func (s *ChatCompletionsStreamer) StreamReqContext(ctx context.Context, req thre
 		if err != nil {
 			return err
 		}
-		if predictionOK && hasAnyOfferedTools(req.Tools) {
+		if predictionOK && hasOfferedTools(req.Tools) {
 			return fmt.Errorf("cerebras prediction is not supported with tools")
 		}
 	}
 
-	messages, err := requestMessages(req)
+	messages, err := conversationMessages(req)
 	if err != nil {
 		return err
 	}
@@ -157,7 +155,7 @@ func (s *ChatCompletionsStreamer) StreamReqContext(ctx context.Context, req thre
 		params.Tools = tools
 	}
 
-	toolChoice, err := requestToolChoice(req.Tools)
+	toolChoice, err := cerebrasToolSelection(req.Tools)
 	if err != nil {
 		return err
 	}
@@ -168,7 +166,7 @@ func (s *ChatCompletionsStreamer) StreamReqContext(ctx context.Context, req thre
 		params.ParallelToolCalls = openaiapi.Bool(*req.Tools.Parallel)
 	}
 
-	opts, err := s.requestOptions()
+	opts, err := s.cerebrasRequestOptions()
 	if err != nil {
 		return err
 	}
@@ -191,12 +189,28 @@ func (s *ChatCompletionsStreamer) StreamReqContext(ctx context.Context, req thre
 	defer stream.Close()
 
 	toolsInFlight := map[toolKey]*toolState{}
+	reasoning := map[int64]string{}
+	flushReasoning := func(choice int64) error {
+		text := reasoning[choice]
+		delete(reasoning, choice)
+		if text == "" {
+			return nil
+		}
+		return emit(threads.ReasoningItem{Provider: reasoningProvider, Visibility: threads.ReasoningVisibilityText, Text: text})
+	}
 	for stream.Next() {
 		chunk := stream.Current()
 		for _, choice := range chunk.Choices {
+			if field := choice.Delta.JSON.ExtraFields["reasoning"]; field.Raw() != "" {
+				var delta string
+				if err := json.Unmarshal([]byte(field.Raw()), &delta); err != nil {
+					return fmt.Errorf("cerebras reasoning delta: %w", err)
+				}
+				reasoning[choice.Index] += delta
+			}
 			for _, deltaTool := range choice.Delta.ToolCalls {
-				key := toolKey{choiceIndex: choice.Index, toolIndex: clampToolIndex(deltaTool.Index)}
-				state := ensureToolState(toolsInFlight, key)
+				key := toolKey{choiceIndex: choice.Index, toolIndex: nonNegativeToolIndex(deltaTool.Index)}
+				state := ensureToolCallState(toolsInFlight, key)
 				if deltaTool.ID != "" {
 					state.callID = deltaTool.ID
 				}
@@ -220,6 +234,9 @@ func (s *ChatCompletionsStreamer) StreamReqContext(ctx context.Context, req thre
 			}
 
 			if choice.Delta.Content != "" {
+				if err := flushReasoning(choice.Index); err != nil {
+					return err
+				}
 				if s.OnOutputTextDelta != nil {
 					s.OnOutputTextDelta(choice.Delta.Content)
 				}
@@ -229,7 +246,10 @@ func (s *ChatCompletionsStreamer) StreamReqContext(ctx context.Context, req thre
 			}
 
 			if choice.FinishReason == "tool_calls" {
-				if err := emitFinalToolCalls(toolsInFlight, choice.Index, s.normalizeToolCallEmit(emit)); err != nil {
+				if err := flushReasoning(choice.Index); err != nil {
+					return err
+				}
+				if err := finishChoiceToolCalls(toolsInFlight, choice.Index, s.normalizeEmittedToolCalls(emit)); err != nil {
 					return err
 				}
 			}
@@ -239,19 +259,18 @@ func (s *ChatCompletionsStreamer) StreamReqContext(ctx context.Context, req thre
 	if err := stream.Err(); err != nil {
 		return err
 	}
-	return emitRemainingToolCalls(toolsInFlight, s.normalizeToolCallEmit(emit))
+	for choice := range reasoning {
+		if err := flushReasoning(choice); err != nil {
+			return err
+		}
+	}
+	return finishRemainingToolCalls(toolsInFlight, s.normalizeEmittedToolCalls(emit))
 }
 
-func (s *ChatCompletionsStreamer) requestOptions() ([]option.RequestOption, error) {
-	opts := []option.RequestOption{option.WithMiddleware(msgpackGzipMiddleware(s.gzipCompressionLevel()))}
+func (s *ChatCompletionsStreamer) cerebrasRequestOptions() ([]option.RequestOption, error) {
+	opts := []option.RequestOption{option.WithMiddleware(cerebrasCompressionMiddleware(s.compressionLevel()))}
 	if format := strings.TrimSpace(s.ReasoningFormat); format != "" {
 		opts = append(opts, option.WithJSONSet("reasoning_format", format))
-	}
-	if s.ClearThinking != nil {
-		if s.model != GLM47Model {
-			return nil, fmt.Errorf("cerebras clear_thinking is only supported for model %q, got %q", GLM47Model, s.model)
-		}
-		opts = append(opts, option.WithJSONSet("clear_thinking", *s.ClearThinking))
 	}
 	if tier := strings.TrimSpace(s.ServiceTier); tier != "" {
 		if !validServiceTier(tier) {
@@ -265,7 +284,7 @@ func (s *ChatCompletionsStreamer) requestOptions() ([]option.RequestOption, erro
 	return opts, nil
 }
 
-func (s *ChatCompletionsStreamer) gzipCompressionLevel() int {
+func (s *ChatCompletionsStreamer) compressionLevel() int {
 	if s.GzipCompressionLevel == 0 {
 		return defaultGzipCompressionLevel
 	}
@@ -281,30 +300,30 @@ func validServiceTier(tier string) bool {
 	}
 }
 
-func hasAnyOfferedTools(snap threads.ToolOfferSnapshot) bool {
+func hasOfferedTools(snap threads.ToolOfferSnapshot) bool {
 	return len(snap.Offered) > 0
 }
 
-func msgpackGzipMiddleware(level int) option.Middleware {
+func cerebrasCompressionMiddleware(level int) option.Middleware {
 	return func(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
-		if !shouldRewriteMsgpackGzip(req) {
+		if !shouldCompressCerebrasRequest(req) {
 			return next(req)
 		}
-		if err := rewriteMsgpackGzip(req, level); err != nil {
+		if err := encodeCerebrasMsgpackGzip(req, level); err != nil {
 			return nil, err
 		}
 		return next(req)
 	}
 }
 
-func shouldRewriteMsgpackGzip(req *http.Request) bool {
+func shouldCompressCerebrasRequest(req *http.Request) bool {
 	if req == nil || req.Method != http.MethodPost || req.URL == nil {
 		return false
 	}
 	return strings.HasSuffix(strings.TrimRight(req.URL.Path, "/"), "/chat/completions") && strings.EqualFold(req.URL.Hostname(), "api.cerebras.ai")
 }
 
-func rewriteMsgpackGzip(req *http.Request, level int) error {
+func encodeCerebrasMsgpackGzip(req *http.Request, level int) error {
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		return fmt.Errorf("cerebras msgpack gzip read body: %w", err)
@@ -317,7 +336,7 @@ func rewriteMsgpackGzip(req *http.Request, level int) error {
 	if err := dec.Decode(&value); err != nil {
 		return fmt.Errorf("cerebras msgpack gzip decode json: %w", err)
 	}
-	value = jsonNumbers(value)
+	value = convertJSONNumbersForMsgpack(value)
 	msgpackBody, err := msgpack.Marshal(value)
 	if err != nil {
 		return fmt.Errorf("cerebras msgpack gzip encode msgpack: %w", err)
@@ -343,16 +362,16 @@ func rewriteMsgpackGzip(req *http.Request, level int) error {
 	return nil
 }
 
-func jsonNumbers(v any) any {
+func convertJSONNumbersForMsgpack(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
 		for key, child := range x {
-			x[key] = jsonNumbers(child)
+			x[key] = convertJSONNumbersForMsgpack(child)
 		}
 		return x
 	case []any:
 		for i, child := range x {
-			x[i] = jsonNumbers(child)
+			x[i] = convertJSONNumbersForMsgpack(child)
 		}
 		return x
 	case json.Number:
@@ -368,7 +387,7 @@ func jsonNumbers(v any) any {
 	}
 }
 
-func (s *ChatCompletionsStreamer) normalizeToolCallEmit(emit func(threads.Item) error) func(threads.Item) error {
+func (s *ChatCompletionsStreamer) normalizeEmittedToolCalls(emit func(threads.Item) error) func(threads.Item) error {
 	return func(item threads.Item) error {
 		call, ok := item.(threads.ToolCall)
 		if ok {
@@ -383,46 +402,77 @@ func (s *ChatCompletionsStreamer) normalizeToolCallEmit(emit func(threads.Item) 
 	}
 }
 
-func requestMessages(req threads.Req) ([]openaiapi.ChatCompletionMessageParamUnion, error) {
+func conversationMessages(req threads.Req) ([]openaiapi.ChatCompletionMessageParamUnion, error) {
 	out := make([]openaiapi.ChatCompletionMessageParamUnion, 0, len(req.Items)+1)
 	if req.Instruction != "" {
 		out = append(out, openaiapi.SystemMessage(req.Instruction))
 	}
-	for _, item := range req.Items {
+	pendingReasoning := ""
+	for i := 0; i < len(req.Items); i++ {
+		item := req.Items[i]
 		switch v := item.(type) {
+		case threads.ReasoningItem:
+			pendingReasoning += v.Text
 		case threads.UserText:
+			if pendingReasoning != "" {
+				return nil, fmt.Errorf("cerebras reasoning is not followed by a tool call")
+			}
 			out = append(out, openaiapi.UserMessage(string(v)))
 		case threads.AssistantText:
+			pendingReasoning = ""
 			out = append(out, openaiapi.AssistantMessage(string(v)))
 		case threads.ToolCall:
-			out = append(out, assistantToolCallMessage(v))
+			calls := []threads.ToolCall{v}
+			for i+1 < len(req.Items) {
+				next, ok := req.Items[i+1].(threads.ToolCall)
+				if !ok {
+					break
+				}
+				i++
+				calls = append(calls, next)
+			}
+			message := toolCallsMessage(calls)
+			if pendingReasoning != "" {
+				message.OfAssistant.Content = openaiapi.ChatCompletionAssistantMessageParamContentUnion{OfString: openaiapi.String(pendingReasoning)}
+				pendingReasoning = ""
+			}
+			out = append(out, message)
 		case threads.ToolCallResult:
+			if pendingReasoning != "" {
+				return nil, fmt.Errorf("cerebras reasoning is not followed by a tool call")
+			}
 			out = append(out, openaiapi.ToolMessage(v.Output, v.CallID))
 		default:
 			return nil, fmt.Errorf("cerebras request item not supported: %T", item)
 		}
 	}
+	if pendingReasoning != "" {
+		return nil, fmt.Errorf("cerebras reasoning has no associated tool call")
+	}
 	return out, nil
 }
 
-func assistantToolCallMessage(call threads.ToolCall) openaiapi.ChatCompletionMessageParamUnion {
+func toolCallsMessage(calls []threads.ToolCall) openaiapi.ChatCompletionMessageParamUnion {
+	toolCalls := make([]openaiapi.ChatCompletionMessageToolCallUnionParam, 0, len(calls))
+	for _, call := range calls {
+		toolCalls = append(toolCalls, openaiapi.ChatCompletionMessageToolCallUnionParam{
+			OfFunction: &openaiapi.ChatCompletionMessageFunctionToolCallParam{
+				ID: call.CallID,
+				Function: openaiapi.ChatCompletionMessageFunctionToolCallFunctionParam{
+					Name: call.Name, Arguments: call.Payload,
+				},
+			},
+		})
+	}
 	return openaiapi.ChatCompletionMessageParamUnion{
 		OfAssistant: &openaiapi.ChatCompletionAssistantMessageParam{
-			ToolCalls: []openaiapi.ChatCompletionMessageToolCallUnionParam{{
-				OfFunction: &openaiapi.ChatCompletionMessageFunctionToolCallParam{
-					ID: call.CallID,
-					Function: openaiapi.ChatCompletionMessageFunctionToolCallFunctionParam{
-						Name:      call.Name,
-						Arguments: call.Payload,
-					},
-				},
-			}},
+			ToolCalls: toolCalls,
 		},
 	}
 }
 
 func requestTools(snap threads.ToolOfferSnapshot) ([]openaiapi.ChatCompletionToolUnionParam, error) {
-	specs, err := filteredTools(snap)
+	specs, err := requestToolSpecs(snap)
 	if err != nil {
 		return nil, err
 	}
@@ -437,7 +487,7 @@ func requestTools(snap threads.ToolOfferSnapshot) ([]openaiapi.ChatCompletionToo
 		}
 		switch p := spec.Payload.(type) {
 		case threads.ToolPayloadJSONSchema:
-			parameters, err := requestFunctionParameters(spec.Name, p)
+			parameters, err := cerebrasToolInputSchema(spec.Name, p)
 			if err != nil {
 				return nil, err
 			}
@@ -457,7 +507,7 @@ func requestTools(snap threads.ToolOfferSnapshot) ([]openaiapi.ChatCompletionToo
 	return out, nil
 }
 
-func filteredTools(snap threads.ToolOfferSnapshot) ([]threads.ToolSpec, error) {
+func requestToolSpecs(snap threads.ToolOfferSnapshot) ([]threads.ToolSpec, error) {
 	if snap.Allowed == nil || len(snap.Allowed) == 0 {
 		return append([]threads.ToolSpec(nil), snap.Offered...), nil
 	}
@@ -478,7 +528,7 @@ func filteredTools(snap threads.ToolOfferSnapshot) ([]threads.ToolSpec, error) {
 	return out, nil
 }
 
-func requestFunctionParameters(name string, schema threads.ToolPayloadJSONSchema) (shared.FunctionParameters, error) {
+func cerebrasToolInputSchema(name string, schema threads.ToolPayloadJSONSchema) (shared.FunctionParameters, error) {
 	params := map[string]any{}
 	buf, err := json.Marshal(gschema.Schema(schema))
 	if err != nil {
@@ -487,14 +537,14 @@ func requestFunctionParameters(name string, schema threads.ToolPayloadJSONSchema
 	if err := json.Unmarshal(buf, &params); err != nil {
 		return nil, fmt.Errorf("cerebras tool %q schema: %w", name, err)
 	}
-	closeObjectSchemas(params)
+	normalizeCerebrasToolSchema(params)
 	return shared.FunctionParameters(params), nil
 }
 
-func closeObjectSchemas(v any) {
+func normalizeCerebrasToolSchema(v any) {
 	switch x := v.(type) {
 	case map[string]any:
-		if schemaHasType(x, "object") {
+		if schemaAllowsType(x, "object") {
 			if props, ok := x["properties"].(map[string]any); (!ok || len(props) == 0) && x["anyOf"] == nil {
 				if additional, ok := x["additionalProperties"].(map[string]any); ok {
 					x["properties"] = map[string]any{
@@ -508,16 +558,16 @@ func closeObjectSchemas(v any) {
 			}
 		}
 		for _, child := range x {
-			closeObjectSchemas(child)
+			normalizeCerebrasToolSchema(child)
 		}
 	case []any:
 		for _, child := range x {
-			closeObjectSchemas(child)
+			normalizeCerebrasToolSchema(child)
 		}
 	}
 }
 
-func schemaHasType(schema map[string]any, want string) bool {
+func schemaAllowsType(schema map[string]any, want string) bool {
 	switch typ := schema["type"].(type) {
 	case string:
 		return typ == want
@@ -531,7 +581,7 @@ func schemaHasType(schema map[string]any, want string) bool {
 	return false
 }
 
-func requestToolChoice(snap threads.ToolOfferSnapshot) (*openaiapi.ChatCompletionToolChoiceOptionUnionParam, error) {
+func cerebrasToolSelection(snap threads.ToolOfferSnapshot) (*openaiapi.ChatCompletionToolChoiceOptionUnionParam, error) {
 	if snap.Allowed == nil {
 		if snap.Required {
 			return &openaiapi.ChatCompletionToolChoiceOptionUnionParam{
@@ -550,7 +600,7 @@ func requestToolChoice(snap threads.ToolOfferSnapshot) (*openaiapi.ChatCompletio
 	}
 	if len(snap.Allowed) == 1 {
 		name := snap.Allowed[0]
-		if _, err := toolKind(snap, name); err != nil {
+		if _, err := offeredToolKind(snap, name); err != nil {
 			return nil, err
 		}
 		return &openaiapi.ChatCompletionToolChoiceOptionUnionParam{
@@ -569,7 +619,7 @@ func requestToolChoice(snap threads.ToolOfferSnapshot) (*openaiapi.ChatCompletio
 	}, nil
 }
 
-func toolKind(snap threads.ToolOfferSnapshot, name string) (string, error) {
+func offeredToolKind(snap threads.ToolOfferSnapshot, name string) (string, error) {
 	for _, spec := range snap.Offered {
 		if spec.Name != name {
 			continue
@@ -584,14 +634,14 @@ func toolKind(snap threads.ToolOfferSnapshot, name string) (string, error) {
 	return "", fmt.Errorf("cerebras tool %q not offered", name)
 }
 
-func clampToolIndex(index int64) int {
+func nonNegativeToolIndex(index int64) int {
 	if index < 0 {
 		return 0
 	}
 	return int(index)
 }
 
-func ensureToolState(states map[toolKey]*toolState, key toolKey) *toolState {
+func ensureToolCallState(states map[toolKey]*toolState, key toolKey) *toolState {
 	state, ok := states[key]
 	if ok {
 		return state
@@ -601,7 +651,7 @@ func ensureToolState(states map[toolKey]*toolState, key toolKey) *toolState {
 	return state
 }
 
-func emitFinalToolCalls(states map[toolKey]*toolState, choiceIndex int64, emit func(threads.Item) error) error {
+func finishChoiceToolCalls(states map[toolKey]*toolState, choiceIndex int64, emit func(threads.Item) error) error {
 	keys := make([]toolKey, 0, len(states))
 	for key := range states {
 		if key.choiceIndex == choiceIndex {
@@ -625,7 +675,7 @@ func emitFinalToolCalls(states map[toolKey]*toolState, choiceIndex int64, emit f
 	return nil
 }
 
-func emitRemainingToolCalls(states map[toolKey]*toolState, emit func(threads.Item) error) error {
+func finishRemainingToolCalls(states map[toolKey]*toolState, emit func(threads.Item) error) error {
 	keys := make([]toolKey, 0, len(states))
 	for key := range states {
 		keys = append(keys, key)

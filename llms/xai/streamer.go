@@ -22,6 +22,7 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 
 	cachexai "github.com/mackross/agentloom/llms/cache/xai"
+	"github.com/mackross/agentloom/llms/internal/responsesutil"
 	"github.com/mackross/agentloom/llms/internal/streamerutil"
 	"github.com/mackross/agentloom/threads"
 )
@@ -32,6 +33,8 @@ const (
 	// DefaultModel is the default Grok frontier model.
 	DefaultModel = "grok-4.5"
 )
+
+const reasoningProvider = "xai.responses"
 
 type ResponsesStreamer struct {
 	client            openaiapi.Client
@@ -129,7 +132,7 @@ func xaiAPIKey() string {
 }
 
 func (*ResponsesStreamer) Capabilities() threads.StreamerCapabilities {
-	return threads.StreamerCapabilities{AssistantPrefix: true, ToolResultSendPolicy: threads.ToolResultSendRequiresComplete}
+	return threads.StreamerCapabilities{AssistantPrefix: true, Reasoning: threads.ReasoningForProvider(reasoningProvider)}
 }
 
 func (*ResponsesStreamer) SyntheticToolCallID() string {
@@ -158,12 +161,12 @@ func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Re
 		return err
 	}
 
-	params, err := s.responseParams(req)
+	params, err := s.responseRequest(req)
 	if err != nil {
 		return err
 	}
 
-	streamReq, err := s.newResponseStream(ctx, params, true)
+	streamReq, err := s.startResponse(ctx, params, true)
 	if err != nil {
 		return err
 	}
@@ -174,18 +177,18 @@ func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Re
 		emitted = true
 		return emit(item)
 	}
-	responseID, outputItems, err := s.consumeResponseStream(streamReq.stream, emitTracked)
+	responseID, outputItems, err := s.streamResponseItems(streamReq.stream, emitTracked)
 	if err != nil && shouldRetryResponseStreamError(ctx, err, streamReq, emitted) {
 		_ = streamReq.stream.Close()
 		if streamReq.usedContinuation {
 			s.clearContinuation()
 		}
-		streamReq, err = s.newResponseStream(ctx, params, false)
+		streamReq, err = s.startResponse(ctx, params, false)
 		if err != nil {
 			return err
 		}
 		defer streamReq.stream.Close()
-		responseID, outputItems, err = s.consumeResponseStream(streamReq.stream, emitTracked)
+		responseID, outputItems, err = s.streamResponseItems(streamReq.stream, emitTracked)
 	}
 	if err != nil {
 		return err
@@ -196,15 +199,15 @@ func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Re
 	return nil
 }
 
-func (s *ResponsesStreamer) storeResponses() bool {
+func (s *ResponsesStreamer) shouldStoreResponses() bool {
 	if s.Store == nil {
 		return false
 	}
 	return *s.Store
 }
 
-func (s *ResponsesStreamer) responseParams(req threads.Req) (responses.ResponseNewParams, error) {
-	inputItems, err := requestInputItems(req)
+func (s *ResponsesStreamer) responseRequest(req threads.Req) (responses.ResponseNewParams, error) {
+	inputItems, err := conversationInput(req)
 	if err != nil {
 		return responses.ResponseNewParams{}, err
 	}
@@ -212,8 +215,9 @@ func (s *ResponsesStreamer) responseParams(req threads.Req) (responses.ResponseN
 	params := responses.ResponseNewParams{
 		Model:     s.model,
 		Input:     responses.ResponseNewParamsInputUnion{OfInputItemList: inputItems},
+		Include:   []responses.ResponseIncludable{responses.ResponseIncludableReasoningEncryptedContent},
 		Reasoning: s.Reasoning,
-		Store:     openaiapi.Bool(s.storeResponses()),
+		Store:     openaiapi.Bool(s.shouldStoreResponses()),
 	}
 	if s.ServiceTier != "" {
 		params.ServiceTier = s.ServiceTier
@@ -228,7 +232,7 @@ func (s *ResponsesStreamer) responseParams(req threads.Req) (responses.ResponseN
 	if len(tools) > 0 {
 		params.Tools = tools
 	}
-	choice, err := requestToolChoice(req.Tools)
+	choice, err := xaiToolSelection(req.Tools)
 	if err != nil {
 		return responses.ResponseNewParams{}, err
 	}
@@ -253,7 +257,7 @@ func (s *ResponsesStreamer) responseParams(req threads.Req) (responses.ResponseN
 	return params, nil
 }
 
-func (s *ResponsesStreamer) newResponseStream(ctx context.Context, params responses.ResponseNewParams, allowContinuation bool) (responseStreamRequest, error) {
+func (s *ResponsesStreamer) startResponse(ctx context.Context, params responses.ResponseNewParams, allowContinuation bool) (responseStreamRequest, error) {
 	fullInputItems := params.Input.OfInputItemList
 	paramsHash, err := hashResponseParams(params)
 	if err != nil {
@@ -287,7 +291,7 @@ func shouldRetryResponseStreamError(ctx context.Context, err error, streamReq re
 	return streamReq.usedContinuation
 }
 
-func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit func(threads.Item) error) (string, responses.ResponseInputParam, error) {
+func (s *ResponsesStreamer) streamResponseItems(stream responseStream, emit func(threads.Item) error) (string, responses.ResponseInputParam, error) {
 	functionCalls := map[string]functionCallMeta{}
 	var responseID string
 	var outputItems responses.ResponseInputParam
@@ -313,12 +317,12 @@ func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit fu
 			if event.Delta == "" {
 				continue
 			}
-			callID, name := resolveFunctionCall(functionCalls, event.ItemID, "")
+			callID, name := functionCallIdentity(functionCalls, event.ItemID, "")
 			if err := emit(threads.ToolCallChunk{CallID: callID, Name: name, PayloadDelta: event.Delta}); err != nil {
 				return "", nil, err
 			}
 		case "response.function_call_arguments.done":
-			callID, name := resolveFunctionCall(functionCalls, event.ItemID, event.Name)
+			callID, name := functionCallIdentity(functionCalls, event.ItemID, event.Name)
 			call := threads.ToolCall{CallID: callID, Name: name, Payload: event.Arguments}
 			call, err := s.normalizers.NormalizeResponseToolCall(call)
 			if err != nil {
@@ -329,11 +333,16 @@ func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit fu
 			}
 		case "response.output_item.added", "response.output_item.done":
 			if event.Type == "response.output_item.done" {
+				if event.Item.Type == "reasoning" {
+					if err := emit(responsesutil.ReasoningOutput(reasoningProvider, event.Item)); err != nil {
+						return "", nil, err
+					}
+				}
 				if item, ok := outputItemInputParam(event.Item); ok {
 					outputItems = append(outputItems, item)
 				}
 			}
-			rememberFunctionCall(functionCalls, event.Item)
+			recordFunctionCall(functionCalls, event.Item)
 		case "error":
 			if event.Message != "" {
 				return "", nil, fmt.Errorf("xai responses stream error: %s", event.Message)
@@ -348,7 +357,7 @@ func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit fu
 	return responseID, outputItems, nil
 }
 
-func rememberFunctionCall(functionCalls map[string]functionCallMeta, item responses.ResponseOutputItemUnion) {
+func recordFunctionCall(functionCalls map[string]functionCallMeta, item responses.ResponseOutputItemUnion) {
 	if item.Type != "function_call" || item.ID == "" {
 		return
 	}
@@ -362,8 +371,7 @@ func rememberFunctionCall(functionCalls map[string]functionCallMeta, item respon
 	functionCalls[item.ID] = meta
 }
 
-
-func resolveFunctionCall(functionCalls map[string]functionCallMeta, itemID, fallbackName string) (callID, name string) {
+func functionCallIdentity(functionCalls map[string]functionCallMeta, itemID, fallbackName string) (callID, name string) {
 	callID, name = itemID, fallbackName
 	if meta, ok := functionCalls[itemID]; ok {
 		if meta.callID != "" {
@@ -376,7 +384,7 @@ func resolveFunctionCall(functionCalls map[string]functionCallMeta, itemID, fall
 	return callID, name
 }
 
-func requestInputItems(req threads.Req) (responses.ResponseInputParam, error) {
+func conversationInput(req threads.Req) (responses.ResponseInputParam, error) {
 	inputItems := make(responses.ResponseInputParam, 0, len(req.Items))
 	for _, it := range req.Items {
 		switch v := it.(type) {
@@ -384,6 +392,12 @@ func requestInputItems(req threads.Req) (responses.ResponseInputParam, error) {
 			inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(string(v), responses.EasyInputMessageRoleUser))
 		case threads.AssistantText:
 			inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(string(v), responses.EasyInputMessageRoleAssistant))
+		case threads.ReasoningItem:
+			reasoning, err := responsesutil.ReasoningInput(reasoningProvider, v)
+			if err != nil {
+				return nil, err
+			}
+			inputItems = append(inputItems, reasoning)
 		case threads.ToolCallChunk:
 			// ToolCallChunk is a streaming artifact for partial parsing. The
 			// Responses API request history should contain the final ToolCall, not
@@ -436,7 +450,7 @@ func requestTools(snap threads.ToolOfferSnapshot) ([]responses.ToolUnionParam, e
 			if err := json.Unmarshal(b, &params); err != nil {
 				return nil, fmt.Errorf("xai tool %q schema: %w", spec.Name, err)
 			}
-			normalizeStrictObjectSchemas(params)
+			normalizeStrictToolSchemas(params)
 			f := &responses.FunctionToolParam{Name: spec.Name, Parameters: params, Strict: openaiapi.Bool(true)}
 			if spec.Description != "" {
 				f.Description = openaiapi.String(spec.Description)
@@ -449,20 +463,20 @@ func requestTools(snap threads.ToolOfferSnapshot) ([]responses.ToolUnionParam, e
 	return out, nil
 }
 
-func normalizeStrictObjectSchemas(v any) {
+func normalizeStrictToolSchemas(v any) {
 	switch x := v.(type) {
 	case map[string]any:
-		if schemaHasType(x, "object") {
+		if schemaAllowsType(x, "object") {
 			if _, ok := x["additionalProperties"]; !ok {
 				x["additionalProperties"] = false
 			}
 			if props, ok := x["properties"].(map[string]any); ok && len(props) > 0 {
-				originalRequired := requiredStringSet(x["required"])
+				originalRequired := requiredFields(x["required"])
 				required := make([]string, 0, len(props))
 				for name, child := range props {
 					required = append(required, name)
 					if _, ok := originalRequired[name]; !ok {
-						allowSchemaNull(child)
+						makeSchemaNullable(child)
 					}
 				}
 				sort.Strings(required)
@@ -470,16 +484,16 @@ func normalizeStrictObjectSchemas(v any) {
 			}
 		}
 		for _, child := range x {
-			normalizeStrictObjectSchemas(child)
+			normalizeStrictToolSchemas(child)
 		}
 	case []any:
 		for _, child := range x {
-			normalizeStrictObjectSchemas(child)
+			normalizeStrictToolSchemas(child)
 		}
 	}
 }
 
-func schemaHasType(schema map[string]any, want string) bool {
+func schemaAllowsType(schema map[string]any, want string) bool {
 	switch typ := schema["type"].(type) {
 	case string:
 		return typ == want
@@ -493,7 +507,7 @@ func schemaHasType(schema map[string]any, want string) bool {
 	return false
 }
 
-func requiredStringSet(v any) map[string]struct{} {
+func requiredFields(v any) map[string]struct{} {
 	out := map[string]struct{}{}
 	switch xs := v.(type) {
 	case []any:
@@ -510,7 +524,7 @@ func requiredStringSet(v any) map[string]struct{} {
 	return out
 }
 
-func allowSchemaNull(v any) {
+func makeSchemaNullable(v any) {
 	schema, ok := v.(map[string]any)
 	if !ok {
 		return
@@ -530,9 +544,9 @@ func allowSchemaNull(v any) {
 	}
 }
 
-// requestToolChoice uses only xAI-supported modes: auto (omit), required, none.
+// xaiToolSelection uses only xAI-supported modes: auto (omit), required, none.
 // Allowed is applied by filtering tools in requestTools, not via allowed_tools.
-func requestToolChoice(snap threads.ToolOfferSnapshot) (*responses.ResponseNewParamsToolChoiceUnion, error) {
+func xaiToolSelection(snap threads.ToolOfferSnapshot) (*responses.ResponseNewParamsToolChoiceUnion, error) {
 	if snap.Allowed != nil && len(snap.Allowed) == 0 {
 		opt := param.NewOpt(responses.ToolChoiceOptionsNone)
 		return &responses.ResponseNewParamsToolChoiceUnion{OfToolChoiceMode: opt}, nil

@@ -23,7 +23,7 @@ import (
 )
 
 func TestChatCompletionsStreamerContract(t *testing.T) {
-	streamertest.RunContractTests(t, cerebrasContractHarness{})
+	streamertest.Run(t, cerebrasContractHarness{})
 }
 
 func TestChatCompletionsStreamerConstructorDefaults(t *testing.T) {
@@ -31,21 +31,44 @@ func TestChatCompletionsStreamerConstructorDefaults(t *testing.T) {
 	if streamer.model != DefaultModel {
 		t.Fatalf("default model = %q, want %q", streamer.model, DefaultModel)
 	}
-	streamer = NewChatCompletionsStreamerWithClient(openaiapi.Client{}, "  "+GLM47Model+"  ")
-	if streamer.model != GLM47Model {
-		t.Fatalf("explicit model = %q, want %q", streamer.model, GLM47Model)
+	streamer = NewChatCompletionsStreamerWithClient(openaiapi.Client{}, "  "+Gemma4_31BModel+"  ")
+	if streamer.model != Gemma4_31BModel {
+		t.Fatalf("explicit model = %q, want %q", streamer.model, Gemma4_31BModel)
 	}
 }
 
 func TestChatCompletionsStreamerReportsAssistantPrefixCapability(t *testing.T) {
 	streamer := NewChatCompletionsStreamerWithClient(openaiapi.Client{}, "")
-	if got := streamer.Capabilities(); !got.AssistantPrefix || got.ToolResultSendPolicy != threads.ToolResultSendPermissive {
+	if got := streamer.Capabilities(); !got.AssistantPrefix {
 		t.Fatalf("expected assistant-prefix capability, got %#v", got)
 	}
 }
 
+func TestRequestMessagesGroupsAdjacentParallelToolCalls(t *testing.T) {
+	messages, err := conversationMessages(threads.Req{Items: []threads.Item{
+		threads.ToolCall{CallID: "c1", Name: "alpha", Payload: `{"value":1}`},
+		threads.ToolCall{CallID: "c2", Name: "beta", Payload: `{"value":2}`},
+	}})
+	if err != nil {
+		t.Fatalf("requestMessages: %v", err)
+	}
+	buf, err := json.Marshal(messages)
+	if err != nil {
+		t.Fatalf("marshal messages: %v", err)
+	}
+	var raw []map[string]any
+	if err := json.Unmarshal(buf, &raw); err != nil {
+		t.Fatalf("decode messages: %v", err)
+	}
+	if len(raw) != 1 {
+		t.Fatalf("assistant messages = %d, want one grouped parallel message: %s", len(raw), buf)
+	}
+	if calls := objectSlice(t, raw[0]["tool_calls"]); len(calls) != 2 {
+		t.Fatalf("grouped tool calls = %d, want 2: %s", len(calls), buf)
+	}
+}
+
 func TestChatCompletionsStreamerOptionsAndOptimizedPayload(t *testing.T) {
-	clearThinking := true
 	parallel := true
 	temperature := 0.0
 	var predictionCalls int
@@ -56,7 +79,6 @@ func TestChatCompletionsStreamerOptionsAndOptimizedPayload(t *testing.T) {
 	streamer.ReasoningEffort = "high"
 	streamer.ReasoningFormat = "hidden"
 	streamer.Temperature = &temperature
-	streamer.ClearThinking = &clearThinking
 	streamer.ServiceTier = "auto"
 	streamer.QueueThreshold = "1000"
 	streamer.Prediction = func(req threads.Req) (string, bool, error) {
@@ -95,7 +117,7 @@ func TestChatCompletionsStreamerOptionsAndOptimizedPayload(t *testing.T) {
 		t.Fatalf("queue_threshold header = %q", req.Header.Get("queue_threshold"))
 	}
 	wantStrings := map[string]string{
-		"model":            GLM47Model,
+		"model":            Gemma4_31BModel,
 		"reasoning_effort": "high",
 		"reasoning_format": "hidden",
 		"service_tier":     "auto",
@@ -105,9 +127,6 @@ func TestChatCompletionsStreamerOptionsAndOptimizedPayload(t *testing.T) {
 		if got := stringValue(raw[key]); got != want {
 			t.Fatalf("%s = %q, want %q in %#v", key, got, want, raw)
 		}
-	}
-	if got, ok := raw["clear_thinking"].(bool); !ok || !got {
-		t.Fatalf("clear_thinking = %#v, want true", raw["clear_thinking"])
 	}
 	if got, ok := raw["stream"].(bool); !ok || !got {
 		t.Fatalf("stream = %#v, want true", raw["stream"])
@@ -239,18 +258,6 @@ func TestChatCompletionsStreamerToolNormalizers(t *testing.T) {
 	})
 }
 
-func TestChatCompletionsStreamerClearThinkingRejectsNonGLM(t *testing.T) {
-	clearThinking := true
-	streamer := newTestStreamer(t, GPTOSS120BModel, nil, nil)
-	streamer.ClearThinking = &clearThinking
-	if err := streamer.StreamReq(threads.Req{Items: []threads.Item{threads.UserText("hello")}}, func(threads.Item) error { return nil }); err == nil || !strings.Contains(err.Error(), "clear_thinking") {
-		t.Fatalf("expected clear_thinking local error, got %v", err)
-	}
-	if streamer.capture.count() != 0 {
-		t.Fatal("request was sent despite local clear_thinking validation error")
-	}
-}
-
 func TestChatCompletionsStreamerAcceptsAllCerebrasServiceTiers(t *testing.T) {
 	for _, tier := range []string{"priority", "default", "auto", "flex"} {
 		t.Run(tier, func(t *testing.T) {
@@ -330,7 +337,7 @@ func TestChatCompletionsStreamerPredictionCallbackBehavior(t *testing.T) {
 
 func TestChatCompletionsStreamerRejectsUnsupportedRequestInputs(t *testing.T) {
 	t.Run("item", func(t *testing.T) {
-		if _, err := requestMessages(threads.Req{Items: []threads.Item{unsupportedItem{}}}); err == nil || !strings.Contains(err.Error(), "cerebras request item not supported") {
+		if _, err := conversationMessages(threads.Req{Items: []threads.Item{unsupportedItem{}}}); err == nil || !strings.Contains(err.Error(), "cerebras request item not supported") {
 			t.Fatalf("expected unsupported-item error, got %v", err)
 		}
 	})
@@ -416,7 +423,7 @@ func TestChatCompletionsStreamerToolChoiceEdgeCases(t *testing.T) {
 }
 
 func TestRequestFunctionParametersClosesObjectSchemasRecursively(t *testing.T) {
-	params, err := requestFunctionParameters("nested", threads.ToolPayloadJSONSchema(gschema.Schema{
+	params, err := cerebrasToolInputSchema("nested", threads.ToolPayloadJSONSchema(gschema.Schema{
 		Type: "object",
 		Properties: map[string]*gschema.Schema{
 			"config": {
@@ -457,7 +464,7 @@ func TestMsgpackGzipRewriteSkipsNonCerebrasHosts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if shouldRewriteMsgpackGzip(req) {
+	if shouldCompressCerebrasRequest(req) {
 		t.Fatal("non-Cerebras host should not be rewritten")
 	}
 }
@@ -535,7 +542,7 @@ func newTestStreamer(t testing.TB, model string, events []streamertest.Event, ob
 		option.WithMaxRetries(0),
 	)
 	if model == "" {
-		model = GLM47Model
+		model = Gemma4_31BModel
 	}
 	return &testStreamer{ChatCompletionsStreamer: NewChatCompletionsStreamerWithClient(client, model), capture: capture}
 }
@@ -607,6 +614,8 @@ func encodeChatCompletionStreamEvents(t testing.TB, events []streamertest.Event)
 			continue
 		}
 		switch v := ev.Item.(type) {
+		case threads.ReasoningItem:
+			appendChunk(map[string]any{"id": "chatcmpl_test", "object": "chat.completion.chunk", "created": 0, "model": "test-model", "choices": []any{map[string]any{"index": 0, "finish_reason": nil, "delta": map[string]any{"reasoning": v.Text}}}})
 		case threads.AssistantText:
 			appendChunk(map[string]any{"id": "chatcmpl_test", "object": "chat.completion.chunk", "created": 0, "model": "test-model", "choices": []any{map[string]any{"index": 0, "finish_reason": nil, "delta": map[string]any{"content": string(v)}}}})
 		case threads.ToolCallChunk:
@@ -837,7 +846,7 @@ func numericFloat(v any) float64 {
 func TestEmitHelpersForCoverage(t *testing.T) {
 	states := map[toolKey]*toolState{{choiceIndex: 0, toolIndex: 0}: {callID: "c", name: "n"}}
 	var emitted []threads.Item
-	if err := emitRemainingToolCalls(states, func(item threads.Item) error { emitted = append(emitted, item); return nil }); err != nil {
+	if err := finishRemainingToolCalls(states, func(item threads.Item) error { emitted = append(emitted, item); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(emitted, []threads.Item{threads.ToolCall{CallID: "c", Name: "n", Payload: ""}}) {

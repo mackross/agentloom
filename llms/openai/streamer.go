@@ -17,11 +17,13 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 
 	cacheopenai "github.com/mackross/agentloom/llms/cache/openai"
+	"github.com/mackross/agentloom/llms/internal/responsesutil"
 	"github.com/mackross/agentloom/llms/internal/streamerutil"
 	"github.com/mackross/agentloom/threads"
 )
 
 const DefaultModel = "gpt-4.1-mini"
+const reasoningProvider = "openai.responses"
 
 const (
 	DefaultWebSocketMaxIdle = 2 * time.Minute
@@ -39,6 +41,7 @@ type ResponsesStreamer struct {
 	client            openaiapi.Client
 	model             string
 	Reasoning         shared.ReasoningParam
+	ReasoningProvider string
 	ServiceTier       responses.ResponseNewParamsServiceTier
 	Transport         ResponsesTransport
 	OnOutputTextDelta func(string)
@@ -112,8 +115,15 @@ func NewResponsesStreamerWithClient(client openaiapi.Client, model string) *Resp
 	}
 }
 
-func (*ResponsesStreamer) Capabilities() threads.StreamerCapabilities {
-	return threads.StreamerCapabilities{AssistantPrefix: true, ToolResultSendPolicy: threads.ToolResultSendRequiresComplete}
+func (s *ResponsesStreamer) Capabilities() threads.StreamerCapabilities {
+	return threads.StreamerCapabilities{AssistantPrefix: true, Reasoning: threads.ReasoningForProvider(s.reasoningProvider())}
+}
+
+func (s *ResponsesStreamer) reasoningProvider() string {
+	if s.ReasoningProvider != "" {
+		return s.ReasoningProvider
+	}
+	return reasoningProvider
 }
 
 func (*ResponsesStreamer) SyntheticToolCallID() string {
@@ -135,7 +145,7 @@ func (s *ResponsesStreamer) StreamReq(req threads.Req, emit func(threads.Item) e
 func (s *ResponsesStreamer) Close() error {
 	s.mu.Lock()
 	conn := s.wsConn
-	s.clearWebSocketConnLocked()
+	s.forgetWebSocketLocked()
 	s.mu.Unlock()
 	if conn == nil {
 		return nil
@@ -149,12 +159,12 @@ func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Re
 		return err
 	}
 
-	params, err := s.responseParams(req)
+	params, err := s.responseRequest(req)
 	if err != nil {
 		return err
 	}
 
-	streamReq, err := s.newResponseStream(ctx, params, true)
+	streamReq, err := s.startResponse(ctx, params, true)
 	if err != nil {
 		return err
 	}
@@ -165,25 +175,25 @@ func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Re
 		emitted = true
 		return emit(item)
 	}
-	responseID, outputItems, err := s.consumeResponseStream(streamReq.stream, emitTracked)
+	responseID, outputItems, err := s.streamResponseItems(streamReq.stream, emitTracked)
 	if err != nil && shouldRetryResponseStreamError(ctx, err, streamReq, emitted) {
 		if streamReq.conn != nil {
-			s.dropWebSocketConn(streamReq.conn)
+			s.discardWebSocket(streamReq.conn)
 		}
 		_ = streamReq.stream.Close()
 		if streamReq.usedContinuation {
 			s.clearContinuation()
 		}
-		streamReq, err = s.newResponseStream(ctx, params, false)
+		streamReq, err = s.startResponse(ctx, params, false)
 		if err != nil {
 			return err
 		}
 		defer streamReq.stream.Close()
-		responseID, outputItems, err = s.consumeResponseStream(streamReq.stream, emitTracked)
+		responseID, outputItems, err = s.streamResponseItems(streamReq.stream, emitTracked)
 	}
 	if err != nil {
 		if streamReq.conn != nil {
-			s.dropWebSocketConn(streamReq.conn)
+			s.discardWebSocket(streamReq.conn)
 		}
 		return err
 	}
@@ -193,8 +203,8 @@ func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Re
 	return nil
 }
 
-func (s *ResponsesStreamer) responseParams(req threads.Req) (responses.ResponseNewParams, error) {
-	inputItems, err := requestInputItems(req)
+func (s *ResponsesStreamer) responseRequest(req threads.Req) (responses.ResponseNewParams, error) {
+	inputItems, err := conversationInput(req, s.reasoningProvider())
 	if err != nil {
 		return responses.ResponseNewParams{}, err
 	}
@@ -218,7 +228,7 @@ func (s *ResponsesStreamer) responseParams(req threads.Req) (responses.ResponseN
 	if len(tools) > 0 {
 		params.Tools = tools
 	}
-	choice, err := requestToolChoice(req.Tools)
+	choice, err := openAIToolSelection(req.Tools)
 	if err != nil {
 		return responses.ResponseNewParams{}, err
 	}
@@ -237,7 +247,7 @@ func (s *ResponsesStreamer) responseParams(req threads.Req) (responses.ResponseN
 	return params, nil
 }
 
-func (s *ResponsesStreamer) newResponseStream(ctx context.Context, params responses.ResponseNewParams, allowContinuation bool) (responseStreamRequest, error) {
+func (s *ResponsesStreamer) startResponse(ctx context.Context, params responses.ResponseNewParams, allowContinuation bool) (responseStreamRequest, error) {
 	fullInputItems := params.Input.OfInputItemList
 	paramsHash, err := hashResponseParams(params)
 	if err != nil {
@@ -261,7 +271,7 @@ func (s *ResponsesStreamer) newResponseStream(ctx context.Context, params respon
 
 	switch s.Transport {
 	case "", ResponsesTransportWebSocket:
-		stream, conn, err := s.newWebSocketResponseStream(ctx, sendParams)
+		stream, conn, err := s.startWebSocketResponse(ctx, sendParams)
 		if err != nil {
 			return responseStreamRequest{}, err
 		}
@@ -276,8 +286,8 @@ func (s *ResponsesStreamer) newResponseStream(ctx context.Context, params respon
 	}
 }
 
-func (s *ResponsesStreamer) newWebSocketResponseStream(ctx context.Context, params responses.ResponseNewParams) (*responses.WebSocketStream, *responses.WebSocketConn, error) {
-	conn, err := s.webSocketConn(ctx)
+func (s *ResponsesStreamer) startWebSocketResponse(ctx context.Context, params responses.ResponseNewParams) (*responses.WebSocketStream, *responses.WebSocketConn, error) {
+	conn, err := s.availableWebSocket(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -290,14 +300,14 @@ func (s *ResponsesStreamer) newWebSocketResponseStream(ctx context.Context, para
 		return nil, nil, err
 	}
 
-	s.dropWebSocketConn(conn)
-	conn, connErr := s.webSocketConn(ctx)
+	s.discardWebSocket(conn)
+	conn, connErr := s.availableWebSocket(ctx)
 	if connErr != nil {
 		return nil, nil, errors.Join(err, connErr)
 	}
 	stream, streamErr := conn.New(ctx, params)
 	if streamErr != nil {
-		s.dropWebSocketConn(conn)
+		s.discardWebSocket(conn)
 		return nil, nil, errors.Join(err, streamErr)
 	}
 	return stream, conn, nil
@@ -326,18 +336,18 @@ func shouldRetryResponseStreamError(ctx context.Context, err error, streamReq re
 	return responses.IsWebSocketRetryableError(err)
 }
 
-func (s *ResponsesStreamer) webSocketConn(ctx context.Context) (*responses.WebSocketConn, error) {
+func (s *ResponsesStreamer) availableWebSocket(ctx context.Context) (*responses.WebSocketConn, error) {
 	now := time.Now()
 
 	s.mu.Lock()
 	conn := s.wsConn
-	if conn != nil && !s.webSocketConnExpiredLocked(now) {
+	if conn != nil && !s.webSocketExpiredLocked(now) {
 		s.wsLastUsed = now
 		s.mu.Unlock()
 		return conn, nil
 	}
 	if conn != nil {
-		s.clearWebSocketConnLocked()
+		s.forgetWebSocketLocked()
 	}
 	s.mu.Unlock()
 	if conn != nil {
@@ -348,9 +358,9 @@ func (s *ResponsesStreamer) webSocketConn(ctx context.Context) (*responses.WebSo
 	defer s.mu.Unlock()
 	now = time.Now()
 	if s.wsConn != nil {
-		if s.webSocketConnExpiredLocked(now) {
+		if s.webSocketExpiredLocked(now) {
 			conn = s.wsConn
-			s.clearWebSocketConnLocked()
+			s.forgetWebSocketLocked()
 			s.mu.Unlock()
 			_ = conn.Close()
 			s.mu.Lock()
@@ -369,7 +379,7 @@ func (s *ResponsesStreamer) webSocketConn(ctx context.Context) (*responses.WebSo
 	return conn, nil
 }
 
-func (s *ResponsesStreamer) webSocketConnExpiredLocked(now time.Time) bool {
+func (s *ResponsesStreamer) webSocketExpiredLocked(now time.Time) bool {
 	if s.wsConn == nil {
 		return false
 	}
@@ -384,22 +394,22 @@ func (s *ResponsesStreamer) webSocketConnExpiredLocked(now time.Time) bool {
 	return maxIdle > 0 && now.Sub(s.wsLastUsed) > maxIdle || maxAge > 0 && now.Sub(s.wsCreatedAt) > maxAge
 }
 
-func (s *ResponsesStreamer) clearWebSocketConnLocked() {
+func (s *ResponsesStreamer) forgetWebSocketLocked() {
 	s.wsConn = nil
 	s.wsCreatedAt = time.Time{}
 	s.wsLastUsed = time.Time{}
 }
 
-func (s *ResponsesStreamer) dropWebSocketConn(conn *responses.WebSocketConn) {
+func (s *ResponsesStreamer) discardWebSocket(conn *responses.WebSocketConn) {
 	s.mu.Lock()
 	if s.wsConn == conn {
-		s.clearWebSocketConnLocked()
+		s.forgetWebSocketLocked()
 	}
 	s.mu.Unlock()
 	_ = conn.Close()
 }
 
-func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit func(threads.Item) error) (string, responses.ResponseInputParam, error) {
+func (s *ResponsesStreamer) streamResponseItems(stream responseStream, emit func(threads.Item) error) (string, responses.ResponseInputParam, error) {
 	functionCalls := map[string]functionCallMeta{}
 	customCalls := map[string]functionCallMeta{}
 	var responseID string
@@ -426,12 +436,12 @@ func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit fu
 			if event.Delta == "" {
 				continue
 			}
-			callID, name := resolveFunctionCall(functionCalls, event.ItemID, "")
+			callID, name := functionCallIdentity(functionCalls, event.ItemID, "")
 			if err := emit(threads.ToolCallChunk{CallID: callID, Name: name, PayloadDelta: event.Delta}); err != nil {
 				return "", nil, err
 			}
 		case "response.function_call_arguments.done":
-			callID, name := resolveFunctionCall(functionCalls, event.ItemID, event.Name)
+			callID, name := functionCallIdentity(functionCalls, event.ItemID, event.Name)
 			call := threads.ToolCall{CallID: callID, Name: name, Payload: event.Arguments}
 			call, err := s.normalizers.NormalizeResponseToolCall(call)
 			if err != nil {
@@ -444,12 +454,12 @@ func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit fu
 			if event.Delta == "" {
 				continue
 			}
-			callID, name := resolveFunctionCall(customCalls, event.ItemID, "")
+			callID, name := functionCallIdentity(customCalls, event.ItemID, "")
 			if err := emit(threads.ToolCallChunk{CallID: callID, Name: name, PayloadDelta: event.Delta}); err != nil {
 				return "", nil, err
 			}
 		case "response.custom_tool_call_input.done":
-			callID, name := resolveFunctionCall(customCalls, event.ItemID, "")
+			callID, name := functionCallIdentity(customCalls, event.ItemID, "")
 			call := threads.ToolCall{CallID: callID, Name: name, Payload: event.Input}
 			call, err := s.normalizers.NormalizeResponseToolCall(call)
 			if err != nil {
@@ -460,12 +470,17 @@ func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit fu
 			}
 		case "response.output_item.added", "response.output_item.done":
 			if event.Type == "response.output_item.done" {
+				if event.Item.Type == "reasoning" {
+					if err := emit(responsesutil.ReasoningOutput(s.reasoningProvider(), event.Item)); err != nil {
+						return "", nil, err
+					}
+				}
 				if item, ok := outputItemInputParam(event.Item); ok {
 					outputItems = append(outputItems, item)
 				}
 			}
-			rememberFunctionCall(functionCalls, event.Item)
-			rememberCustomCall(customCalls, event.Item)
+			recordFunctionCall(functionCalls, event.Item)
+			recordCustomCall(customCalls, event.Item)
 		case "error":
 			if event.Message != "" {
 				return "", nil, fmt.Errorf("openai responses stream error: %s", event.Message)
@@ -480,7 +495,7 @@ func (s *ResponsesStreamer) consumeResponseStream(stream responseStream, emit fu
 	return responseID, outputItems, nil
 }
 
-func rememberFunctionCall(functionCalls map[string]functionCallMeta, item responses.ResponseOutputItemUnion) {
+func recordFunctionCall(functionCalls map[string]functionCallMeta, item responses.ResponseOutputItemUnion) {
 	if item.Type != "function_call" || item.ID == "" {
 		return
 	}
@@ -494,7 +509,7 @@ func rememberFunctionCall(functionCalls map[string]functionCallMeta, item respon
 	functionCalls[item.ID] = meta
 }
 
-func rememberCustomCall(customCalls map[string]functionCallMeta, item responses.ResponseOutputItemUnion) {
+func recordCustomCall(customCalls map[string]functionCallMeta, item responses.ResponseOutputItemUnion) {
 	if item.Type != "custom_tool_call" || item.ID == "" {
 		return
 	}
@@ -508,7 +523,7 @@ func rememberCustomCall(customCalls map[string]functionCallMeta, item responses.
 	customCalls[item.ID] = meta
 }
 
-func resolveFunctionCall(functionCalls map[string]functionCallMeta, itemID, fallbackName string) (callID, name string) {
+func functionCallIdentity(functionCalls map[string]functionCallMeta, itemID, fallbackName string) (callID, name string) {
 	callID, name = itemID, fallbackName
 	if meta, ok := functionCalls[itemID]; ok {
 		if meta.callID != "" {
@@ -521,7 +536,7 @@ func resolveFunctionCall(functionCalls map[string]functionCallMeta, itemID, fall
 	return callID, name
 }
 
-func requestInputItems(req threads.Req) (responses.ResponseInputParam, error) {
+func conversationInput(req threads.Req, provider string) (responses.ResponseInputParam, error) {
 	inputItems := make(responses.ResponseInputParam, 0, len(req.Items))
 	for _, it := range req.Items {
 		switch v := it.(type) {
@@ -529,6 +544,12 @@ func requestInputItems(req threads.Req) (responses.ResponseInputParam, error) {
 			inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(string(v), responses.EasyInputMessageRoleUser))
 		case threads.AssistantText:
 			inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(string(v), responses.EasyInputMessageRoleAssistant))
+		case threads.ReasoningItem:
+			reasoning, err := responsesutil.ReasoningInput(provider, v)
+			if err != nil {
+				return nil, err
+			}
+			inputItems = append(inputItems, reasoning)
 		case threads.ToolCallChunk:
 			// ToolCallChunk is a streaming artifact for partial parsing. The
 			// Responses API request history should contain the final ToolCall, not
@@ -564,7 +585,7 @@ func requestTools(snap threads.ToolOfferSnapshot) ([]responses.ToolUnionParam, e
 			if err := json.Unmarshal(b, &params); err != nil {
 				return nil, fmt.Errorf("openai tool %q schema: %w", spec.Name, err)
 			}
-			normalizeStrictObjectSchemas(params)
+			normalizeStrictToolSchemas(params)
 			f := &responses.FunctionToolParam{Name: spec.Name, Parameters: params, Strict: openaiapi.Bool(true)}
 			if spec.Description != "" {
 				f.Description = openaiapi.String(spec.Description)
@@ -593,20 +614,20 @@ func requestTools(snap threads.ToolOfferSnapshot) ([]responses.ToolUnionParam, e
 	return out, nil
 }
 
-func normalizeStrictObjectSchemas(v any) {
+func normalizeStrictToolSchemas(v any) {
 	switch x := v.(type) {
 	case map[string]any:
-		if schemaHasType(x, "object") {
+		if schemaAllowsType(x, "object") {
 			if _, ok := x["additionalProperties"]; !ok {
 				x["additionalProperties"] = false
 			}
 			if props, ok := x["properties"].(map[string]any); ok && len(props) > 0 {
-				originalRequired := requiredStringSet(x["required"])
+				originalRequired := requiredFields(x["required"])
 				required := make([]string, 0, len(props))
 				for name, child := range props {
 					required = append(required, name)
 					if _, ok := originalRequired[name]; !ok {
-						allowSchemaNull(child)
+						makeSchemaNullable(child)
 					}
 				}
 				sort.Strings(required)
@@ -614,16 +635,16 @@ func normalizeStrictObjectSchemas(v any) {
 			}
 		}
 		for _, child := range x {
-			normalizeStrictObjectSchemas(child)
+			normalizeStrictToolSchemas(child)
 		}
 	case []any:
 		for _, child := range x {
-			normalizeStrictObjectSchemas(child)
+			normalizeStrictToolSchemas(child)
 		}
 	}
 }
 
-func schemaHasType(schema map[string]any, want string) bool {
+func schemaAllowsType(schema map[string]any, want string) bool {
 	switch typ := schema["type"].(type) {
 	case string:
 		return typ == want
@@ -637,7 +658,7 @@ func schemaHasType(schema map[string]any, want string) bool {
 	return false
 }
 
-func requiredStringSet(v any) map[string]struct{} {
+func requiredFields(v any) map[string]struct{} {
 	out := map[string]struct{}{}
 	switch xs := v.(type) {
 	case []any:
@@ -654,7 +675,7 @@ func requiredStringSet(v any) map[string]struct{} {
 	return out
 }
 
-func allowSchemaNull(v any) {
+func makeSchemaNullable(v any) {
 	schema, ok := v.(map[string]any)
 	if !ok {
 		return
@@ -674,7 +695,7 @@ func allowSchemaNull(v any) {
 	}
 }
 
-func requestToolChoice(snap threads.ToolOfferSnapshot) (*responses.ResponseNewParamsToolChoiceUnion, error) {
+func openAIToolSelection(snap threads.ToolOfferSnapshot) (*responses.ResponseNewParamsToolChoiceUnion, error) {
 	if snap.Allowed == nil {
 		if snap.Required {
 			opt := param.NewOpt(responses.ToolChoiceOptionsRequired)
@@ -683,7 +704,7 @@ func requestToolChoice(snap threads.ToolOfferSnapshot) (*responses.ResponseNewPa
 		return nil, nil
 	}
 	if len(snap.Allowed) > 0 {
-		tools, err := requestAllowedTools(snap)
+		tools, err := openAIAllowedToolSelection(snap)
 		if err != nil {
 			return nil, err
 		}
@@ -700,10 +721,10 @@ func requestToolChoice(snap threads.ToolOfferSnapshot) (*responses.ResponseNewPa
 	return &responses.ResponseNewParamsToolChoiceUnion{OfToolChoiceMode: opt}, nil
 }
 
-func requestAllowedTools(snap threads.ToolOfferSnapshot) ([]map[string]any, error) {
+func openAIAllowedToolSelection(snap threads.ToolOfferSnapshot) ([]map[string]any, error) {
 	out := make([]map[string]any, 0, len(snap.Allowed))
 	for _, name := range snap.Allowed {
-		kind, err := requestToolKind(snap, name)
+		kind, err := offeredToolKind(snap, name)
 		if err != nil {
 			return nil, err
 		}
@@ -712,7 +733,7 @@ func requestAllowedTools(snap threads.ToolOfferSnapshot) ([]map[string]any, erro
 	return out, nil
 }
 
-func requestToolKind(snap threads.ToolOfferSnapshot, name string) (string, error) {
+func offeredToolKind(snap threads.ToolOfferSnapshot, name string) (string, error) {
 	for _, spec := range snap.Offered {
 		if spec.Name != name {
 			continue

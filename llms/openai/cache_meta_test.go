@@ -10,7 +10,7 @@ import (
 
 func TestResponseParamsUsesLatestOpenAICacheMetadata(t *testing.T) {
 	s := NewResponsesStreamer("gpt-test")
-	params, err := s.responseParams(threads.Req{
+	params, err := s.responseRequest(threads.Req{
 		Items: []threads.Item{threads.UserText("a"), threads.UserText("b")},
 		ItemMeta: []map[string]any{
 			cacheopenai.PromptCacheKey("old"),
