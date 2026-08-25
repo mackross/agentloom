@@ -3,13 +3,14 @@ module github.com/mackross/agentloom
 go 1.26.1
 
 require (
+	github.com/PuerkitoBio/goquery v1.12.0
 	github.com/anthropics/anthropic-sdk-go v1.26.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/coder/websocket v1.8.13
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
 	github.com/google/jsonschema-go v0.4.2
-	github.com/mackross/weaver-go v0.0.0
 	github.com/openai/openai-go/v3 v3.37.0
+	github.com/tetratelabs/wazero v1.11.0
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	golang.org/x/tools v0.44.1-0.20260513175300-635ae9663724
 	google.golang.org/genai v1.57.0
@@ -20,6 +21,7 @@ require (
 	cloud.google.com/go v0.116.0 // indirect
 	cloud.google.com/go/auth v0.9.3 // indirect
 	cloud.google.com/go/compute/metadata v0.5.0 // indirect
+	github.com/andybalholm/cascadia v1.3.3 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
@@ -33,7 +35,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/tetratelabs/wazero v1.11.0 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
@@ -55,5 +56,3 @@ require (
 )
 
 replace github.com/openai/openai-go/v3 => github.com/mackross/openai-go/v3 v3.33.1-0.20260807033617-7c919eeb9047
-
-replace github.com/mackross/weaver-go => ../weaver-wt1

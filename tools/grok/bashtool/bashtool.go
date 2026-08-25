@@ -14,7 +14,7 @@ import (
 
 	"github.com/mackross/agentloom/threads"
 	"github.com/mackross/agentloom/threads/tool"
-	canonical "github.com/mackross/weaver-go/tools/bashtool"
+	canonical "github.com/mackross/agentloom/threads/tools/beta/bashtool"
 )
 
 const Name = "run_terminal_command"

@@ -9,7 +9,7 @@ import (
 	"fmt"
 
 	"github.com/mackross/agentloom/threads"
-	canonical "github.com/mackross/weaver-go/tools/fetchpagetool"
+	canonical "github.com/mackross/agentloom/threads/tools/beta/fetchpagetool"
 )
 
 const (
