@@ -1,0 +1,99 @@
+INVOKING SETUP
+==============
+
+```go
+type DeliveryQuestion struct {
+	OrderID         string `json:"order_id" jsonschema:"customer order identifier"`
+	CustomerMessage string `json:"customer_message" jsonschema:"customer's delivery question"`
+}
+
+type OrderLookupArgs struct {
+	OrderID string `json:"order_id" jsonschema:"order identifier to look up"`
+}
+
+type OrderLookupResult struct {
+	Status            string `json:"status"`
+	LastScan          string `json:"last_scan"`
+	EstimatedDelivery string `json:"estimated_delivery"`
+}
+
+lookupSpec, lookupHandler := threadtool.JSON[OrderLookupArgs](
+	"lookup_order",
+	"Look up the current fulfillment and delivery state for an order.",
+	func(_ context.Context, _ threads.Thread, call threadtool.Call, args OrderLookupArgs) threadtool.Item {
+		if args.OrderID != "ORD-2048" {
+			return threadtool.ResultError(call, fmt.Errorf("order %q not found", args.OrderID))
+		}
+		return threadtool.ResultJSON(call, OrderLookupResult{
+			Status:            "delayed",
+			LastScan:          "Sydney distribution centre",
+			EstimatedDelivery: "2026-04-03",
+		})
+	},
+)
+tools := threadtool.NewCatalog().Add(lookupSpec, lookupHandler)
+
+agent := SingleAgentTurn[DeliveryQuestion, any]{
+	Signature: programs.Signature[DeliveryQuestion, any]{
+		Name:        "answer_delivery_question",
+		Instruction: "Answer the customer's delivery question using order data. Do not invent shipment details.",
+	},
+	Tools: tools,
+}
+
+out, err := agent.Run(ctx, branch, DeliveryQuestion{
+	OrderID:         "ORD-2048",
+	CustomerMessage: "My order was due yesterday. Where is it?",
+})
+```
+
+CONVERSATION
+============
+
+ASSISTANT INSTRUCTION
+Answer the customer's delivery question using order data. Do not invent shipment details.
+
+AVAILABLE TOOLS (optional, parallel=provider default)
+- lookup_order: Look up the current fulfillment and delivery state for an order.
+  Payload:
+  {
+    "required": [
+      "order_id"
+    ],
+    "properties": {
+      "order_id": {
+        "type": "string",
+        "description": "order identifier to look up"
+      }
+    },
+    "additionalProperties": false
+  }
+
+USER
+Signature: answer_delivery_question
+
+Input JSON:
+{
+  "order_id": "ORD-2048",
+  "customer_message": "My order was due yesterday. Where is it?"
+}
+
+Use the available tools as needed to complete the task.
+
+ASSISTANT TOOL CALL: lookup_order
+{
+  "order_id": "ORD-2048"
+}
+
+TOOL RESULT: lookup_order
+{
+  "estimated_delivery": "2026-04-03",
+  "last_scan": "Sydney distribution centre",
+  "status": "delayed"
+}
+
+ASSISTANT
+Order ORD-2048 is delayed and is now expected by 3 April 2026.
+
+PROGRAM OUTPUT
+null

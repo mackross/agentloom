@@ -1,0 +1,169 @@
+INVOKING SETUP
+==============
+
+```go
+type DeliveryQuestion struct {
+	OrderID         string `json:"order_id" jsonschema:"customer order identifier"`
+	CustomerMessage string `json:"customer_message" jsonschema:"customer's delivery question"`
+}
+
+type SupportResolution struct {
+	OrderStatus   string `json:"order_status" jsonschema:"current order status"`
+	CustomerReply string `json:"customer_reply" jsonschema:"reply to send to the customer"`
+	Escalate      bool   `json:"escalate" jsonschema:"whether a human support agent should take over"`
+}
+
+type OrderLookupArgs struct {
+	OrderID string `json:"order_id" jsonschema:"order identifier to look up"`
+}
+
+type OrderLookupResult struct {
+	Status            string `json:"status"`
+	LastScan          string `json:"last_scan"`
+	EstimatedDelivery string `json:"estimated_delivery"`
+}
+
+lookupSpec, lookupHandler := threadtool.JSON[OrderLookupArgs](
+	"lookup_order",
+	"Look up the current fulfillment and delivery state for an order.",
+	func(_ context.Context, _ threads.Thread, call threadtool.Call, args OrderLookupArgs) threadtool.Item {
+		if args.OrderID != "ORD-2048" {
+			return threadtool.ResultError(call, fmt.Errorf("order %q not found", args.OrderID))
+		}
+		return threadtool.ResultJSON(call, OrderLookupResult{
+			Status:            "delayed",
+			LastScan:          "Sydney distribution centre",
+			EstimatedDelivery: "2026-04-03",
+		})
+	},
+)
+tools := threadtool.NewCatalog().Add(lookupSpec, lookupHandler)
+
+agent := SingleAgentTurn[DeliveryQuestion, SupportResolution]{
+	Signature: programs.Signature[DeliveryQuestion, SupportResolution]{
+		Name:        "resolve_delivery_question",
+		Instruction: "Resolve the customer's delivery question using order data. Do not invent shipment details.",
+	},
+	Tools: tools,
+}
+
+out, err := agent.Run(ctx, branch, DeliveryQuestion{
+	OrderID:         "ORD-2048",
+	CustomerMessage: "My order was due yesterday. Where is it?",
+})
+```
+
+CONVERSATION
+============
+
+ASSISTANT INSTRUCTION
+Resolve the customer's delivery question using order data. Do not invent shipment details.
+
+AVAILABLE TOOLS (optional, parallel=false)
+- lookup_order: Look up the current fulfillment and delivery state for an order.
+  Payload:
+  {
+    "required": [
+      "order_id"
+    ],
+    "properties": {
+      "order_id": {
+        "type": "string",
+        "description": "order identifier to look up"
+      }
+    },
+    "additionalProperties": false
+  }
+- submit_output: Submit the final structured output.
+  Payload:
+  {
+    "required": [
+      "order_status",
+      "customer_reply",
+      "escalate"
+    ],
+    "properties": {
+      "customer_reply": {
+        "type": "string",
+        "description": "reply to send to the customer"
+      },
+      "escalate": {
+        "type": "boolean",
+        "description": "whether a human support agent should take over"
+      },
+      "order_status": {
+        "type": "string",
+        "description": "current order status"
+      }
+    },
+    "additionalProperties": false
+  }
+
+USER
+Signature: resolve_delivery_question
+
+Input JSON:
+{
+  "order_id": "ORD-2048",
+  "customer_message": "My order was due yesterday. Where is it?"
+}
+
+Use the available tools as needed to complete the task. When the task is complete, call "submit_output" with the final structured output.
+
+ASSISTANT TOOL CALL: lookup_order
+{
+  "order_id": "ORD-2048"
+}
+
+TOOL RESULT: lookup_order
+{
+  "estimated_delivery": "2026-04-03",
+  "last_scan": "Sydney distribution centre",
+  "status": "delayed"
+}
+
+ASSISTANT
+I found the shipment and prepared a customer response.
+
+AVAILABLE TOOLS (required, parallel=false)
+- submit_output: Submit the final structured output.
+  Payload:
+  {
+    "required": [
+      "order_status",
+      "customer_reply",
+      "escalate"
+    ],
+    "properties": {
+      "customer_reply": {
+        "type": "string",
+        "description": "reply to send to the customer"
+      },
+      "escalate": {
+        "type": "boolean",
+        "description": "whether a human support agent should take over"
+      },
+      "order_status": {
+        "type": "string",
+        "description": "current order status"
+      }
+    },
+    "additionalProperties": false
+  }
+
+USER
+The agent turn finished without calling "submit_output". Call "submit_output" now with the final structured output. Do not return a text response.
+
+ASSISTANT TOOL CALL: submit_output
+{
+  "customer_reply": "Order ORD-2048 is delayed at the Sydney distribution centre and is now expected by 3 April 2026.",
+  "escalate": false,
+  "order_status": "delayed"
+}
+
+PROGRAM OUTPUT
+{
+  "order_status": "delayed",
+  "customer_reply": "Order ORD-2048 is delayed at the Sydney distribution centre and is now expected by 3 April 2026.",
+  "escalate": false
+}
