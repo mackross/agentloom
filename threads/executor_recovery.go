@@ -145,20 +145,30 @@ func (t *thread) resumeReceivingStream(e stateObserver, opts RecoveryOptions) er
 		caps = r.StreamerCapabilities()
 	}
 	rolledBack := false
-	send, toolStart, toolPrev := (*item[Item])(nil), (*item[Item])(nil), (*item[Item])(nil)
-	for prev, n := (*item[Item])(nil), t.items.Head(); n != nil; prev, n = n, n.Next {
+	var send *item[Item]
+	for n := t.items.Head(); n != nil; n = n.Next {
 		if _, ok := n.Item.(SendItem); ok {
 			send = n
 		}
-		if send != nil && n != send && toolStart == nil {
+		if n == t.cb.streamInsertionPoint {
+			break
+		}
+	}
+
+	// Tool recovery applies only to model output in the active stream. A tool
+	// from an earlier completed request must never become this stream's rollback
+	// boundary.
+	var toolStart, toolPrev *item[Item]
+	if send != nil && send != t.cb.streamInsertionPoint {
+		for prev, n := send, send.Next; n != nil; prev, n = n, n.Next {
 			if _, ok := n.Item.(ToolCallChunk); ok {
 				toolStart, toolPrev = n, prev
 			} else if _, ok := n.Item.(ToolCall); ok {
 				toolStart, toolPrev = n, prev
 			}
-		}
-		if n == t.cb.streamInsertionPoint {
-			break
+			if toolStart != nil || n == t.cb.streamInsertionPoint {
+				break
+			}
 		}
 	}
 	if toolStart == nil {
