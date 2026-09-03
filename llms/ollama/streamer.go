@@ -24,6 +24,12 @@ const (
 	BaseURL      = "http://localhost:11434"
 	DefaultModel = "qwen3"
 
+	// DefaultStreamProgressTimeout bounds how long a stream may stay silent
+	// before it is failed. Hosts chewing through a long prompt evaluation
+	// (for example num_ctx of several hundred thousand tokens) can otherwise
+	// hold a stream open indefinitely without producing a single byte.
+	DefaultStreamProgressTimeout = 5 * time.Minute
+
 	reasoningProvider = "ollama.chat"
 	maxErrorBody      = 1 << 20
 )
@@ -40,6 +46,10 @@ const (
 // either guarantee are rejected. AllowBestEffortToolControls permits such
 // requests while still filtering the offered tools, but cannot make the model
 // honor the unsupported control.
+//
+// StreamProgressTimeout fails a stream whose body stays silent for longer
+// than the given duration; a nil value inherits DefaultStreamProgressTimeout
+// and a non-nil value of zero or less disables the watchdog.
 type ChatStreamer struct {
 	client       *http.Client
 	baseURL      *url.URL
@@ -51,8 +61,13 @@ type ChatStreamer struct {
 	KeepAlive any
 	Format    json.RawMessage
 	Truncate  *bool
-	Shift     *bool
-	Headers   http.Header
+
+	// StreamProgressTimeout bounds how long the response body may stay silent
+	// before the stream is failed with an error. nil inherits
+	// DefaultStreamProgressTimeout; zero or negative disables the watchdog.
+	StreamProgressTimeout *time.Duration
+	Shift                 *bool
+	Headers               http.Header
 
 	AllowBestEffortToolControls bool
 	OnOutputTextDelta           func(string)
@@ -182,6 +197,41 @@ func (s *ChatStreamer) StreamReq(req threads.Req, emit func(threads.Item) error)
 	return s.StreamReqContext(context.Background(), req, emit)
 }
 
+// streamProgressTimeout resolves the effective body-silence bound for this
+// streamer: nil inherits DefaultStreamProgressTimeout, zero or less disables.
+func (s *ChatStreamer) streamProgressTimeout() (time.Duration, bool) {
+	if s.StreamProgressTimeout == nil {
+		return DefaultStreamProgressTimeout, true
+	}
+	d := *s.StreamProgressTimeout
+	return d, d > 0
+}
+
+// ErrStreamProgressTimeout is reported (wrapped) when an Ollama stream is
+// failed because no data arrived within the stream-progress timeout.
+var ErrStreamProgressTimeout = errors.New("ollama stream made no progress")
+
+// classifyStreamFailure converts a context-driven transport failure into an
+// attributable error: the watchdog's ErrStreamProgressTimeout when the stream
+// deadline fired on an otherwise-live parent context, the parent context
+// error when the caller canceled, and nil when err is not context-driven.
+func classifyStreamFailure(err error, watchdogCtx, parent context.Context, timeout time.Duration) error {
+	if err == nil {
+		return nil
+	}
+	contextDriven := errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+	if !contextDriven && watchdogCtx.Err() == nil {
+		return nil
+	}
+	if watchdogCtx.Err() != nil && parent.Err() == nil {
+		return fmt.Errorf("ollama chat: %w (no data within %v)", ErrStreamProgressTimeout, timeout)
+	}
+	if parent.Err() != nil {
+		return parent.Err()
+	}
+	return nil
+}
+
 func (s *ChatStreamer) StreamReqContext(ctx context.Context, req threads.Req, emit func(threads.Item) error) error {
 	if s.baseURLError != nil {
 		return fmt.Errorf("ollama host: %w", s.baseURLError)
@@ -191,6 +241,13 @@ func (s *ChatStreamer) StreamReqContext(ctx context.Context, req threads.Req, em
 	}
 	if err := validateThink(s.Think); err != nil {
 		return err
+	}
+	parent := ctx
+	timeout, watchdogEnabled := s.streamProgressTimeout()
+	if watchdogEnabled {
+		var watchdogCancel context.CancelFunc
+		ctx, watchdogCancel = context.WithTimeout(ctx, timeout)
+		defer watchdogCancel()
 	}
 
 	req, err := s.normalizers.NormalizeReq(req)
@@ -239,13 +296,16 @@ func (s *ChatStreamer) StreamReqContext(ctx context.Context, req threads.Req, em
 
 	resp, err := s.client.Do(httpReq)
 	if err != nil {
-		return err
+		if classified := classifyStreamFailure(err, ctx, parent, timeout); classified != nil {
+			return classified
+		}
+		return fmt.Errorf("ollama chat request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return decodeAPIError(resp)
 	}
-	return s.decodeStream(resp.Body, emit)
+	return s.decodeStream(resp.Body, ctx, parent, timeout, emit)
 }
 
 func (s *ChatStreamer) validateToolControls(snap threads.ToolOfferSnapshot, hasTools bool) error {
@@ -264,7 +324,7 @@ func (s *ChatStreamer) validateToolControls(snap threads.ToolOfferSnapshot, hasT
 	return nil
 }
 
-func (s *ChatStreamer) decodeStream(r io.Reader, emit func(threads.Item) error) error {
+func (s *ChatStreamer) decodeStream(r io.Reader, watchdogCtx, parent context.Context, timeout time.Duration, emit func(threads.Item) error) error {
 	decoder := json.NewDecoder(r)
 	var reasoning strings.Builder
 	calls := map[string]*responseToolCall{}
@@ -331,6 +391,9 @@ func (s *ChatStreamer) decodeStream(r io.Reader, emit func(threads.Item) error) 
 			return io.ErrUnexpectedEOF
 		}
 		if err != nil {
+			if classified := classifyStreamFailure(err, watchdogCtx, parent, timeout); classified != nil {
+				return classified
+			}
 			return fmt.Errorf("ollama chat stream: %w", err)
 		}
 		if chunk.Error != "" {

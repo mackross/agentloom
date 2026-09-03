@@ -335,6 +335,75 @@ func TestChatStreamerErrorsAndCancellation(t *testing.T) {
 		}
 	})
 
+	t.Run("progress_timeout", func(t *testing.T) {
+		// Handler stalls until the client's request context is canceled; only
+		// the watchdog can unblock this stream.
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			writeJSON(t, w, map[string]any{"message": map[string]any{"content": "first"}, "done": false})
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			<-r.Context().Done()
+		}))
+		defer server.Close()
+		streamer := NewChatStreamerWithClient(server.Client(), mustURL(t, server.URL), "model")
+		short := 40 * time.Millisecond
+		streamer.StreamProgressTimeout = &short
+		done := make(chan error, 1)
+		go func() {
+			_, err := collectOllamaItems(streamer)
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err == nil || !errors.Is(err, ErrStreamProgressTimeout) {
+				t.Fatalf("progress timeout error = %v, want ErrStreamProgressTimeout", err)
+			}
+			if errors.Is(err, context.Canceled) {
+				t.Fatalf("progress timeout error must not be a cancellation: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("stream did not fail before watchdog deadline")
+		}
+	})
+
+	t.Run("progress_timeout_disabled", func(t *testing.T) {
+		server := newNDJSONServer(t,
+			map[string]any{"message": map[string]any{"content": "first"}, "done": false},
+			map[string]any{"done": true},
+		)
+		defer server.Close()
+		streamer := NewChatStreamerWithClient(server.Client(), mustURL(t, server.URL), "model")
+		off := -time.Second
+		streamer.StreamProgressTimeout = &off
+		items, err := collectOllamaItems(streamer)
+		if err != nil {
+			t.Fatalf("stream with disabled watchdog: %v", err)
+		}
+		if len(items) == 0 {
+			t.Fatal("expected items from stream with disabled watchdog")
+		}
+	})
+
+	t.Run("progress_timeout_resolution", func(t *testing.T) {
+		if d, enabled := (&ChatStreamer{}).streamProgressTimeout(); !enabled || d != DefaultStreamProgressTimeout {
+			t.Fatalf("nil field: %v enabled=%v, want default enabled", d, enabled)
+		}
+		off := -time.Second
+		if _, enabled := (&ChatStreamer{StreamProgressTimeout: &off}).streamProgressTimeout(); enabled {
+			t.Fatal("negative value should disable the watchdog")
+		}
+		zero := time.Duration(0)
+		if _, enabled := (&ChatStreamer{StreamProgressTimeout: &zero}).streamProgressTimeout(); enabled {
+			t.Fatal("zero value should disable the watchdog")
+		}
+		d2 := 3 * time.Second
+		if d, enabled := (&ChatStreamer{StreamProgressTimeout: &d2}).streamProgressTimeout(); !enabled || d != d2 {
+			t.Fatalf("custom value: %v enabled=%v, want 3s enabled", d, enabled)
+		}
+	})
+
 	t.Run("emit_error", func(t *testing.T) {
 		server := newNDJSONServer(t, map[string]any{"message": map[string]any{"content": "x"}, "done": false})
 		defer server.Close()
@@ -528,6 +597,15 @@ func newNDJSONServer(t testing.TB, chunks ...map[string]any) *httptest.Server {
 			writeJSON(t, w, chunk)
 		}
 	}))
+}
+
+func collectOllamaItems(streamer *ChatStreamer) ([]threads.Item, error) {
+	var items []threads.Item
+	err := streamer.StreamReq(threads.Req{}, func(item threads.Item) error {
+		items = append(items, item)
+		return nil
+	})
+	return items, err
 }
 
 func writeJSON(t testing.TB, w io.Writer, value any) {
