@@ -10,17 +10,16 @@ import (
 	gschema "github.com/google/jsonschema-go/jsonschema"
 
 	"github.com/mackross/agentloom/threads"
-	"github.com/mackross/agentloom/threads/simpletool"
 )
 
 func TestCancelCurrentTurnCancelsBlockingToolResolver(t *testing.T) {
 	thread := threads.New()
-	thread.SetToolProvider(simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
+	thread.SetToolProvider(threads.ToolProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return testBoundToolsSnapshot("slow", "slow tool", `{"function":"tool/slow@v1"}`)
 	}))
 	resolverStarted := make(chan struct{}, 1)
 	resolverDone := make(chan error, 1)
-	thread.SetToolResolver(simpletool.ResolverFunc(func(ctx context.Context, _ threads.Thread, call threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(threads.ToolResolverFunc(func(ctx context.Context, _ threads.Thread, call threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
 		resolverStarted <- struct{}{}
 		<-ctx.Done()
 		resolverDone <- ctx.Err()
@@ -51,11 +50,11 @@ func TestCancelCurrentTurnCancelsBlockingToolResolver(t *testing.T) {
 func TestToolProviderAndResolverExecuteToolCallsEndToEnd(t *testing.T) {
 	thread := threads.New()
 
-	thread.SetToolProvider(simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
+	thread.SetToolProvider(threads.ToolProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return testBoundToolsSnapshot("calc", "calculate", `{"function":"tool/calc@v1","answer":"3"}`)
 	}))
 	resolveCalls := 0
-	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(threads.ToolResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 		resolveCalls++
 		var cfg struct {
 			Answer string `json:"answer"`
@@ -149,10 +148,10 @@ func TestRollbackableToolFailureRequestProjection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			thread := threads.New()
-			thread.SetToolProvider(simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
+			thread.SetToolProvider(threads.ToolProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 				return testBoundToolsSnapshot("calc", "calculate", `{"function":"tool/calc@v1"}`)
 			}))
-			thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
+			thread.SetToolResolver(threads.ToolResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, _ json.RawMessage) (threads.ToolDispatch, error) {
 				return threads.ToolDispatch{
 					Started: true,
 					Items: []threads.Item{threads.ToolCallResult{
@@ -197,11 +196,11 @@ func TestRollbackableToolFailureRequestProjection(t *testing.T) {
 func TestToolResolutionIgnoresOutOfOrderChunksAfterFinalCall(t *testing.T) {
 	thread := threads.New()
 
-	thread.SetToolProvider(simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
+	thread.SetToolProvider(threads.ToolProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return testBoundToolsSnapshot("calc", "calculate", `{"function":"tool/calc@v1","answer":"3"}`)
 	}))
 	resolveCalls := 0
-	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(threads.ToolResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 		resolveCalls++
 		return threads.ToolDispatch{
 			Started: true,
@@ -241,16 +240,16 @@ func TestToolResolutionIgnoresOutOfOrderChunksAfterFinalCall(t *testing.T) {
 func TestToolResolutionUsesUpdatedProviderForLaterToolRequests(t *testing.T) {
 	thread := threads.New()
 
-	providerA := simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
+	providerA := threads.ToolProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return testBoundToolsSnapshot("write_file", "write contents", `{"function":"tool/write-file@v1","filename":"old.txt"}`)
 	})
-	providerB := simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
+	providerB := threads.ToolProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return testBoundToolsSnapshot("write_file", "write contents", `{"function":"tool/write-file@v1","filename":"new.txt"}`)
 	})
 	thread.SetToolProvider(providerA)
 
 	seenLoadData := []string{}
-	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(threads.ToolResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 		seenLoadData = append(seenLoadData, string(handlerLoadData))
 		var cfg struct {
 			Filename string `json:"filename"`
@@ -326,10 +325,10 @@ func TestToolResolutionUsesUpdatedProviderForLaterToolRequests(t *testing.T) {
 
 func TestCancelCurrentTurnSuppressesToolResultAutoSend(t *testing.T) {
 	thread := threads.New()
-	thread.SetToolProvider(simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
+	thread.SetToolProvider(threads.ToolProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return testBoundToolsSnapshot("calc", "calculate", `{"function":"tool/calc@v1","answer":"3"}`)
 	}))
-	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(threads.ToolResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 		return threads.ToolDispatch{
 			Started: true,
 			Items:   []threads.Item{threads.ToolCallResult{CallID: call.CallID, Output: "3"}},
@@ -354,10 +353,10 @@ func TestCancelCurrentTurnSuppressesToolResultAutoSend(t *testing.T) {
 
 func TestToolDispatchManualContinueDoesNotAutoSend(t *testing.T) {
 	thread := threads.New()
-	thread.SetToolProvider(simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
+	thread.SetToolProvider(threads.ToolProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return testBoundToolsSnapshot("calc", "calculate", `{"function":"tool/calc@v1","answer":"3"}`)
 	}))
-	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(threads.ToolResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 		return threads.ToolDispatch{
 			Started:  true,
 			Continue: threads.ToolContinueManual,
@@ -378,10 +377,10 @@ func TestToolDispatchManualContinueDoesNotAutoSend(t *testing.T) {
 
 func TestCancelCurrentTurnWithoutActiveStreamSuppressesLateToolResultAutoSend(t *testing.T) {
 	thread := threads.New()
-	thread.SetToolProvider(simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
+	thread.SetToolProvider(threads.ToolProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return testBoundToolsSnapshot("calc", "calculate", `{"function":"tool/calc@v1","answer":"3"}`)
 	}))
-	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(threads.ToolResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 		return threads.ToolDispatch{Started: true}, nil
 	}))
 
@@ -402,10 +401,10 @@ func TestCancelCurrentTurnWithoutActiveStreamSuppressesLateToolResultAutoSend(t 
 
 func TestLateToolResultForStartedAutoContinueDispatchQueuesSend(t *testing.T) {
 	thread := threads.New()
-	thread.SetToolProvider(simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
+	thread.SetToolProvider(threads.ToolProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return testBoundToolsSnapshot("calc", "calculate", `{"function":"tool/calc@v1","answer":"3"}`)
 	}))
-	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(threads.ToolResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 		return threads.ToolDispatch{
 			Started: true,
 		}, nil
@@ -439,10 +438,10 @@ func TestLateToolResultForStartedAutoContinueDispatchQueuesSend(t *testing.T) {
 
 func TestLateToolResultForStartedManualContinueDispatchDoesNotQueueSend(t *testing.T) {
 	thread := threads.New()
-	thread.SetToolProvider(simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
+	thread.SetToolProvider(threads.ToolProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return testBoundToolsSnapshot("calc", "calculate", `{"function":"tool/calc@v1","answer":"3"}`)
 	}))
-	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(threads.ToolResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 		return threads.ToolDispatch{
 			Started:  true,
 			Continue: threads.ToolContinueManual,
@@ -463,10 +462,10 @@ func TestLateToolResultForStartedManualContinueDispatchDoesNotQueueSend(t *testi
 
 func TestToolAutoContinueUsesExistingPendingSendBoundary(t *testing.T) {
 	thread := threads.New()
-	thread.SetToolProvider(simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
+	thread.SetToolProvider(threads.ToolProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return testBoundToolsSnapshot("calc", "calculate", `{"function":"tool/calc@v1","answer":"3"}`)
 	}))
-	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(threads.ToolResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 		return threads.ToolDispatch{
 			Started: true,
 			Items:   []threads.Item{threads.ToolCallResult{CallID: call.CallID, Output: "3"}},
@@ -501,10 +500,10 @@ func TestToolAutoContinueUsesExistingPendingSendBoundary(t *testing.T) {
 
 func TestToolManualContinueUsesExistingPendingSendBoundary(t *testing.T) {
 	thread := threads.New()
-	thread.SetToolProvider(simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
+	thread.SetToolProvider(threads.ToolProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return testBoundToolsSnapshot("calc", "calculate", `{"function":"tool/calc@v1","answer":"3"}`)
 	}))
-	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(threads.ToolResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 		return threads.ToolDispatch{
 			Started:  true,
 			Continue: threads.ToolContinueManual,

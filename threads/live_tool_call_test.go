@@ -13,7 +13,6 @@ import (
 
 	openaiwrap "github.com/mackross/agentloom/llms/openai"
 	"github.com/mackross/agentloom/threads"
-	"github.com/mackross/agentloom/threads/simpletool"
 	"github.com/mackross/agentloom/threads/tool"
 	"github.com/mackross/agentloom/threads/tool/multitool"
 )
@@ -30,7 +29,7 @@ func TestLiveThreadExecutesCalculatorToolWithOpenAIResponses(t *testing.T) {
 	thread := threads.New()
 	streamer := debugStreamer{t: t, inner: openaiwrap.NewResponsesStreamer(model)}
 	thread.SetExecutor(threads.NewThreadExecutor(streamer))
-	thread.SetToolProvider(simpletool.ProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
+	thread.SetToolProvider(threads.ToolProviderFunc(func(_ threads.Thread) threads.ToolsSnapshot {
 		return threads.ToolsSnapshot{
 			Snapshot: threads.ToolOfferSnapshot{
 				Offered: []threads.ToolSpec{{
@@ -51,7 +50,7 @@ func TestLiveThreadExecutesCalculatorToolWithOpenAIResponses(t *testing.T) {
 	}))
 
 	resolveCalls := 0
-	thread.SetToolResolver(simpletool.ResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
+	thread.SetToolResolver(threads.ToolResolverFunc(func(_ context.Context, _ threads.Thread, call threads.ToolCall, handlerLoadData json.RawMessage) (threads.ToolDispatch, error) {
 		resolveCalls++
 		var args struct {
 			A int `json:"a"`

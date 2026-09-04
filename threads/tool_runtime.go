@@ -46,3 +46,21 @@ type ToolResolver interface {
 	// canceled LLM streamer turn produced this tool call.
 	ResolveTool(context.Context, Thread, ToolCall, json.RawMessage) (ToolDispatch, error)
 }
+
+// ToolProviderFunc adapts a function to ToolProvider. Thread.SetToolProvider
+// clones the returned snapshot before queueing it, so the function may return
+// shared data.
+type ToolProviderFunc func(Thread) ToolsSnapshot
+
+func (f ToolProviderFunc) ToolsSnapshot(thread Thread) ToolsSnapshot {
+	return f(thread)
+}
+
+// ToolResolverFunc adapts a function to ToolResolver. The handler load data is
+// already a private copy taken from the thread's ToolsSnapshot, so the function
+// may retain it.
+type ToolResolverFunc func(context.Context, Thread, ToolCall, json.RawMessage) (ToolDispatch, error)
+
+func (f ToolResolverFunc) ResolveTool(ctx context.Context, thread Thread, call ToolCall, handlerLoadData json.RawMessage) (ToolDispatch, error) {
+	return f(ctx, thread, call, handlerLoadData)
+}

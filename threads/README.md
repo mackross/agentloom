@@ -67,7 +67,8 @@ implemented feature overview.
   - copy opens read the parent without taking a writer lease, so callers can
     fork from a branch that is already open elsewhere in the process
 - Tool helper packages:
-  - [`simpletool`](./simpletool) for small provider/resolver adapters
+  - `ToolProviderFunc` and `ToolResolverFunc` in `threads` for hand-written
+    providers and resolvers that own their own hydration and dispatch
   - [`tool`](./tool) for catalogs, typed JSON handlers, and result helpers
 - Working integrations and examples:
   - OpenAI Responses streamer
@@ -99,8 +100,8 @@ follow-up request.
   construction, durability, and the minimal tool-routing boundary.
 - `threads/tool` owns higher-level tool helpers such as catalogs and typed JSON
   handlers.
-- `threads/simpletool` is a small adapter layer for tests and lightweight
-  integrations.
+- `ToolProviderFunc` and `ToolResolverFunc` are the function forms of the
+  `threads` tool interfaces for tests and lightweight integrations.
 
 ## Not Implemented Yet
 

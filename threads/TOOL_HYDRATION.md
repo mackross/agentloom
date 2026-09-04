@@ -244,11 +244,14 @@ Silent fallback to "whatever tool is currently mounted" should be avoided.
 - old snapshots must remain available for any retained tool calls that still depend on them.
 - if behavior cannot be rebuilt from durable data, it should use delegates rather than the helper hydration path.
 
-## Where `simpletool` Fits
+## Where `ToolProviderFunc` And `ToolResolverFunc` Fit
 
-`threads/simpletool` exists only for very small adapters and tests.
+`threads.ToolProviderFunc` and `threads.ToolResolverFunc` are the function forms
+of the boundary interfaces. They exist for tests and for callers that own their
+own hydration and dispatch; the resolver function receives the opaque handler
+load data directly.
 
-It is not the long-term rich tool API.
+They are not the long-term rich tool API.
 
 If a caller needs:
 

@@ -28,7 +28,6 @@ which aligns with most storage patterns (fast append, slower update).
 - `threads/tool`: helpers for defining catalogs, typed JSON handlers, and tool results.
 - `threads/tool/multitool`: one stable model-facing tool that routes command-style calls
   to hidden subtools, with Lark/custom-tool and JSON modes.
-- `threads/simpletool`: small adapters for lightweight tool providers and resolvers.
 - `threads/durability`: local file-backed durable thread storage.
 - `threads/durability/sqlitebranchstore`: SQLite branch, lease, checkpoint, and WAL storage.
 - `llms/openai`: OpenAI Responses API streamer with websocket/SSE transports,
