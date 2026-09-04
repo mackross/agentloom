@@ -28,6 +28,9 @@ func Run(t *testing.T, h LiveHarness) {
 	if _, ok := h.(supportsAllowedTools); ok {
 		runAllowedTools(t, h)
 	}
+	if _, ok := h.(supportsToolArguments); ok {
+		runToolArguments(t, h)
+	}
 	if reasoning, ok := h.(ReasoningToolLoopHarness); ok {
 		runReasoningToolLoopSuite(t, reasoning)
 	}

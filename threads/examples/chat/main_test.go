@@ -7,6 +7,7 @@ import (
 
 	anthropicwrap "github.com/mackross/agentloom/llms/anthropic"
 	fireworkswrap "github.com/mackross/agentloom/llms/fireworks"
+	googlegenaiwrap "github.com/mackross/agentloom/llms/googlegenai"
 	openaiwrap "github.com/mackross/agentloom/llms/openai"
 	"github.com/mackross/agentloom/threads"
 )
@@ -37,6 +38,18 @@ func TestConfiguredModelPrefersGenericModelEnv(t *testing.T) {
 
 	if got := configuredModel(); got != "claude-sonnet-4-6" {
 		t.Fatalf("unexpected configured model: %q", got)
+	}
+}
+
+func TestConfiguredModelReadsGoogleModelEnv(t *testing.T) {
+	t.Setenv("MODEL", "")
+	t.Setenv("OPENAI_MODEL", "")
+	t.Setenv("ANTHROPIC_MODEL", "")
+	t.Setenv("FIREWORKS_MODEL", "")
+	t.Setenv("GOOGLE_GENAI_MODEL", googlegenaiwrap.DefaultModel)
+
+	if got := configuredModel(); got != googlegenaiwrap.DefaultModel {
+		t.Fatalf("configured model = %q, want %q", got, googlegenaiwrap.DefaultModel)
 	}
 }
 
@@ -83,6 +96,32 @@ func TestNewStreamerForModelUsesFireworksForFireworksModels(t *testing.T) {
 	}
 	if got := requiredAPIKeyLabel(model); got != "FIREWORKS_API_KEY" {
 		t.Fatalf("unexpected api key env: %q", got)
+	}
+}
+
+func TestNewStreamerForModelUsesGoogleForGeminiModels(t *testing.T) {
+	const model = googlegenaiwrap.DefaultModel
+	t.Setenv("GEMINI_API_KEY", "test-key")
+
+	streamer, gotModel := newStreamerForModel(model)
+
+	if _, ok := streamer.(*googlegenaiwrap.GenerateContentStreamer); !ok {
+		t.Fatalf("expected Google GenAI streamer, got %T", streamer)
+	}
+	if gotModel != model {
+		t.Fatalf("unexpected resolved model: %q", gotModel)
+	}
+	if got := requiredAPIKeyLabel(model); got != "GEMINI_API_KEY or GOOGLE_API_KEY" {
+		t.Fatalf("unexpected api key env: %q", got)
+	}
+}
+
+func TestHasProviderAPIKeyAcceptsEitherGoogleEnv(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GOOGLE_API_KEY", "test-key")
+
+	if !hasProviderAPIKey(googlegenaiwrap.DefaultModel) {
+		t.Fatal("expected Google API key to be detected")
 	}
 }
 

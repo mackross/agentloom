@@ -5,15 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
+
 	"github.com/mackross/agentloom/threads"
 	"github.com/mackross/agentloom/threads/durability"
 	"github.com/mackross/agentloom/threads/simpletool"
-	"os"
-	"strings"
 
 	"github.com/dop251/goja"
 
 	fireworkswrap "github.com/mackross/agentloom/llms/fireworks"
+	googlegenaiwrap "github.com/mackross/agentloom/llms/googlegenai"
 	openaiwrap "github.com/mackross/agentloom/llms/openai"
 
 	anthropicwrap "github.com/mackross/agentloom/llms/anthropic"
@@ -165,7 +167,7 @@ func main() {
 }
 
 func configuredModel() string {
-	for _, key := range []string{"MODEL", "OPENAI_MODEL", "ANTHROPIC_MODEL", "FIREWORKS_MODEL"} {
+	for _, key := range []string{"MODEL", "OPENAI_MODEL", "ANTHROPIC_MODEL", "FIREWORKS_MODEL", "GOOGLE_GENAI_MODEL"} {
 		if model := strings.TrimSpace(os.Getenv(key)); model != "" {
 			return model
 		}
@@ -179,6 +181,7 @@ const (
 	exampleProviderOpenAI    exampleProvider = "openai"
 	exampleProviderAnthropic exampleProvider = "anthropic"
 	exampleProviderFireworks exampleProvider = "fireworks"
+	exampleProviderGoogle    exampleProvider = "google"
 )
 
 func providerForModel(model string) exampleProvider {
@@ -189,6 +192,9 @@ func providerForModel(model string) exampleProvider {
 	if strings.HasPrefix(model, "accounts/fireworks/models/") {
 		return exampleProviderFireworks
 	}
+	if strings.HasPrefix(strings.TrimPrefix(model, "models/"), "gemini-") {
+		return exampleProviderGoogle
+	}
 	return exampleProviderOpenAI
 }
 
@@ -198,6 +204,8 @@ func requiredAPIKeyLabel(model string) string {
 		return "ANTHROPIC_API_KEY"
 	case exampleProviderFireworks:
 		return "FIREWORKS_API_KEY"
+	case exampleProviderGoogle:
+		return "GEMINI_API_KEY or GOOGLE_API_KEY"
 	default:
 		return "OPENAI_API_KEY"
 	}
@@ -209,6 +217,8 @@ func hasProviderAPIKey(model string) bool {
 		return strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) != ""
 	case exampleProviderFireworks:
 		return strings.TrimSpace(os.Getenv("FIREWORKS_API_KEY")) != "" || strings.TrimSpace(os.Getenv("FIREWORKS_AI_API_KEY")) != ""
+	case exampleProviderGoogle:
+		return strings.TrimSpace(os.Getenv("GEMINI_API_KEY")) != "" || strings.TrimSpace(os.Getenv("GOOGLE_API_KEY")) != ""
 	default:
 		return strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != ""
 	}
@@ -221,6 +231,8 @@ func newStreamerForModel(model string) (threads.LLMStreamer, string) {
 		return anthropicwrap.NewMessagesStreamer(model), modelOrDefault(model)
 	case exampleProviderFireworks:
 		return fireworkswrap.NewChatCompletionsStreamer(model), modelOrDefault(model)
+	case exampleProviderGoogle:
+		return googlegenaiwrap.NewGenerateContentStreamer(model), modelOrDefault(model)
 	default:
 		return openaiwrap.NewResponsesStreamer(model), modelOrDefault(model)
 	}

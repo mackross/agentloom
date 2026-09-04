@@ -26,9 +26,15 @@ type SupportsAllowedTools struct{}
 
 func (SupportsAllowedTools) _SupportsAllowedTools() {}
 
+// SupportsToolArguments opts a live harness into required tool-argument tests.
+type SupportsToolArguments struct{}
+
+func (SupportsToolArguments) _SupportsToolArguments() {}
+
 type supportsToolCallChunking interface{ _SupportsToolCallChunking() }
 type supportsParallelToolCalls interface{ _SupportsParallelToolCalls() }
 type supportsAllowedTools interface{ _SupportsAllowedTools() }
+type supportsToolArguments interface{ _SupportsToolArguments() }
 
 func tokenTool(name, token string) threads.ToolSpec {
 	return threads.ToolSpec{
@@ -140,6 +146,45 @@ func runAllowedTools(t *testing.T, h LiveHarness) {
 	})
 }
 
+func runToolArguments(t *testing.T, h LiveHarness) {
+	t.Helper()
+	t.Run("required_tool_arguments", func(t *testing.T) {
+		type args struct {
+			Location string `json:"location" jsonschema:"city name; use London"`
+			Units    string `json:"units" jsonschema:"temperature units; use celsius"`
+		}
+		req := threads.Req{
+			Instruction: "Call get_weather exactly once. Do not output text. Supply every required argument.",
+			Items:       []threads.Item{threads.UserText("Get the weather in London using celsius.")},
+			Tools: threads.ToolOfferSnapshot{
+				Offered: []threads.ToolSpec{{
+					Name:        "get_weather",
+					Description: "Gets the weather for a city.",
+					Payload:     threads.ToolPayloadFor[args](),
+				}},
+				Allowed:  []string{"get_weather"},
+				Required: true,
+			},
+		}
+
+		items := collectItems(t, h, req)
+		for _, call := range finalToolCalls(items) {
+			if call.Name != "get_weather" {
+				continue
+			}
+			var got args
+			if err := call.UnmarshalJSON(&got); err != nil {
+				t.Fatalf("unmarshal get_weather arguments %q: %v", call.Payload, err)
+			}
+			if got.Location != "London" || got.Units != "celsius" {
+				t.Fatalf("get_weather arguments = %#v, want location London and units celsius; payload=%q", got, call.Payload)
+			}
+			return
+		}
+		t.Fatalf("get_weather call not observed; items=%s", summarizeItems(items))
+	})
+}
+
 func toolCallEvents(items []threads.Item) (map[string]int, []threads.ToolCall) {
 	chunkCounts := map[string]int{}
 	finals := []threads.ToolCall{}
@@ -184,11 +229,16 @@ func hasToolCalls(finals []threads.ToolCall, wantNames ...string) bool {
 // SupportsReasoningToolLoop may be embedded in a live harness to opt it into
 // the reasoning tool-loop suite.
 type SupportsReasoningToolLoop struct {
-	Streamer threads.LLMStreamer
+	Streamer                   threads.LLMStreamer
+	RetainReasoningAcrossTurns bool
 }
 
 func (s SupportsReasoningToolLoop) ReasoningToolLoopStreamer() threads.LLMStreamer {
 	return s.Streamer
+}
+
+func (s SupportsReasoningToolLoop) ReasoningToolLoopRetainsReasoningAcrossTurns() bool {
+	return s.RetainReasoningAcrossTurns
 }
 
 // ReasoningToolLoopHarness opts a live harness into reasoning continuation
@@ -203,12 +253,18 @@ func runReasoningToolLoopSuite(t *testing.T, h ReasoningToolLoopHarness) {
 	if streamer == nil {
 		t.Fatal("reasoning tool-loop streamer is nil")
 	}
+	retainAcrossTurns := false
+	if h, ok := h.(interface {
+		ReasoningToolLoopRetainsReasoningAcrossTurns() bool
+	}); ok {
+		retainAcrossTurns = h.ReasoningToolLoopRetainsReasoningAcrossTurns()
+	}
 	t.Run("reasoning_tool_loop", func(t *testing.T) {
-		runReasoningToolLoop(t, streamer)
+		runReasoningToolLoop(t, streamer, retainAcrossTurns)
 	})
 }
 
-func runReasoningToolLoop(t *testing.T, streamer threads.LLMStreamer) {
+func runReasoningToolLoop(t *testing.T, streamer threads.LLMStreamer, retainAcrossTurns bool) {
 	t.Helper()
 	tools := threads.ToolOfferSnapshot{Offered: []threads.ToolSpec{{
 		Name: "lookup_token", Description: "Returns the stable token for a key.",
@@ -279,10 +335,19 @@ func runReasoningToolLoop(t *testing.T, streamer threads.LLMStreamer) {
 	history = append(history, threads.UserText("Reply only with acknowledged."))
 	thirdReq := build(history)
 	thirdReq.Tools = threads.ToolOfferSnapshot{}
+	retainedExactReasoning := false
 	for _, item := range thirdReq.Items {
-		if _, ok := item.(threads.ReasoningItem); ok {
-			t.Fatal("new user request retained reasoning from an earlier turn")
+		if candidate, ok := item.(threads.ReasoningItem); ok {
+			if !retainAcrossTurns {
+				t.Fatal("new user request retained reasoning from an earlier turn")
+			}
+			if reflect.DeepEqual(candidate, reasoning) {
+				retainedExactReasoning = true
+			}
 		}
+	}
+	if retainAcrossTurns && !retainedExactReasoning {
+		t.Fatal("new user request did not retain the exact reasoning item from the earlier turn")
 	}
 	_ = streamItems(t, streamer, thirdReq)
 }

@@ -5,6 +5,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,13 +20,260 @@ func TestGenerateContentStreamerContract(t *testing.T) {
 	streamertest.Run(t, googlegenaiContractHarness{})
 }
 
-type googlegenaiContractHarness struct{}
+func TestGenerateContentStreamerConstructorDefaults(t *testing.T) {
+	streamer := NewGenerateContentStreamerWithClient(nil, " ")
+	if streamer.model != DefaultModel {
+		t.Fatalf("model = %q, want %q", streamer.model, DefaultModel)
+	}
+	if got := streamer.Capabilities().Reasoning; got != threads.ReasoningForProvider("google.gemini") {
+		t.Fatalf("reasoning strategy = %#v", got)
+	}
+
+	legacy := NewGenerateContentStreamerWithClient(nil, " gemini-3.1-flash-lite ")
+	if legacy.model != "gemini-3.1-flash-lite" {
+		t.Fatalf("legacy model = %q", legacy.model)
+	}
+	if got := legacy.Capabilities().Reasoning; got != threads.ReasoningForCurrentTurn("google.gemini") {
+		t.Fatalf("legacy reasoning strategy = %#v", got)
+	}
+}
+
+func TestGemini38RequestConfigValidation(t *testing.T) {
+	float := float32(0.5)
+	budget := int32(100)
+	tests := []struct {
+		name   string
+		config genai.GenerateContentConfig
+		want   string
+	}{
+		{name: "negative candidate count", config: genai.GenerateContentConfig{CandidateCount: -1}, want: "non-negative"},
+		{name: "multiple candidates", config: genai.GenerateContentConfig{CandidateCount: 2}, want: "multiple candidates"},
+		{name: "minimal thinking", config: genai.GenerateContentConfig{ThinkingConfig: &genai.ThinkingConfig{ThinkingLevel: genai.ThinkingLevelMinimal}}, want: "minimal"},
+		{name: "unknown thinking", config: genai.GenerateContentConfig{ThinkingConfig: &genai.ThinkingConfig{ThinkingLevel: "EXTREME"}}, want: "invalid thinking level"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			streamer := &GenerateContentStreamer{model: DefaultModel, Config: tt.config}
+			_, err := streamer.geminiRequestConfig(threads.Req{})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want text %q", err, tt.want)
+			}
+		})
+	}
+
+	acceptedConfigs := []struct {
+		name   string
+		config genai.GenerateContentConfig
+	}{
+		{name: "temperature", config: genai.GenerateContentConfig{Temperature: &float}},
+		{name: "top p", config: genai.GenerateContentConfig{TopP: &float}},
+		{name: "top k", config: genai.GenerateContentConfig{TopK: &float}},
+		{name: "one candidate", config: genai.GenerateContentConfig{CandidateCount: 1}},
+		{name: "thinking budget", config: genai.GenerateContentConfig{ThinkingConfig: &genai.ThinkingConfig{ThinkingBudget: &budget}}},
+	}
+	for _, tt := range acceptedConfigs {
+		t.Run("accepts "+tt.name, func(t *testing.T) {
+			streamer := &GenerateContentStreamer{model: DefaultModel, Config: tt.config}
+			got, err := streamer.geminiRequestConfig(threads.Req{})
+			if err != nil {
+				t.Fatalf("request config: %v", err)
+			}
+			if !reflect.DeepEqual(got, tt.config) {
+				t.Fatalf("request config\n got: %#v\nwant: %#v", got, tt.config)
+			}
+		})
+	}
+
+	for _, level := range []genai.ThinkingLevel{
+		genai.ThinkingLevelUnspecified,
+		genai.ThinkingLevelLow,
+		genai.ThinkingLevelMedium,
+		genai.ThinkingLevelHigh,
+	} {
+		t.Run("accepts "+string(level), func(t *testing.T) {
+			streamer := &GenerateContentStreamer{
+				model: DefaultModel,
+				Config: genai.GenerateContentConfig{ThinkingConfig: &genai.ThinkingConfig{
+					IncludeThoughts: true,
+					ThinkingLevel:   level,
+				}},
+			}
+			got, err := streamer.geminiRequestConfig(threads.Req{Instruction: "test"})
+			if err != nil {
+				t.Fatalf("request config: %v", err)
+			}
+			if got.ThinkingConfig == nil || got.ThinkingConfig.ThinkingLevel != level || !got.ThinkingConfig.IncludeThoughts {
+				t.Fatalf("thinking config = %#v", got.ThinkingConfig)
+			}
+			if streamer.Config.SystemInstruction != nil {
+				t.Fatal("building a request mutated the configured system instruction")
+			}
+		})
+	}
+
+	legacy := &GenerateContentStreamer{
+		model:  "gemini-2.5-flash",
+		Config: genai.GenerateContentConfig{Temperature: &float},
+	}
+	if _, err := legacy.geminiRequestConfig(threads.Req{}); err != nil {
+		t.Fatalf("legacy model configuration unexpectedly rejected: %v", err)
+	}
+}
+
+func TestValidateGemini38Contents(t *testing.T) {
+	validToolRound := []*genai.Content{
+		genai.NewContentFromText("run it", genai.RoleUser),
+		genai.NewContentFromParts([]*genai.Part{{FunctionCall: &genai.FunctionCall{ID: "c1", Name: "lookup"}}}, genai.RoleModel),
+		genai.NewContentFromParts([]*genai.Part{{FunctionResponse: &genai.FunctionResponse{
+			ID: "c1", Name: "lookup", Response: map[string]any{"output": "done"},
+		}}}, genai.RoleUser),
+	}
+	if err := validateGemini38Contents(validToolRound); err != nil {
+		t.Fatalf("valid tool round: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		contents []*genai.Content
+		want     string
+	}{
+		{name: "empty", want: "requires request content"},
+		{name: "empty user", contents: []*genai.Content{genai.NewContentFromText("", genai.RoleUser)}, want: "non-empty text"},
+		{name: "prefilled model", contents: []*genai.Content{
+			genai.NewContentFromText("question", genai.RoleUser),
+			genai.NewContentFromText("prefix", genai.RoleModel),
+		}, want: "prefilled model turn"},
+		{name: "missing call id", contents: []*genai.Content{
+			genai.NewContentFromText("question", genai.RoleUser),
+			genai.NewContentFromParts([]*genai.Part{{FunctionCall: &genai.FunctionCall{Name: "lookup"}}}, genai.RoleModel),
+		}, want: "require id and name"},
+		{name: "mismatched response", contents: []*genai.Content{
+			genai.NewContentFromText("question", genai.RoleUser),
+			genai.NewContentFromParts([]*genai.Part{{FunctionCall: &genai.FunctionCall{ID: "c1", Name: "lookup"}}}, genai.RoleModel),
+			genai.NewContentFromParts([]*genai.Part{{FunctionResponse: &genai.FunctionResponse{
+				ID: "c1", Name: "other", Response: map[string]any{"output": "done"},
+			}}}, genai.RoleUser),
+		}, want: "does not match"},
+		{name: "missing response", contents: []*genai.Content{
+			genai.NewContentFromText("question", genai.RoleUser),
+			genai.NewContentFromParts([]*genai.Part{{FunctionCall: &genai.FunctionCall{ID: "c1", Name: "lookup"}}}, genai.RoleModel),
+			genai.NewContentFromText("continue", genai.RoleUser),
+		}, want: "missing responses"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateGemini38Contents(tt.contents)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want text %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestRequestToolsPreservesJSONSchemaCustomEncoding(t *testing.T) {
+	type args struct {
+		Location string   `json:"location"`
+		Tags     []string `json:"tags"`
+	}
+	tools, err := requestTools(threads.ToolOfferSnapshot{Offered: []threads.ToolSpec{{
+		Name:    "lookup",
+		Payload: threads.ToolPayloadFor[args](),
+	}}})
+	if err != nil {
+		t.Fatalf("request tools: %v", err)
+	}
+
+	raw, err := json.Marshal(tools)
+	if err != nil {
+		t.Fatalf("marshal tools: %v", err)
+	}
+	var encoded []struct {
+		FunctionDeclarations []struct {
+			Parameters map[string]any `json:"parametersJsonSchema"`
+		} `json:"functionDeclarations"`
+	}
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		t.Fatalf("unmarshal tools: %v", err)
+	}
+	if len(encoded) != 1 || len(encoded[0].FunctionDeclarations) != 1 {
+		t.Fatalf("encoded tools = %s", raw)
+	}
+	params := encoded[0].FunctionDeclarations[0].Parameters
+	if params["type"] != "object" {
+		t.Fatalf("root schema type = %#v, want object; schema=%s", params["type"], raw)
+	}
+	properties, ok := params["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema properties = %#v; schema=%s", params["properties"], raw)
+	}
+	tags, ok := properties["tags"].(map[string]any)
+	if !ok || tags["items"] == nil {
+		t.Fatalf("array item schema was not preserved: %#v; schema=%s", properties["tags"], raw)
+	}
+}
+
+func TestGeminiFinishError(t *testing.T) {
+	for _, reason := range []genai.FinishReason{"", genai.FinishReasonUnspecified, genai.FinishReasonStop} {
+		if err := geminiFinishError(&genai.Candidate{FinishReason: reason}); err != nil {
+			t.Fatalf("finish reason %q: %v", reason, err)
+		}
+	}
+	err := geminiFinishError(&genai.Candidate{
+		FinishReason:  genai.FinishReasonTooManyToolCalls,
+		FinishMessage: "tool limit reached",
+	})
+	if err == nil || !strings.Contains(err.Error(), "TOO_MANY_TOOL_CALLS") || !strings.Contains(err.Error(), "tool limit reached") {
+		t.Fatalf("finish error = %v", err)
+	}
+}
+
+func TestGemini38RejectsInvalidConfigBeforeHTTP(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests.Add(1)
+	}))
+	defer server.Close()
+
+	streamer := NewGenerateContentStreamerWithClient(newGoogleTestClient(t, server), DefaultModel)
+	streamer.Config.CandidateCount = 2
+	err := streamer.StreamReq(
+		threads.Req{Items: []threads.Item{threads.UserText("hello")}},
+		func(threads.Item) error { return nil },
+	)
+	if err == nil || !strings.Contains(err.Error(), "multiple candidates") {
+		t.Fatalf("error = %v", err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("HTTP requests = %d, want 0", got)
+	}
+}
+
+func TestGenerateContentStreamerReturnsFinishReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"candidates":[{"finishReason":"TOO_MANY_TOOL_CALLS","finishMessage":"tool limit reached"}]}`+"\n\n")
+	}))
+	defer server.Close()
+
+	streamer := NewGenerateContentStreamerWithClient(newGoogleTestClient(t, server), DefaultModel)
+	err := streamer.StreamReq(
+		threads.Req{Items: []threads.Item{threads.UserText("hello")}},
+		func(threads.Item) error { return nil },
+	)
+	if err == nil || !strings.Contains(err.Error(), "TOO_MANY_TOOL_CALLS") {
+		t.Fatalf("finish error = %v", err)
+	}
+}
+
+type googlegenaiContractHarness struct {
+	model string
+}
 
 func (googlegenaiContractHarness) Capabilities() streamertest.Capabilities {
 	return streamertest.Capabilities{}
 }
 
-func (googlegenaiContractHarness) Stream(t testing.TB, req threads.Req, events []streamertest.Event, emit func(threads.Item) error) (streamertest.ObservedRequest, error) {
+func (h googlegenaiContractHarness) Stream(t testing.TB, req threads.Req, events []streamertest.Event, emit func(threads.Item) error) (streamertest.ObservedRequest, error) {
 	t.Helper()
 
 	bodyCh := make(chan []byte, 1)
@@ -46,6 +296,25 @@ func (googlegenaiContractHarness) Stream(t testing.TB, req threads.Req, events [
 	}))
 	defer server.Close()
 
+	client := newGoogleTestClient(t, server)
+	model := h.model
+	if model == "" {
+		model = "test-model"
+	}
+	streamer := NewGenerateContentStreamerWithClient(client, model)
+	err := streamer.StreamReq(req, emit)
+
+	select {
+	case body := <-bodyCh:
+		return parseObservedRequest(t, req, body), err
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for outbound request")
+		return streamertest.ObservedRequest{}, err
+	}
+}
+
+func newGoogleTestClient(t testing.TB, server *httptest.Server) *genai.Client {
+	t.Helper()
 	client, err := genai.NewClient(t.Context(), &genai.ClientConfig{
 		APIKey:      "test",
 		Backend:     genai.BackendGeminiAPI,
@@ -55,16 +324,7 @@ func (googlegenaiContractHarness) Stream(t testing.TB, req threads.Req, events [
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
-	streamer := NewGenerateContentStreamerWithClient(client, "test-model")
-	err = streamer.StreamReq(req, emit)
-
-	select {
-	case body := <-bodyCh:
-		return parseObservedRequest(t, req, body), err
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for outbound request")
-		return streamertest.ObservedRequest{}, err
-	}
+	return client
 }
 
 func encodeGenerateContentStreamEvents(t testing.TB, events []streamertest.Event) string {
@@ -177,7 +437,7 @@ func parseObservedTools(t testing.TB, raw any) []streamertest.ObservedTool {
 	var out []streamertest.ObservedTool
 	for _, tool := range tools {
 		for _, decl := range objectSlice(t, tool["functionDeclarations"]) {
-			obs := streamertest.ObservedTool{Kind: "function", Name: stringValue(decl["name"]), Description: stringValue(decl["description"]), SchemaType: "object"}
+			obs := streamertest.ObservedTool{Kind: "function", Name: stringValue(decl["name"]), Description: stringValue(decl["description"])}
 			if params, ok := decl["parametersJsonSchema"].(map[string]any); ok {
 				if typ := stringValue(params["type"]); typ != "" {
 					obs.SchemaType = typ

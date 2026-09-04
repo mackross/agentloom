@@ -77,6 +77,52 @@ func TestGenerateContentStreamerPreservesThoughtSignatures(t *testing.T) {
 	}
 }
 
+func TestGemini38RequestBuilderPreservesHistoricalThoughtSignatures(t *testing.T) {
+	streamer := &GenerateContentStreamer{model: DefaultModel}
+	oldSignature, currentSignature := []byte("old"), []byte("current")
+	items := []threads.Item{
+		threads.UserText("first"),
+		threads.ReasoningItem{Provider: "google.gemini", Visibility: threads.ReasoningVisibilityHidden, Opaque: oldSignature},
+		threads.AssistantText("first answer"),
+		threads.UserText("latest"),
+		threads.ReasoningItem{Provider: "anthropic.messages", Visibility: threads.ReasoningVisibilityHidden, Opaque: []byte("foreign")},
+		threads.ReasoningItem{Provider: "google.gemini", Visibility: threads.ReasoningVisibilityHidden, Opaque: currentSignature},
+		threads.AssistantText("latest answer"),
+		threads.UserText("continue"),
+	}
+
+	projected := threads.DefaultRequestBuilder.Build(items, streamer.Capabilities())
+	want := []threads.Item{
+		threads.UserText("first"),
+		threads.ReasoningItem{Provider: "google.gemini", Visibility: threads.ReasoningVisibilityHidden, Opaque: oldSignature},
+		threads.AssistantText("first answer"),
+		threads.UserText("latest"),
+		threads.ReasoningItem{Provider: "google.gemini", Visibility: threads.ReasoningVisibilityHidden, Opaque: currentSignature},
+		threads.AssistantText("latest answer"),
+		threads.UserText("continue"),
+	}
+	if !reflect.DeepEqual(projected.Items, want) {
+		t.Fatalf("reasoning projection\n got: %#v\nwant: %#v", projected.Items, want)
+	}
+
+	contents, err := conversationContents(projected)
+	if err != nil {
+		t.Fatalf("request contents: %v", err)
+	}
+	if err := validateGemini38Contents(contents); err != nil {
+		t.Fatalf("validate request contents: %v", err)
+	}
+	if len(contents) != 5 {
+		t.Fatalf("content turns = %d, want 5", len(contents))
+	}
+	if got := contents[1].Parts[0].ThoughtSignature; !bytes.Equal(got, oldSignature) {
+		t.Fatalf("historical signature = %q, want %q", got, oldSignature)
+	}
+	if got := contents[3].Parts[0].ThoughtSignature; !bytes.Equal(got, currentSignature) {
+		t.Fatalf("current signature = %q, want %q", got, currentSignature)
+	}
+}
+
 func TestGenerateContentStreamerPreservesTrailingTextSignature(t *testing.T) {
 	signature := []byte("trailing")
 	var got []threads.Item

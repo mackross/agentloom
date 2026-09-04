@@ -59,6 +59,27 @@ thread.QueueItem(threads.SendItem{})
 The executor builds a provider request from the thread, streams model output back into
 history, resolves tool calls when configured, and returns the thread to idle.
 
+## Google Gemini
+
+`llms/googlegenai` defaults an empty model name to the stable
+`gemini-3.8-flash` model. The default client reads `GEMINI_API_KEY` or
+`GOOGLE_API_KEY`:
+
+```go
+streamer := googlegenai.NewGenerateContentStreamer("")
+streamer.Config.ThinkingConfig = &genai.ThinkingConfig{
+	ThinkingLevel:   genai.ThinkingLevelMedium,
+	IncludeThoughts: true, // Optional: emit available reasoning summaries.
+}
+```
+
+Gemini 3.8 Flash supports `low`, `medium`, and `high` thinking levels, with
+`medium` as the service default. It does not support `minimal` thinking or
+multiple candidates; the adapter rejects those options before sending a
+request. It preserves signed Gemini reasoning across turns for stronger
+long-running tool workflows; retained reasoning can increase input token
+usage.
+
 ## Tooling
 
 Tool execution is designed around durable boundaries. See:
