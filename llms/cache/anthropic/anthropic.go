@@ -18,17 +18,19 @@ const (
 	TTL1h = "1h"
 )
 
-// Ephemeral5m marks the previous text item as a 5-minute cache breakpoint.
-func Ephemeral5m() threads.PreviousItemMetadata {
-	return threads.PreviousItemMetadata{CacheControlKey: map[string]any{"type": "ephemeral", "ttl": TTL5m}}
+// Ephemeral5m patches metadata onto the most recently materialized text item,
+// marking it as a 5-minute cache breakpoint.
+func Ephemeral5m() threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{CacheControlKey: map[string]any{"type": "ephemeral", "ttl": TTL5m}}}
 }
 
-// Ephemeral1h marks the previous text item as a 1-hour cache breakpoint.
-func Ephemeral1h() threads.PreviousItemMetadata {
-	return threads.PreviousItemMetadata{CacheControlKey: map[string]any{"type": "ephemeral", "ttl": TTL1h}}
+// Ephemeral1h patches metadata onto the most recently materialized text item,
+// marking it as a 1-hour cache breakpoint.
+func Ephemeral1h() threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{CacheControlKey: map[string]any{"type": "ephemeral", "ttl": TTL1h}}}
 }
 
 // Clear removes Anthropic cache_control for later latest-wins metadata scans.
-func Clear() threads.PreviousItemMetadata {
-	return threads.PreviousItemMetadata{CacheControlKey: false}
+func Clear() threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{CacheControlKey: false}}
 }

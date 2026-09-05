@@ -14,21 +14,21 @@ const (
 )
 
 // PromptCacheKey sets prompt_cache_key, improving routing/cache locality.
-func PromptCacheKey(key string) threads.PreviousItemMetadata {
-	return threads.PreviousItemMetadata{PromptCacheKeyKey: key}
+func PromptCacheKey(key string) threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{PromptCacheKeyKey: key}}
 }
 
 // ClearPromptCacheKey clears a previously set prompt_cache_key.
-func ClearPromptCacheKey() threads.PreviousItemMetadata {
-	return threads.PreviousItemMetadata{PromptCacheKeyKey: false}
+func ClearPromptCacheKey() threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{PromptCacheKeyKey: false}}
 }
 
 // PromptCacheRetention sets prompt_cache_retention, e.g. Retention24h.
-func PromptCacheRetention(retention string) threads.PreviousItemMetadata {
-	return threads.PreviousItemMetadata{PromptCacheRetentionKey: retention}
+func PromptCacheRetention(retention string) threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{PromptCacheRetentionKey: retention}}
 }
 
 // ClearPromptCacheRetention clears a previously set prompt_cache_retention.
-func ClearPromptCacheRetention() threads.PreviousItemMetadata {
-	return threads.PreviousItemMetadata{PromptCacheRetentionKey: false}
+func ClearPromptCacheRetention() threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{PromptCacheRetentionKey: false}}
 }

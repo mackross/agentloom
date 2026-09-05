@@ -58,7 +58,25 @@ func (t *thread) requestSnapshotWithBuilder(b RequestBuilder, caps StreamerCapab
 	if b == nil {
 		b = DefaultRequestBuilder
 	}
-	return cloneReq(b.Build(t.items.SliceThrough(t.cb.IP()), caps))
+	return cloneReq(b.Build(t.requestProjection(), caps))
+}
+
+// requestProjection materializes canonical nodes through IP into the existing
+// item stream shape the request builder expects. Each node item is followed by
+// a zero-target PatchItemMetadata carrying its cloned current metadata when the
+// metadata is nonempty.
+func (t *thread) requestProjection() []Item {
+	var out []Item
+	for n := t.items.Head(); n != nil; n = n.Next {
+		out = append(out, n.Item)
+		if len(n.Metadata) > 0 {
+			out = append(out, PatchItemMetadata{Metadata: cloneData(n.Metadata)})
+		}
+		if n == t.cb.IP() {
+			break
+		}
+	}
+	return out
 }
 
 // EstimateRequestTokensApprox returns a conservative tokenizer-free estimate for req.
@@ -130,6 +148,20 @@ func isCJK(r rune) bool {
 
 func cloneReq(req Req) Req {
 	req.Items = append([]Item(nil), req.Items...)
+	req.ItemMeta = cloneReqItemMeta(req.ItemMeta)
 	req.Tools = cloneToolOfferSnapshot(req.Tools)
 	return req
+}
+
+// cloneReqItemMeta deep-copies per-item metadata so callers cannot mutate Req
+// back into a thread's current node metadata or a shared request snapshot.
+func cloneReqItemMeta(meta []map[string]any) []map[string]any {
+	if len(meta) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, len(meta))
+	for i, m := range meta {
+		out[i] = cloneData(m)
+	}
+	return out
 }

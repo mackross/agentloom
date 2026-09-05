@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	sqliteBranchSchemaVersion = "1"
+	sqliteBranchSchemaVersion = "2"
 	sqliteBranchTimeLayout    = "2006-01-02T15-04-05.000000000Z"
 	defaultSQLiteBusyTimeout  = 5 * time.Second
 	defaultBranchStatus       = "active"
@@ -173,18 +173,17 @@ type sqliteEphemeralBranch struct {
 }
 
 type sqliteBranchRow struct {
-	ID              string
-	Kind            string
-	Ancestors       []threads.BranchRef
-	SourceTurnIndex int
-	SourceTurnRole  string
-	SourceSeq       uint32
-	SourceHeadSeq   uint32
-	Label           string
-	Status          string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	LastSeq         uint32
+	ID             string
+	Kind           string
+	Ancestors      []threads.BranchRef
+	SourceTurnSeq  threads.ItemSeq
+	SourceTurnRole string
+	SourceHeadSeq  uint32
+	Label          string
+	Status         string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	LastSeq        uint32
 }
 
 // OpenSQLiteBranchStore opens or creates a SQLite branch store at path. The
@@ -293,9 +292,8 @@ CREATE TABLE IF NOT EXISTS thread_branches (
 	id TEXT PRIMARY KEY,
 	kind TEXT NOT NULL,
 	ancestors_json TEXT NOT NULL DEFAULT '[]',
-	source_turn_index INTEGER NOT NULL DEFAULT 0,
+	source_turn_seq INTEGER NOT NULL DEFAULT 0,
 	source_turn_role TEXT NOT NULL DEFAULT '',
-	source_seq INTEGER NOT NULL DEFAULT 0,
 	source_head_seq INTEGER NOT NULL DEFAULT 0,
 	label TEXT NOT NULL DEFAULT '',
 	status TEXT NOT NULL DEFAULT 'active',
@@ -417,7 +415,7 @@ func (s *SQLiteBranchStore) createDurableChildFromRecord(ctx context.Context, pa
 	if id == "" {
 		id = s.opts.GenerateID(now)
 	}
-	rec := threads.BranchRecord{ID: id, Kind: threads.BranchKindDurable, Ancestors: ancestors, SourceTurnIndex: opts.SourceTurnIndex, SourceTurnRole: opts.SourceTurnRole, SourceSeq: opts.SourceSeq, SourceHeadSeq: opts.SourceHeadSeq, Label: opts.Label, Status: s.opts.StatusNew, CreatedAt: now, UpdatedAt: now}
+	rec := threads.BranchRecord{ID: id, Kind: threads.BranchKindDurable, Ancestors: ancestors, SourceTurnSeq: opts.SourceTurnSeq, SourceTurnRole: opts.SourceTurnRole, SourceHeadSeq: opts.SourceHeadSeq, Label: opts.Label, Status: s.opts.StatusNew, CreatedAt: now, UpdatedAt: now}
 	if err := s.insertDurableBranch(ctx, rec, opts.Checkpoint, &parentRecord); err != nil {
 		return nil, err
 	}
@@ -436,7 +434,7 @@ func (s *SQLiteBranchStore) GetBranch(ctx context.Context, id threads.BranchID) 
 	if branch, ok := s.openEphemeralBranch(id); ok {
 		return branch.Record, nil
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT id, kind, ancestors_json, source_turn_index, source_turn_role, source_seq, source_head_seq, label, status, created_at, updated_at, last_seq FROM thread_branches WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, kind, ancestors_json, source_turn_seq, source_turn_role, source_head_seq, label, status, created_at, updated_at, last_seq FROM thread_branches WHERE id = ?`, id)
 	br, err := scanSQLiteBranchRow(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -451,7 +449,7 @@ func (s *SQLiteBranchStore) ListBranches(ctx context.Context, filter threads.Bra
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	query := `SELECT id, kind, ancestors_json, source_turn_index, source_turn_role, source_seq, source_head_seq, label, status, created_at, updated_at, last_seq FROM thread_branches WHERE 1=1`
+	query := `SELECT id, kind, ancestors_json, source_turn_seq, source_turn_role, source_head_seq, label, status, created_at, updated_at, last_seq FROM thread_branches WHERE 1=1`
 	args := []any{}
 	if filter.Status != "" {
 		query += ` AND status = ?`
@@ -537,7 +535,7 @@ func (s *SQLiteBranchStore) DeleteBranchIf(ctx context.Context, id threads.Branc
 	var rec threads.BranchRecord
 	deleted := false
 	if err := s.withTx(ctx, "delete branch", func(tx *sql.Tx) error {
-		br, err := scanSQLiteBranchRow(tx.QueryRowContext(ctx, `SELECT id, kind, ancestors_json, source_turn_index, source_turn_role, source_seq, source_head_seq, label, status, created_at, updated_at, last_seq FROM thread_branches WHERE id = ?`, id))
+		br, err := scanSQLiteBranchRow(tx.QueryRowContext(ctx, `SELECT id, kind, ancestors_json, source_turn_seq, source_turn_role, source_head_seq, label, status, created_at, updated_at, last_seq FROM thread_branches WHERE id = ?`, id))
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
@@ -594,7 +592,7 @@ func (s *SQLiteBranchStore) insertDurableBranch(ctx context.Context, rec threads
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO thread_branches(id, kind, ancestors_json, source_turn_index, source_turn_role, source_seq, source_head_seq, label, status, created_at, updated_at, last_seq) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, rec.ID, rec.Kind, string(ancestors), rec.SourceTurnIndex, string(rec.SourceTurnRole), rec.SourceSeq, rec.SourceHeadSeq, rec.Label, rec.Status, formatSQLiteBranchTime(now), formatSQLiteBranchTime(rec.UpdatedAt), cp.Seq); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO thread_branches(id, kind, ancestors_json, source_turn_seq, source_turn_role, source_head_seq, label, status, created_at, updated_at, last_seq) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, rec.ID, rec.Kind, string(ancestors), rec.SourceTurnSeq, string(rec.SourceTurnRole), rec.SourceHeadSeq, rec.Label, rec.Status, formatSQLiteBranchTime(now), formatSQLiteBranchTime(rec.UpdatedAt), cp.Seq); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO thread_checkpoints(branch_id, seq, unsafe, snapshot_json, updated_at) VALUES(?, ?, ?, ?, ?)`, rec.ID, cp.Seq, boolInt(cp.Unsafe), string(snapshot), formatSQLiteBranchTime(now)); err != nil {
@@ -632,7 +630,7 @@ func (s *SQLiteBranchStore) createEphemeralChild(ctx context.Context, opts threa
 	if id == "" {
 		id = threads.BranchID("ephemeral-" + string(s.opts.GenerateID(now)))
 	}
-	rec := threads.BranchRecord{ID: id, Kind: threads.BranchKindEphemeral, Ancestors: ancestors, SourceTurnIndex: opts.SourceTurnIndex, SourceTurnRole: opts.SourceTurnRole, SourceSeq: opts.SourceSeq, SourceHeadSeq: opts.SourceHeadSeq, Label: opts.Label, Status: s.opts.StatusNew, CreatedAt: now, UpdatedAt: now}
+	rec := threads.BranchRecord{ID: id, Kind: threads.BranchKindEphemeral, Ancestors: ancestors, SourceTurnSeq: opts.SourceTurnSeq, SourceTurnRole: opts.SourceTurnRole, SourceHeadSeq: opts.SourceHeadSeq, Label: opts.Label, Status: s.opts.StatusNew, CreatedAt: now, UpdatedAt: now}
 	return s.putEphemeralBranch(ctx, rec, threads.NewMemoryDurableStore(opts.Checkpoint))
 }
 
@@ -894,8 +892,8 @@ func (sqliteNoopLease) Close() error { return nil }
 func scanSQLiteBranchRow(row interface{ Scan(dest ...any) error }) (sqliteBranchRow, error) {
 	var br sqliteBranchRow
 	var ancestorsJSON, created, updated string
-	var sourceSeq, sourceHeadSeq, lastSeq int64
-	if err := row.Scan(&br.ID, &br.Kind, &ancestorsJSON, &br.SourceTurnIndex, &br.SourceTurnRole, &sourceSeq, &sourceHeadSeq, &br.Label, &br.Status, &created, &updated, &lastSeq); err != nil {
+	var sourceTurnSeq, sourceHeadSeq, lastSeq int64
+	if err := row.Scan(&br.ID, &br.Kind, &ancestorsJSON, &sourceTurnSeq, &br.SourceTurnRole, &sourceHeadSeq, &br.Label, &br.Status, &created, &updated, &lastSeq); err != nil {
 		return sqliteBranchRow{}, err
 	}
 	if ancestorsJSON != "" {
@@ -912,14 +910,14 @@ func scanSQLiteBranchRow(row interface{ Scan(dest ...any) error }) (sqliteBranch
 	if err != nil {
 		return sqliteBranchRow{}, err
 	}
-	br.SourceSeq = uint32(sourceSeq)
+	br.SourceTurnSeq = threads.ItemSeq(sourceTurnSeq)
 	br.SourceHeadSeq = uint32(sourceHeadSeq)
 	br.LastSeq = uint32(lastSeq)
 	return br, nil
 }
 
 func sqliteBranchRecord(br sqliteBranchRow) threads.BranchRecord {
-	return threads.BranchRecord{ID: threads.BranchID(br.ID), Kind: threads.BranchKind(br.Kind), Ancestors: cloneSQLiteBranchRefs(br.Ancestors), SourceTurnIndex: br.SourceTurnIndex, SourceTurnRole: threads.TurnRole(br.SourceTurnRole), SourceSeq: br.SourceSeq, SourceHeadSeq: br.SourceHeadSeq, Label: br.Label, Status: br.Status, CreatedAt: br.CreatedAt, UpdatedAt: br.UpdatedAt}
+	return threads.BranchRecord{ID: threads.BranchID(br.ID), Kind: threads.BranchKind(br.Kind), Ancestors: cloneSQLiteBranchRefs(br.Ancestors), SourceTurnSeq: br.SourceTurnSeq, SourceTurnRole: threads.TurnRole(br.SourceTurnRole), SourceHeadSeq: br.SourceHeadSeq, Label: br.Label, Status: br.Status, CreatedAt: br.CreatedAt, UpdatedAt: br.UpdatedAt}
 }
 
 func validateSQLiteBranchKind(kind threads.BranchKind) (threads.BranchKind, error) {

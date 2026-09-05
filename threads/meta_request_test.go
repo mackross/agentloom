@@ -2,15 +2,16 @@ package threads
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
 func TestRequestBuilderAttachesItemMetaToPreviousEmittedItem(t *testing.T) {
 	req := DefaultRequestBuilder.Build([]Item{
 		UserText("a"),
-		PreviousItemMetadata{"cache/id": "a"},
+		PatchItemMetadata{Metadata: map[string]any{"cache/id": "a"}},
 		UserText("b"),
-		PreviousItemMetadata{"cache/id": "b", "cache/openai/prompt_cache_key": "k"},
+		PatchItemMetadata{Metadata: map[string]any{"cache/id": "b", "cache/openai/prompt_cache_key": "k"}},
 	}, StreamerCapabilities{})
 	if len(req.Items) != 2 {
 		t.Fatalf("len(req.Items) = %d, want 2", len(req.Items))
@@ -32,11 +33,11 @@ func TestRequestBuilderAttachesItemMetaToPreviousEmittedItem(t *testing.T) {
 func TestRequestBuilderCoalescesOnlyWhenMetadataEqual(t *testing.T) {
 	req := DefaultRequestBuilder.Build([]Item{
 		UserText("a"),
-		PreviousItemMetadata{"cache/id": "same"},
+		PatchItemMetadata{Metadata: map[string]any{"cache/id": "same"}},
 		UserText("b"),
-		PreviousItemMetadata{"cache/id": "same"},
+		PatchItemMetadata{Metadata: map[string]any{"cache/id": "same"}},
 		UserText("c"),
-		PreviousItemMetadata{"cache/id": "other"},
+		PatchItemMetadata{Metadata: map[string]any{"cache/id": "other"}},
 	}, StreamerCapabilities{})
 	if len(req.Items) != 2 {
 		t.Fatalf("len(req.Items) = %d, want 2", len(req.Items))
@@ -46,6 +47,78 @@ func TestRequestBuilderCoalescesOnlyWhenMetadataEqual(t *testing.T) {
 	}
 	if got := req.Items[1].(UserText); got != "c" {
 		t.Fatalf("second item = %q, want c", got)
+	}
+}
+
+func TestRequestBuilderPanicsOnNonzeroTargetInRawProjection(t *testing.T) {
+	assertPanics(t, func() {
+		DefaultRequestBuilder.Build([]Item{
+			UserText("a"),
+			PatchItemMetadata{Target: 5, Metadata: map[string]any{"cache/id": "a"}},
+		}, StreamerCapabilities{})
+	}, "nonzero patch target in raw projection")
+}
+
+func TestRequestBuilderValidatesTargetBeforeRollbackProjection(t *testing.T) {
+	// Rollback projection removes this tool call/result and its adjacent
+	// metadata. Validation must happen first so the unsupported target cannot be
+	// silently discarded with the projected item.
+	assertPanics(t, func() {
+		DefaultRequestBuilder.Build([]Item{
+			UserText("hello"),
+			ToolCall{CallID: "c1", Name: "calc", Payload: "bad"},
+			ToolCallResult{
+				CallID:       "c1",
+				Output:       "invalid JSON",
+				SafeRollback: &ToolCallSafeRollback{SteeringHint: "retry"},
+			},
+			PatchItemMetadata{Target: 5, Metadata: map[string]any{"cache/id": "a"}},
+		}, StreamerCapabilities{AssistantPrefix: true})
+	}, "nonzero patch target removed by rollback projection")
+}
+
+func TestRequestBuilderPanicsOnStandaloneNonzeroTargetPatch(t *testing.T) {
+	// A nonzero target cannot be resolved from a raw []Item projection, so it
+	// must panic regardless of position: first, after non-emitting items, or
+	// following non-emitting control items.
+	buildWith := func(rest ...Item) []Item {
+		return append(append([]Item{}, rest...), PatchItemMetadata{Target: 5, Metadata: map[string]any{"cache/id": "a"}})
+	}
+	cases := [][]Item{
+		buildWith(PatchItemMetadata{Target: 5, Metadata: map[string]any{"cache/id": "a"}}),
+		buildWith(AssistantInstruction("be concise")),
+		buildWith(ToolsSnapshot{}),
+		buildWith(ReasoningItem{Provider: "x", Text: "think"}),
+	}
+	for _, items := range cases {
+		assertPanics(t, func() {
+			DefaultRequestBuilder.Build(items, StreamerCapabilities{})
+		}, "standalone nonzero patch target")
+	}
+}
+
+func TestRequestBuilderAppliesDeleteValue(t *testing.T) {
+	req := DefaultRequestBuilder.Build([]Item{
+		UserText("a"),
+		PatchItemMetadata{Metadata: map[string]any{"keep": "yes", "remove": "old"}},
+		PatchItemMetadata{Metadata: map[string]any{"remove": DeleteValue}},
+	}, StreamerCapabilities{})
+	if len(req.ItemMeta) != 1 || !reflect.DeepEqual(req.ItemMeta[0], map[string]any{"keep": "yes"}) {
+		t.Fatalf("request metadata = %#v", req.ItemMeta)
+	}
+}
+
+func TestRequestBuilderAcceptsStandaloneZeroTargetPatch(t *testing.T) {
+	req := DefaultRequestBuilder.Build([]Item{
+		UserText("a"),
+		PatchItemMetadata{Metadata: map[string]any{"cache/id": "a"}},
+		PatchItemMetadata{Metadata: map[string]any{"cache/id": "b"}},
+	}, StreamerCapabilities{})
+	if len(req.Items) != 1 || len(req.ItemMeta) != 1 {
+		t.Fatalf("req = items %#v meta %#v", req.Items, req.ItemMeta)
+	}
+	if got := req.ItemMeta[0]["cache/id"]; got != "b" {
+		t.Fatalf("merged metadata = %#v, want cache/id=b", req.ItemMeta[0])
 	}
 }
 
@@ -148,7 +221,7 @@ func TestRequestBuilderDoesNotMoveRolledBackMetadataOntoParallelSibling(t *testi
 			RetryAttempt: 1,
 			MaxRetries:   2,
 		}},
-		PreviousItemMetadata{"cache/id": "failed-result"},
+		PatchItemMetadata{Metadata: map[string]any{"cache/id": "failed-result"}},
 	}, StreamerCapabilities{AssistantPrefix: true})
 
 	wantItems := []Item{
@@ -331,10 +404,141 @@ func TestRequestBuilderRemovesAllRollbackableFailuresAfterSuccessfulRetry(t *tes
 func TestItemMetaPreventsControlBlockCoalescing(t *testing.T) {
 	thread := newThread()
 	thread.QueueItem(UserText("a"))
-	thread.QueueItem(PreviousItemMetadata{"cache/id": "a"})
+	thread.QueueItem(PatchItemMetadata{Metadata: map[string]any{"cache/id": "a"}})
 	thread.QueueItem(UserText("b"))
 	items := thread.items.Slice()
-	if len(items) != 3 {
-		t.Fatalf("thread items len = %d, want 3", len(items))
+	if len(items) != 2 {
+		t.Fatalf("thread items len = %d, want 2 (metadata patch must not add a node)", len(items))
+	}
+	if items[0] != UserText("a") || items[1] != UserText("b") {
+		t.Fatalf("items = %#v, want [a b] uncoalesced", items)
+	}
+	head := thread.items.Head()
+	if head == nil || head.Metadata["cache/id"] != "a" {
+		t.Fatalf("patched node metadata = %#v, want cache/id=a", head.Metadata)
+	}
+	if head.Next == nil || len(head.Next.Metadata) != 0 {
+		t.Fatalf("second node metadata = %#v, want empty", head.Next.Metadata)
+	}
+	if head.Seq == 0 || head.Seq == head.Next.Seq {
+		t.Fatalf("node seqs = %d, %d; want distinct nonzero", head.Seq, head.Next.Seq)
+	}
+}
+
+func TestTextCoalescingRetainsFirstSeq(t *testing.T) {
+	thread := newThread()
+	thread.QueueItem(UserText("hello"))
+	thread.QueueItem(UserText("world"))
+	head := thread.items.Head()
+	if head == nil || head.Seq != 1 {
+		t.Fatalf("coalesced node seq = %v, want 1 (first event)", head.Seq)
+	}
+	if got := thread.items.Slice(); len(got) != 1 || got[0] != UserText("helloworld") {
+		t.Fatalf("coalesced items = %#v", got)
+	}
+}
+
+func TestPatchTargetZeroAppliesToCurrentTail(t *testing.T) {
+	thread := newThread()
+	thread.QueueItem(UserText("first"))
+	thread.QueueItem(UserText("second"))
+	tail := thread.items.Tail()
+	if tail == nil {
+		t.Fatal("no tail")
+	}
+	thread.QueueItem(PatchItemMetadata{Metadata: map[string]any{"cache/id": "tail"}})
+	if got := tail.Metadata["cache/id"]; got != "tail" {
+		t.Fatalf("zero-target patch did not apply to tail: %#v", tail.Metadata)
+	}
+	if len(thread.items.Slice()) != 1 {
+		t.Fatalf("zero-target patch added a node: %#v", thread.items.Slice())
+	}
+	// Later text must not coalesce into the annotated tail item.
+	thread.QueueItem(UserText(" later"))
+	if got := thread.items.Slice(); len(got) != 2 || got[1] != UserText(" later") {
+		t.Fatalf("annotated tail absorbed later text: %#v", got)
+	}
+}
+
+func TestExplicitPatchUpdatesOlderItemAndNextRequestReflectsIt(t *testing.T) {
+	thread := newThread()
+	thread.QueueItem(UserText("old"))
+	first := thread.items.Head()
+	thread.QueueItem(UserText("newer"))
+	thread.QueueItem(PatchItemMetadata{Target: first.Seq, Metadata: map[string]any{"cache/id": "patched"}})
+	if got := first.Metadata["cache/id"]; got != "patched" {
+		t.Fatalf("explicit patch did not update older item: %#v", first.Metadata)
+	}
+	req := thread.requestSnapshot()
+	if len(req.Items) != 1 || len(req.ItemMeta) != 1 {
+		t.Fatalf("request items = %#v meta = %#v", req.Items, req.ItemMeta)
+	}
+	if got := req.ItemMeta[0]["cache/id"]; got != "patched" {
+		t.Fatalf("request meta cache/id = %#v, want patched", got)
+	}
+}
+
+func TestPatchingAbsentTargetFailsBeforeMutation(t *testing.T) {
+	thread := newThread()
+	thread.QueueItem(UserText("a"))
+	seqBefore := thread.mutationSeq
+	assertPanics(t, func() {
+		thread.QueueItem(PatchItemMetadata{Target: 999, Metadata: map[string]any{"k": "v"}})
+	}, "patch absent target")
+	if thread.mutationSeq != seqBefore {
+		t.Fatalf("mutation seq advanced on failed patch: %d -> %d", seqBefore, thread.mutationSeq)
+	}
+}
+
+func TestMetadataDeepCopyPreventsCallerMutation(t *testing.T) {
+	thread := newThread()
+	meta := map[string]any{"cache/id": "session", "nested": map[string]any{"flag": true}}
+	thread.QueueItem(UserText("a"), PatchItemMetadata{Metadata: meta})
+	nested, _ := meta["nested"].(map[string]any)
+	nested["flag"] = false
+	head := thread.items.Head()
+	got, _ := head.Metadata["nested"].(map[string]any)
+	if got["flag"] != true {
+		t.Fatalf("queued nested metadata was mutated by caller: %#v", head.Metadata)
+	}
+	snap, err := thread.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if len(snap.Items) != 1 || snap.Items[0].Metadata == "" || !strings.Contains(snap.Items[0].Metadata, `true`) {
+		t.Fatalf("snapshot metadata = %q", snap.Items[0].Metadata)
+	}
+}
+
+func TestCanonicalItemsContainNoPatchItemMetadataNodes(t *testing.T) {
+	thread := newThread()
+	thread.QueueItem(UserText("a"), PatchItemMetadata{Metadata: map[string]any{"k": "v"}})
+	thread.QueueItem(PatchItemMetadata{Metadata: map[string]any{"later": "x"}})
+	for _, item := range thread.items.Slice() {
+		if _, ok := item.(PatchItemMetadata); ok {
+			t.Fatalf("canonical list contains PatchItemMetadata node: %#v", item)
+		}
+	}
+}
+
+func TestInitialMetadataProducesOneWALEvent(t *testing.T) {
+	thread := newThread()
+	thread.QueueItem(UserText("a"), PatchItemMetadata{Metadata: map[string]any{"k": "v"}})
+	events := thread.WALAfter(0)
+	if len(events) != 1 {
+		t.Fatalf("wal events = %d, want 1", len(events))
+	}
+	if events[0].Op != walOpQueueItem {
+		t.Fatalf("wal op = %q, want queue_item", events[0].Op)
+	}
+	if events[0].Item.Metadata == "" {
+		t.Fatal("wal item metadata not persisted")
+	}
+	restored := newThread()
+	if err := restored.ReplayWAL(events); err != nil {
+		t.Fatalf("replay wal: %v", err)
+	}
+	if restored.items.Head() == nil || restored.items.Head().Metadata["k"] != "v" {
+		t.Fatalf("restored metadata = %#v", restored.items.Head().Metadata)
 	}
 }

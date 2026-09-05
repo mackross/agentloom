@@ -14,12 +14,24 @@ import (
 // event loop.
 type Thread interface {
 	State() State
+	// CompletedTurns returns the branchable completed single-role turns currently
+	// visible in the thread. It excludes streaming tails and malformed or
+	// unresolved tool-call prefixes.
+	//
+	// If an EventLoop owns this Thread, call CompletedTurns only from
+	// EventLoop.Do. The returned Turn values are plain display projections
+	// identified by stable item sequences and are not invalidated by later
+	// thread mutations.
 	CompletedTurns() []Turn
 	Seq() uint32
 	Snapshot() (ThreadSnapshot, error)
 	Checkpoint(CheckpointOptions) (Checkpoint, error)
 	WALAfter(uint32) []WALEvent
-	QueueItem(Item)
+	// QueueItem posts an item. Variadic PatchItemMetadata arguments are initial
+	// metadata attached atomically to the posted item; each must have a zero
+	// Target. A PatchItemMetadata as the first argument performs a metadata patch
+	// and does not create a list node.
+	QueueItem(Item, ...PatchItemMetadata)
 	QueueSyntheticToolExchange(ToolCall, ToolCallResult)
 	SetDelegate(ThreadDelegate)
 	SetDurableStore(DurableStore)
@@ -249,14 +261,26 @@ func (t *thread) advanceWhilePossible() error {
 	}
 }
 
-func (t *thread) QueueItem(v Item) {
+// QueueItem posts an item into the thread. Variadic patches supply initial
+// metadata for the posted item and must all target zero. A PatchItemMetadata as
+// the first argument performs a metadata patch instead.
+func (t *thread) QueueItem(v Item, patches ...PatchItemMetadata) {
+	if p, ok := v.(PatchItemMetadata); ok {
+		all := append([]PatchItemMetadata{p}, patches...)
+		t.queueMetadataPatch(all)
+		return
+	}
+	meta, err := mergeInitialMetadata(patches)
+	if err != nil {
+		panic("threads queue item: " + err.Error())
+	}
 	if r, ok := v.(ToolCallResult); ok {
 		t.clearToolCallContextForResult(r.CallID)
 		if t.hasRecoveryResultForToolCall(r.CallID) {
 			return
 		}
 	}
-	t.mutationSeq++
+	seq := t.advanceMutationSeq()
 	if _, ok := v.(SendItem); ok {
 		t.cancelAutoSend.Store(false)
 	}
@@ -266,11 +290,12 @@ func (t *thread) QueueItem(v Item) {
 			lateAutoSend = lateAutoSend || p.call.CallID == r.CallID && p.started && p.continueMode != ToolContinueManual && !t.cb.hasPendingSend(&t.items)
 		}
 	}
-	if err := t.cb.queueItem(&t.items, v); err != nil {
+	post := itemCandidate{Seq: seq, Item: v, Metadata: meta}
+	if err := t.cb.queueItem(&t.items, post); err != nil {
 		t.onExecutorError(err)
 		return
 	}
-	t.appendWAL(walOpQueueItem, v)
+	t.appendWAL(walOpQueueItem, post)
 	if lateAutoSend {
 		t.QueueItem(SendItem{})
 		return
@@ -279,6 +304,68 @@ func (t *thread) QueueItem(v Item) {
 		t.onExecutorError(err)
 	}
 	t.captureSafeIfIdle()
+}
+
+// queueMetadataPatch applies a standalone PatchItemMetadata. It never creates a
+// list node. An empty patch is a no-op. A nonempty patch with no resolvable
+// target panics before advancing mutationSeq, mutating memory, or writing WAL.
+func (t *thread) queueMetadataPatch(patches []PatchItemMetadata) {
+	// Patch contract: when the first QueueItem argument is a metadata patch,
+	// only that first patch may specify an explicit target. Additional patches
+	// annotate the same target and must carry target zero.
+	target := patches[0].Target
+	for _, p := range patches[1:] {
+		if p.Target != 0 {
+			panic("threads patch metadata: only the first patch may specify an explicit target")
+		}
+	}
+	patch, err := normalizeMetadataPatches(patches)
+	if err != nil {
+		panic("threads patch metadata: " + err.Error())
+	}
+	if patch.empty() {
+		return // empty patch is a no-op
+	}
+	if target == 0 {
+		target = t.patchTargetZero()
+	}
+	if t.findItemBySeq(target) == nil {
+		panic(fmt.Sprintf("threads patch metadata target %d not found", target))
+	}
+	t.advanceMutationSeq()
+	t.patchItem(target, patch)
+	t.appendWALPatch(target, patch)
+	t.captureSafeIfIdle()
+}
+
+// patchTargetZero resolves a zero patch target to the current transcript tail.
+func (t *thread) patchTargetZero() ItemSeq {
+	tail := t.items.Tail()
+	if tail == nil {
+		return 0
+	}
+	return tail.Seq
+}
+
+func (t *thread) findItemBySeq(seq ItemSeq) *item[Item] {
+	if seq == 0 {
+		return nil
+	}
+	for n := t.items.Head(); n != nil; n = n.Next {
+		if n.Seq == seq {
+			return n
+		}
+	}
+	return nil
+}
+
+// patchItem applies metadata changes to the node with the given sequence.
+func (t *thread) patchItem(target ItemSeq, patch metadataPatch) {
+	n := t.findItemBySeq(target)
+	if n == nil {
+		panic(fmt.Sprintf("threads patch metadata target %d not found", target))
+	}
+	n.Metadata = applyMetadataPatch(n.Metadata, patch)
 }
 
 func (t *thread) QueueSyntheticToolExchange(call ToolCall, result ToolCallResult) {
@@ -299,7 +386,11 @@ func (t *thread) QueueSyntheticToolExchange(call ToolCall, result ToolCallResult
 		}
 	}
 	if id == "" {
-		id = fmt.Sprintf("synthetic_tool_call_%d", t.mutationSeq+1)
+		seq, err := t.candidateMutationSeq()
+		if err != nil {
+			panic(err.Error())
+		}
+		id = fmt.Sprintf("synthetic_tool_call_%d", seq)
 	}
 	call.CallID, result.CallID = id, id
 	t.QueueItem(call)
@@ -327,20 +418,27 @@ func (t *thread) Queued() *itemList[Item] {
 }
 
 func (t *thread) beginStreaming() error {
-	t.mutationSeq++
+	t.advanceMutationSeq()
 	if err := t.cb.beginStreaming(); err != nil {
 		return err
 	}
-	t.appendWAL(walOpBeginStream, nil)
+	t.appendWAL(walOpBeginStream, itemCandidate{})
 	return nil
 }
 
 func (t *thread) appendStreamItem(v Item) error {
-	t.mutationSeq++
-	if err := t.cb.appendStreamItem(&t.items, v); err != nil {
+	// A streamed metadata patch targets streamInsertionPoint, not the list tail,
+	// because ordinary user items may have been queued behind the stream while it
+	// was running.
+	if p, ok := v.(PatchItemMetadata); ok {
+		return t.appendStreamMetadataPatch(p)
+	}
+	seq := t.advanceMutationSeq()
+	post := itemCandidate{Seq: seq, Item: v}
+	if err := t.cb.appendStreamItem(&t.items, post); err != nil {
 		return err
 	}
-	t.appendWAL(walOpAppendStreamItem, v)
+	t.appendWAL(walOpAppendStreamItem, post)
 	if t.delegate != nil {
 		if d, ok := t.delegate.(ThreadStreamItemAppendedDelegate); ok {
 			d.OnThreadStreamItemAppended(t, v)
@@ -349,13 +447,38 @@ func (t *thread) appendStreamItem(v Item) error {
 	return t.advanceWhilePossible()
 }
 
+func (t *thread) appendStreamMetadataPatch(p PatchItemMetadata) error {
+	patch, err := normalizeMetadataPatches([]PatchItemMetadata{p})
+	if err != nil {
+		return err
+	}
+	if patch.empty() {
+		return nil // empty patch is a no-op
+	}
+	target := p.Target
+	if target == 0 {
+		n := t.cb.streamInsertionPoint
+		if n == nil {
+			return fmt.Errorf("threads stream metadata patch has no insertion point")
+		}
+		target = n.Seq
+	}
+	if t.findItemBySeq(target) == nil {
+		return fmt.Errorf("threads stream metadata patch target %d not found", target)
+	}
+	t.advanceMutationSeq()
+	t.patchItem(target, patch)
+	t.appendWALPatch(target, patch)
+	return t.advanceWhilePossible()
+}
+
 func (t *thread) endStreaming() error {
-	t.mutationSeq++
+	t.advanceMutationSeq()
 	// Persist end_stream before the state-change callback can queue follow-on
 	// items. If we crash in that callback, replaying this WAL prefix cleanly
 	// restores the requested-tool boundary; later tool-resolution items only
 	// appear if their own WAL entries were durably appended.
-	t.appendWAL(walOpEndStream, nil)
+	t.appendWAL(walOpEndStream, itemCandidate{})
 	if err := t.cb.endStreaming(&t.items); err != nil {
 		return err
 	}
@@ -447,13 +570,45 @@ func (t *thread) queueToolResolutionItem(beforeSend bool, v Item) {
 	t.QueueItem(v)
 }
 
+// queueBeforePendingSend computes the candidate sequence before inserting so
+// the node receives the same sequence recorded by its WAL event. The sequence
+// is committed only when insertion succeeds; otherwise false is returned.
 func (t *thread) queueBeforePendingSend(v Item) bool {
-	if t.cb.queueItemBeforeFirstPendingSend(&t.items, v) {
-		t.mutationSeq++
-		t.appendWAL(walOpQueueItemBeforeSend, v)
-		return true
+	return t.queueBeforePendingSendWithMeta(v, nil)
+}
+
+func (t *thread) queueBeforePendingSendWithMeta(v Item, meta map[string]any) bool {
+	seq, err := t.candidateMutationSeq()
+	if err != nil {
+		panic(err.Error())
 	}
-	return false
+	post := itemCandidate{Seq: seq, Item: v, Metadata: meta}
+	if !t.cb.queueItemBeforeFirstPendingSend(&t.items, post) {
+		// Discard the candidate: no mutation occurred and the sequence never
+		// moved forward.
+		return false
+	}
+	if committed := t.advanceMutationSeq(); committed != seq {
+		panic("threads before-send sequence candidate changed during insertion")
+	}
+	t.appendWAL(walOpQueueItemBeforeSend, post)
+	return true
+}
+
+// queueItemWithMeta posts an item with a preset candidate sequence and initial
+// metadata, advancing the mutation sequence. It is used by WAL replay where the
+// event sequence is authoritative and the candidate is validated against it.
+func (t *thread) queueItemWithMeta(seq ItemSeq, v Item, meta map[string]any) {
+	t.advanceMutationSeq()
+	post := itemCandidate{Seq: seq, Item: v, Metadata: meta}
+	if err := t.cb.queueItem(&t.items, post); err != nil {
+		t.onExecutorError(err)
+		return
+	}
+	if err := t.advanceWhilePossible(); err != nil {
+		t.onExecutorError(err)
+	}
+	t.captureSafeIfIdle()
 }
 
 func dispatchHasResultForCall(dispatch ToolDispatch, callID string) bool {

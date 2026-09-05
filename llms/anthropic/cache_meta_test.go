@@ -10,7 +10,7 @@ import (
 func TestRequestMessagesUsesAnthropicCacheControlMetadata(t *testing.T) {
 	msgs, err := conversationMessages(threads.Req{
 		Items:    []threads.Item{threads.UserText("cached")},
-		ItemMeta: []map[string]any{cacheanthropic.Ephemeral1h()},
+		ItemMeta: []map[string]any{cacheanthropic.Ephemeral1h().Metadata},
 	})
 	if err != nil {
 		t.Fatalf("requestMessages: %v", err)

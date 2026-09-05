@@ -10,11 +10,11 @@ import "github.com/mackross/agentloom/threads"
 const CachedContentKey = "cache/gemini/cached_content"
 
 // CachedContent sets the cached content resource name for subsequent requests.
-func CachedContent(name string) threads.PreviousItemMetadata {
-	return threads.PreviousItemMetadata{CachedContentKey: name}
+func CachedContent(name string) threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{CachedContentKey: name}}
 }
 
 // ClearCachedContent clears a previously set cached content resource name.
-func ClearCachedContent() threads.PreviousItemMetadata {
-	return threads.PreviousItemMetadata{CachedContentKey: false}
+func ClearCachedContent() threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{CachedContentKey: false}}
 }

@@ -3,6 +3,7 @@ package threads
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 )
 
@@ -45,7 +46,8 @@ func TestTurnCheckpointFromUserRestoresRequestReadyPrefix(t *testing.T) {
 	thread.QueueItem(AssistantText("old"))
 	thread.QueueItem(UserText("later"))
 
-	cp, err := thread.CompletedTurns()[0].Checkpoint()
+	turn := thread.CompletedTurns()[0]
+	cp, _, err := thread.checkpointAtTurn(turn.ID())
 	if err != nil {
 		t.Fatalf("checkpoint user turn: %v", err)
 	}
@@ -85,7 +87,8 @@ func TestTurnCheckpointFromAssistantRestoresSettledPrefix(t *testing.T) {
 	thread.QueueItem(AssistantText("answer"))
 	thread.QueueItem(UserText("discard"))
 
-	cp, err := thread.CompletedTurns()[1].Checkpoint()
+	turn := thread.CompletedTurns()[1]
+	cp, _, err := thread.checkpointAtTurn(turn.ID())
 	if err != nil {
 		t.Fatalf("checkpoint assistant turn: %v", err)
 	}
@@ -162,6 +165,35 @@ func TestPartialAssistantAndUnresolvedToolsAreNotBranchable(t *testing.T) {
 	}
 }
 
+func TestCompletedTurnsPreservesUserTurnBeforeToolOnlyResponse(t *testing.T) {
+	thread := newThread()
+	thread.QueueItem(UserText("use a tool"))
+	userTurn := thread.CompletedTurns()[0]
+	thread.QueueItem(SendItem{})
+	if err := thread.beginStreaming(); err != nil {
+		t.Fatalf("begin stream: %v", err)
+	}
+	// No assistant text precedes the call, so the pending text turn is still
+	// the user turn when the completed-turn scan reaches the unresolved tool.
+	if err := thread.appendStreamItem(ToolCall{CallID: "c1", Name: "lookup", Payload: `{}`}); err != nil {
+		t.Fatalf("append tool call: %v", err)
+	}
+	if err := thread.endStreaming(); err != nil {
+		t.Fatalf("end stream: %v", err)
+	}
+	if got := thread.State(); got != StateAwaitingToolResults {
+		t.Fatalf("state = %q, want %q", got, StateAwaitingToolResults)
+	}
+
+	turns := thread.CompletedTurns()
+	if len(turns) != 1 || turns[0] != userTurn {
+		t.Fatalf("completed turns = %#v, want the preceding user turn %#v", turns, userTurn)
+	}
+	if _, _, err := thread.checkpointAtTurn(userTurn.ID()); err != nil {
+		t.Fatalf("checkpoint preceding user turn: %v", err)
+	}
+}
+
 func TestCompletedTurnsAfterRestoreAndToolResultPrefix(t *testing.T) {
 	thread := newThread()
 	base, err := thread.Checkpoint(CheckpointOptions{Policy: InflightSkip})
@@ -186,7 +218,7 @@ func TestCompletedTurnsAfterRestoreAndToolResultPrefix(t *testing.T) {
 	if turns[1].Role() != TurnAssistant || turns[1].Text() != "using toolanswer" {
 		t.Fatalf("assistant turn after restore = role %q text %q", turns[1].Role(), turns[1].Text())
 	}
-	if _, err := turns[1].Checkpoint(); err != nil {
+	if _, _, err := restored.checkpointAtTurn(turns[1].ID()); err != nil {
 		t.Fatalf("checkpoint restored assistant/tool turn: %v", err)
 	}
 }
@@ -204,16 +236,16 @@ func TestTurnCheckpointInsideEventLoopCanBranch(t *testing.T) {
 	err := loop.doLocal(ctx, func(th *thread) error {
 		th.QueueItem(UserText("branch me"))
 		turn := th.CompletedTurns()[0]
-		var err error
-		cp, err = turn.Checkpoint()
 		sourceHeadSeq = th.Seq()
+		var err error
+		cp, _, err = th.checkpointAtTurn(turn.ID())
 		return err
 	})
 	if err != nil {
 		t.Fatalf("event loop checkpoint: %v", err)
 	}
-	if cp.Seq != sourceHeadSeq {
-		t.Fatalf("checkpoint seq = %d, source head seq = %d", cp.Seq, sourceHeadSeq)
+	if cp.Seq != sourceHeadSeq+1 {
+		t.Fatalf("checkpoint seq = %d, want source head seq %d + 1", cp.Seq, sourceHeadSeq)
 	}
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
@@ -221,15 +253,31 @@ func TestTurnCheckpointInsideEventLoopCanBranch(t *testing.T) {
 	}
 }
 
-func TestTurnCheckpointRejectsZeroAndStaleTurns(t *testing.T) {
-	if _, err := (Turn{}).Checkpoint(); err == nil {
-		t.Fatal("zero turn checkpoint succeeded")
+func TestTurnCheckpointRejectsZeroAndAbsentTurns(t *testing.T) {
+	if _, _, err := newThread().checkpointAtTurn(0); !errors.Is(err, ErrInvalidTurn) {
+		t.Fatalf("zero turn checkpoint err = %v, want ErrInvalidTurn", err)
 	}
 	thread := newThread()
 	thread.QueueItem(UserText("u"))
 	turn := thread.CompletedTurns()[0]
-	thread.QueueItem(UserText(" mutation"))
-	if _, err := turn.Checkpoint(); err == nil {
-		t.Fatal("stale turn checkpoint succeeded")
+	if _, _, err := thread.checkpointAtTurn(turn.ID()); err != nil {
+		t.Fatalf("valid turn checkpoint: %v", err)
+	}
+	if _, _, err := thread.checkpointAtTurn(999); !errors.Is(err, ErrInvalidTurn) {
+		t.Fatalf("absent turn checkpoint err = %v, want ErrInvalidTurn", err)
+	}
+}
+
+func TestUserTurnCheckpointReturnsSequenceOverflow(t *testing.T) {
+	thread := newThread()
+	thread.QueueItem(UserText("hello"))
+	turn := thread.CompletedTurns()[0]
+	thread.mutationSeq = math.MaxUint32
+
+	if _, _, err := thread.checkpointAtTurn(turn.ID()); !errors.Is(err, errItemSequenceOverflow) {
+		t.Fatalf("checkpoint overflow error = %v, want %v", err, errItemSequenceOverflow)
+	}
+	if thread.mutationSeq != math.MaxUint32 {
+		t.Fatalf("overflow checkpoint mutated source sequence: %d", thread.mutationSeq)
 	}
 }

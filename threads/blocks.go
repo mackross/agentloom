@@ -25,11 +25,54 @@ type (
 	// they will be concatonated.
 	AssistantText string
 
-	// PreviousItemMetadata annotates the preceding queued item with request
-	// construction metadata. It is not sent to providers as content. Its presence
-	// also naturally prevents control-block coalescing between surrounding items.
-	PreviousItemMetadata map[string]any
+	// ItemSeq is a branch-local identity for a materialized thread item. It is an
+	// identity/lineage anchor, not transcript order and not a content version. It
+	// is scoped to a thread branch; a cross-branch reference is (BranchID,
+	// ItemSeq).
+	ItemSeq uint32
 )
+
+type metadataDeleteValue struct{}
+
+// DeleteValue removes a top-level metadata key when used as the value in a
+// standalone or streamed PatchItemMetadata. It is not valid initial metadata
+// for a newly queued item. DeleteValue is normalized before persistence and
+// never remains in canonical item metadata or built request metadata.
+var DeleteValue = metadataDeleteValue{}
+
+// PatchItemMetadata merges metadata into a target item by top-level key.
+//
+// It is a mutation command: it is never materialized as a conversation node.
+// Calling QueueItem with a PatchItemMetadata as its first argument performs a
+// metadata patch and does not create a list node. An empty patch is a no-op.
+//
+// When a PatchItemMetadata is the first argument to QueueItem, only that first
+// patch may carry an explicit Target; any additional patches in the same call
+// must have a zero Target and annotate the same item. Patch targets are
+// resolved against item sequences and are rejected (panicking before any
+// mutation) when the target is absent, conflicting, or nonzero in a raw request
+// projection that cannot resolve it.
+//
+// The resulting metadata is stored on the item and is not sent to providers as
+// content. Its presence also naturally prevents control-block coalescing between
+// surrounding items.
+type PatchItemMetadata struct {
+	// Target is the item to patch. Zero is shorthand for the immediately
+	// preceding materialized item at the posting/insertion location.
+	Target ItemSeq
+
+	// Metadata is merged by top-level key; later values win. DeleteValue removes
+	// the corresponding key.
+	Metadata map[string]any
+}
+
+func (PatchItemMetadata) Emit() bool { return false }
+
+// ForItem returns a copy of the patch targeting a specific item sequence.
+func (p PatchItemMetadata) ForItem(target ItemSeq) PatchItemMetadata {
+	p.Target = target
+	return p
+}
 
 // ToolCall is generally added to the thread when an LLM response is requesting
 // a ToolCall. It is possible to add synthesized "faked" ToolCalls to a thread
@@ -125,7 +168,6 @@ type SendItem struct{}
 func (UserText) Emit() bool             { return true }
 func (AssistantText) Emit() bool        { return true }
 func (ReasoningItem) Emit() bool        { return true }
-func (PreviousItemMetadata) Emit() bool { return false }
 func (AssistantInstruction) Emit() bool { return false }
 func (ToolCallChunk) Emit() bool        { return false }
 func (ToolCall) Emit() bool             { return true }

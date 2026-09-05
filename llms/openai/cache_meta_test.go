@@ -13,8 +13,8 @@ func TestResponseParamsUsesLatestOpenAICacheMetadata(t *testing.T) {
 	params, err := s.responseRequest(threads.Req{
 		Items: []threads.Item{threads.UserText("a"), threads.UserText("b")},
 		ItemMeta: []map[string]any{
-			cacheopenai.PromptCacheKey("old"),
-			mergeMaps(cacheopenai.PromptCacheKey("new"), cacheopenai.PromptCacheRetention(cacheopenai.Retention24h)),
+			cacheopenai.PromptCacheKey("old").Metadata,
+			mergeMaps(cacheopenai.PromptCacheKey("new").Metadata, cacheopenai.PromptCacheRetention(cacheopenai.Retention24h).Metadata),
 		},
 	})
 	if err != nil {

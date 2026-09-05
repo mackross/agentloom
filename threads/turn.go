@@ -1,11 +1,8 @@
 package threads
 
-import (
-	"errors"
-)
+import "errors"
 
-// ErrInvalidTurn means a Turn is zero, stale, or no longer matches its source
-// thread.
+// ErrInvalidTurn means a Turn ID is zero, absent, or not currently branchable.
 var ErrInvalidTurn = errors.New("invalid turn")
 
 // TurnRole is the speaker role for a completed conversation turn.
@@ -18,19 +15,22 @@ const (
 	TurnAssistant TurnRole = "assistant"
 )
 
-// Turn is an opaque completed single-role conversation turn returned by
-// Thread.CompletedTurns.
-//
-// Use the accessor methods for display metadata and Checkpoint to materialize a
-// branch point. A Turn is tied to its source thread and becomes invalid after
-// that thread mutates.
+// Turn is a plain projection value for a completed single-role conversation
+// turn. It is not tied to a live thread and never becomes stale. Use the
+// accessor methods for display metadata and ID for stable identity. The turn ID
+// is the ItemSeq of the first surviving text node in the turn.
 type Turn struct {
-	thread *thread
-	index  int
-	role   TurnRole
-	text   string
-	seq    uint32
-	end    int
+	index int
+	role  TurnRole
+	text  string
+	id    ItemSeq
+}
+
+// completedTurn is the internal turn projection with its current end-node
+// boundary. The end pointer never escapes the owning thread.
+type completedTurn struct {
+	Turn
+	end *item[Item]
 }
 
 // Seq returns the thread mutation sequence. The sequence identifies the current
@@ -40,72 +40,152 @@ type Turn struct {
 func (t *thread) Seq() uint32 { return t.mutationSeq }
 
 // CompletedTurns returns the branchable completed single-role turns currently
-// visible in the thread. It excludes streaming tails and malformed or unresolved
-// tool-call prefixes.
-//
-// If an EventLoop owns this Thread, call CompletedTurns only from EventLoop.Do.
-// The returned Turn values are tied to the current mutation sequence and may be
-// invalidated by the next thread mutation.
+// visible in the thread. See the Thread interface documentation for the
+// EventLoop ownership rule.
 func (t *thread) CompletedTurns() []Turn {
-	items := t.items.Slice()
-	limit := completedItemLimit(t, items)
-	var turns []Turn
-	for i := 0; i < limit; i++ {
-		role, text, ok := turnItem(items[i])
-		if !ok || text == "" {
-			continue
-		}
-		if n := len(turns); n > 0 && turns[n-1].role == role {
-			turns[n-1].text += text
-			turns[n-1].end = i
-			continue
-		}
-		turns = append(turns, Turn{thread: t, index: len(turns), role: role, text: text, seq: t.mutationSeq, end: i})
+	turns := t.completedTurns()
+	out := make([]Turn, len(turns))
+	for i := range turns {
+		out[i] = turns[i].Turn
 	}
+	return out
+}
+
+func (t *thread) completedTurns() []completedTurn {
+	var turns []completedTurn
+	receiving := t.cb.State() == StateReceivingStream && t.cb.streamInsertionPoint != nil
+	var limit *item[Item]
+	if receiving {
+		limit = t.lastSendBefore(t.cb.streamInsertionPoint)
+		if limit == nil {
+			return nil
+		}
+	}
+	var role TurnRole
+	var text string
+	var id ItemSeq
+	var start, end *item[Item]
+	finalize := func() {
+		if start != nil {
+			turns = append(turns, completedTurn{
+				Turn: Turn{index: len(turns), role: role, text: text, id: id},
+				end:  end,
+			})
+			start = nil
+		}
+	}
+	for n := t.items.Head(); n != nil && n != limit; n = n.Next {
+		if nrole, ntext, ok := turnItem(n); ok && ntext != "" {
+			if start == nil {
+				start, end, role, text, id = n, n, nrole, ntext, n.Seq
+				continue
+			}
+			if nrole == role {
+				// Same-role text coalesces: keep the first surviving sequence and
+				// extend the end boundary.
+				end = n
+				text += ntext
+				continue
+			}
+			finalize()
+			start, end, role, text, id = n, n, nrole, ntext, n.Seq
+			continue
+		}
+		// Non-text node. Unresolved or malformed tool state cuts the turn scan:
+		// retain a preceding user turn, but drop an in-progress assistant turn
+		// because it belongs to the unbranchable prefix.
+		unbranchable := false
+		switch item := n.Item.(type) {
+		case ToolCallChunk, ToolCallResolving, ToolCallStarted:
+			unbranchable = true
+		case ToolCall:
+			unbranchable = !t.hasToolResult(n.Next, item.CallID)
+		case ToolCallResult:
+			unbranchable = !t.hasToolCallBefore(n, item.CallID)
+		}
+		if unbranchable {
+			if role == TurnUser {
+				finalize()
+			}
+			return turns
+		}
+		// Settled control nodes (send, instruction, tools snapshot) continue.
+	}
+	finalize()
 	return turns
 }
 
-// Index is the turn's zero-based index in CompletedTurns at the time it was
-// read.
-func (turn Turn) Index() int { return turn.index }
-
-// Role is the turn speaker.
-func (turn Turn) Role() TurnRole { return turn.role }
-
-// Text is display text coalesced from adjacent items with the same role.
-func (turn Turn) Text() string { return turn.text }
-
-// Seq is the source thread mutation sequence at the time the turn was read.
-func (turn Turn) Seq() uint32 { return turn.seq }
-
-// Checkpoint materializes a branch checkpoint immediately after this turn.
-// User turns restore request-ready and unsafe; assistant turns restore idle.
-func (turn Turn) Checkpoint() (Checkpoint, error) {
-	if turn.thread == nil || turn.seq != turn.thread.mutationSeq {
-		return Checkpoint{}, ErrInvalidTurn
+// lastSendBefore returns the last SendItem at or before end, or nil when there
+// is none. It defines the streaming completed-turn boundary.
+func (t *thread) lastSendBefore(end *item[Item]) *item[Item] {
+	var last *item[Item]
+	for n := t.items.Head(); n != nil; n = n.Next {
+		if _, ok := n.Item.(SendItem); ok {
+			last = n
+		}
+		if n == end {
+			break
+		}
 	}
-	turns := turn.thread.CompletedTurns()
-	if turn.index < 0 || turn.index >= len(turns) {
-		return Checkpoint{}, ErrInvalidTurn
-	}
-	fresh := turns[turn.index]
-	if fresh.role != turn.role || fresh.text != turn.text || fresh.end != turn.end || fresh.seq != turn.seq {
-		return Checkpoint{}, ErrInvalidTurn
-	}
-
-	items, err := snapshotPrefix(turn.thread.items.Slice()[:turn.end+1])
-	if err != nil {
-		return Checkpoint{}, err
-	}
-	if turn.role == TurnUser {
-		items = append(items, SnapshotItem{Type: "send"})
-		return Checkpoint{Seq: turn.seq, Unsafe: true, Snapshot: ThreadSnapshot{Version: serializedThreadVersion, State: StateConstructLLMRequest, Items: items, IPIndex: len(items) - 1, QueueStartIndex: -1, StreamInsIndex: -1}}, nil
-	}
-	return Checkpoint{Seq: turn.seq, Snapshot: ThreadSnapshot{Version: serializedThreadVersion, State: StateIdle, Items: items, IPIndex: len(items) - 1, QueueStartIndex: -1, StreamInsIndex: -1}}, nil
+	return last
 }
 
-func turnItem(v Item) (TurnRole, string, bool) {
-	switch x := v.(type) {
+// checkpointAtTurn materializes a branch checkpoint immediately after the turn
+// identified by id. User turns restore request-ready and unsafe; assistant
+// turns restore idle. ErrInvalidTurn is returned if the ID is zero, absent, or
+// not currently branchable.
+func (t *thread) checkpointAtTurn(id ItemSeq) (Checkpoint, Turn, error) {
+	if id == 0 {
+		return Checkpoint{}, Turn{}, ErrInvalidTurn
+	}
+	for _, ct := range t.completedTurns() {
+		if ct.id != id {
+			continue
+		}
+		items, err := t.snapshotPrefixNodes(ct.end)
+		if err != nil {
+			return Checkpoint{}, Turn{}, err
+		}
+		if ct.role == TurnUser {
+			seq, err := t.candidateMutationSeq()
+			if err != nil {
+				return Checkpoint{}, Turn{}, err
+			}
+			items = append(items, SnapshotItem{Type: "send", Seq: seq})
+			cp := Checkpoint{
+				Seq:    uint32(seq),
+				Unsafe: true,
+				Snapshot: ThreadSnapshot{
+					Version:         serializedThreadVersion,
+					HeadSeq:         uint32(seq),
+					State:           StateConstructLLMRequest,
+					Items:           items,
+					IPIndex:         len(items) - 1,
+					QueueStartIndex: -1,
+					StreamInsIndex:  -1,
+				},
+			}
+			return cp, ct.Turn, nil
+		}
+		cp := Checkpoint{
+			Seq: t.mutationSeq,
+			Snapshot: ThreadSnapshot{
+				Version:         serializedThreadVersion,
+				HeadSeq:         t.mutationSeq,
+				State:           StateIdle,
+				Items:           items,
+				IPIndex:         len(items) - 1,
+				QueueStartIndex: -1,
+				StreamInsIndex:  -1,
+			},
+		}
+		return cp, ct.Turn, nil
+	}
+	return Checkpoint{}, Turn{}, ErrInvalidTurn
+}
+
+func turnItem(n *item[Item]) (TurnRole, string, bool) {
+	switch x := n.Item.(type) {
 	case UserText:
 		return TurnUser, string(x), true
 	case AssistantText:
@@ -115,83 +195,63 @@ func turnItem(v Item) (TurnRole, string, bool) {
 	}
 }
 
-func completedItemLimit(t *thread, items []Item) int {
-	limit := len(items)
-	if t.cb.State() == StateReceivingStream && t.cb.streamInsertionPoint != nil {
-		limit = sendIndexBefore(t, t.cb.streamInsertionPoint)
-	}
-	role := TurnRole("")
-	turnStart := 0
-	for i := 0; i < limit; i++ {
-		if nextRole, text, ok := turnItem(items[i]); ok && text != "" {
-			if nextRole != role {
-				role = nextRole
-				turnStart = i
-			}
-			continue
-		}
-		switch item := items[i].(type) {
-		case ToolCallChunk, ToolCallResolving, ToolCallStarted:
-			return unbranchableLimit(i, role, turnStart)
-		case ToolCall:
-			if !hasToolResult(items[i+1:limit], item.CallID) {
-				return unbranchableLimit(i, role, turnStart)
-			}
-		case ToolCallResult:
-			if !hasToolCall(items[:i], item.CallID) {
-				return unbranchableLimit(i, role, turnStart)
-			}
-		}
-	}
-	return limit
-}
-
-func unbranchableLimit(i int, role TurnRole, turnStart int) int {
-	if role == TurnAssistant {
-		return turnStart
-	}
-	return i
-}
-
-func hasToolResult(items []Item, callID string) bool {
-	for _, item := range items {
-		if _, ok := item.(UserText); ok {
-			return false
-		}
-		if result, ok := item.(ToolCallResult); ok && result.CallID == callID {
-			return true
-		}
-	}
-	return false
-}
-
-func hasToolCall(items []Item, callID string) bool {
-	for _, item := range items {
-		if call, ok := item.(ToolCall); ok && call.CallID == callID {
-			return true
-		}
-	}
-	return false
-}
-
-func sendIndexBefore(t *thread, end *item[Item]) int {
-	last := 0
-	for i, n := 0, t.items.Head(); n != nil && n != end.Next; i, n = i+1, n.Next {
-		if _, ok := n.Item.(SendItem); ok {
-			last = i
-		}
-	}
-	return last
-}
-
-func snapshotPrefix(items []Item) ([]SnapshotItem, error) {
-	out := make([]SnapshotItem, 0, len(items))
-	for _, item := range items {
-		raw, err := itemToSnapshotItem(item)
+// snapshotPrefixNodes serializes the node chain from the head through end,
+// preserving each node's Seq and Metadata.
+func (t *thread) snapshotPrefixNodes(end *item[Item]) ([]SnapshotItem, error) {
+	var out []SnapshotItem
+	for n := t.items.Head(); n != nil; n = n.Next {
+		raw, err := nodeToSnapshotItem(n)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, raw)
+		if n == end {
+			break
+		}
 	}
 	return out, nil
+}
+
+// Index is the turn's zero-based index in CompletedTurns at the time it was
+// read. It is display-only metadata and does not identify a branch.
+func (turn Turn) Index() int { return turn.index }
+
+// Role is the turn speaker.
+func (turn Turn) Role() TurnRole { return turn.role }
+
+// Text is display text coalesced from adjacent items with the same role.
+func (turn Turn) Text() string { return turn.text }
+
+// ID is the stable ItemSeq of the first surviving text node in the turn.
+func (turn Turn) ID() ItemSeq { return turn.id }
+
+// hasToolResult reports whether callID resolves to a ToolCallResult before any
+// intervening UserText or SendItem.
+func (t *thread) hasToolResult(from *item[Item], callID string) bool {
+	for n := from; n != nil; n = n.Next {
+		switch v := n.Item.(type) {
+		case UserText:
+			return false
+		case ToolCallResult:
+			if v.CallID == callID {
+				return true
+			}
+		case SendItem:
+			return false
+		}
+	}
+	return false
+}
+
+// hasToolCallBefore reports whether a ToolCall with callID appears before node.
+func (t *thread) hasToolCallBefore(node *item[Item], callID string) bool {
+	for n := t.items.Head(); n != nil; n = n.Next {
+		if call, ok := n.Item.(ToolCall); ok && call.CallID == callID {
+			return true
+		}
+		if n == node {
+			break
+		}
+	}
+	return false
 }

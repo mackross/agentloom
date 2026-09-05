@@ -51,9 +51,9 @@ func (x *testThread) SetDelegate(d ThreadDelegate) {
 	x.thread.SetDelegate(d)
 }
 
-func (x *testThread) QueueItem(v Item) {
+func (x *testThread) QueueItem(v Item, patches ...PatchItemMetadata) {
 	x.queueDepth++
-	x.thread.QueueItem(v)
+	x.thread.QueueItem(v, patches...)
 	x.queueDepth--
 
 	if x.queueDepth == 0 {

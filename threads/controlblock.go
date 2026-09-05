@@ -39,11 +39,11 @@ type pendingToolCall struct {
 }
 
 type cbStateHandler interface {
-	QueueItem(items cbItems, v Item) cbTransition
+	QueueItem(items cbItems, post itemCandidate) cbTransition
 	CanAdvance(items cbItems) bool
 	AdvanceNext(items cbItems) cbTransition
 	BeginStreaming() cbTransition
-	AppendStreamItem(items cbItems, v Item) cbTransition
+	AppendStreamItem(items cbItems, post itemCandidate) cbTransition
 	EndStreaming(items cbItems) cbTransition
 }
 
@@ -54,8 +54,8 @@ type cbStateHandler interface {
 type cbItems interface {
 	Head() *item[Item]
 	Tail() *item[Item]
-	Append(v Item) *item[Item]
-	InsertAfter(after *item[Item], v Item) *item[Item]
+	Append(post itemCandidate) *item[Item]
+	InsertAfter(after *item[Item], post itemCandidate) *item[Item]
 	// RemoveAfter removes the item after `after`; passing nil removes head.
 	RemoveAfter(after *item[Item]) *item[Item]
 }
@@ -88,8 +88,8 @@ type cbObserver interface {
 
 type idleState cbState
 
-func (s idleState) QueueItem(items cbItems, v Item) cbTransition {
-	return queueItemTransition(s.controlBlock, items, v)
+func (s idleState) QueueItem(items cbItems, post itemCandidate) cbTransition {
+	return queueItemTransition(s.controlBlock, items, post)
 }
 
 func (s idleState) CanAdvance(items cbItems) bool {
@@ -120,7 +120,7 @@ func (s idleState) BeginStreaming() cbTransition {
 	return noChangeTransition(s.controlBlock)
 }
 
-func (s idleState) AppendStreamItem(_ cbItems, _ Item) cbTransition {
+func (s idleState) AppendStreamItem(_ cbItems, _ itemCandidate) cbTransition {
 	return noChangeTransition(s.controlBlock)
 }
 
@@ -130,8 +130,8 @@ func (s idleState) EndStreaming(_ cbItems) cbTransition {
 
 type constructLLMRequestState cbState
 
-func (s constructLLMRequestState) QueueItem(items cbItems, v Item) cbTransition {
-	return queueItemTransition(s.controlBlock, items, v)
+func (s constructLLMRequestState) QueueItem(items cbItems, post itemCandidate) cbTransition {
+	return queueItemTransition(s.controlBlock, items, post)
 }
 
 func (s constructLLMRequestState) CanAdvance(_ cbItems) bool {
@@ -151,7 +151,7 @@ func (s constructLLMRequestState) BeginStreaming() cbTransition {
 	return cbTransition{From: from, To: cb.state, Changed: from != cb.state}
 }
 
-func (s constructLLMRequestState) AppendStreamItem(_ cbItems, _ Item) cbTransition {
+func (s constructLLMRequestState) AppendStreamItem(_ cbItems, _ itemCandidate) cbTransition {
 	return noChangeTransition(s.controlBlock)
 }
 
@@ -161,8 +161,8 @@ func (s constructLLMRequestState) EndStreaming(_ cbItems) cbTransition {
 
 type receivingStreamState cbState
 
-func (s receivingStreamState) QueueItem(items cbItems, v Item) cbTransition {
-	return queueItemTransition(s.controlBlock, items, v)
+func (s receivingStreamState) QueueItem(items cbItems, post itemCandidate) cbTransition {
+	return queueItemTransition(s.controlBlock, items, post)
 }
 
 func (s receivingStreamState) CanAdvance(_ cbItems) bool {
@@ -196,9 +196,10 @@ func (s receivingStreamState) BeginStreaming() cbTransition {
 	return noChangeTransition(s.controlBlock)
 }
 
-func (s receivingStreamState) AppendStreamItem(items cbItems, v Item) cbTransition {
+func (s receivingStreamState) AppendStreamItem(items cbItems, post itemCandidate) cbTransition {
 	cb := s.controlBlock
 	from := cb.state
+	v := post.Item
 	if x, ok := v.(ToolCallChunk); ok {
 		if x.CallID != "" {
 			if n, found := cb.streamToolCalls[x.CallID]; found && n != nil {
@@ -212,7 +213,7 @@ func (s receivingStreamState) AppendStreamItem(items cbItems, v Item) cbTransiti
 				}
 			}
 		}
-		cb.streamInsertionPoint = items.InsertAfter(cb.streamInsertionPoint, x)
+		cb.streamInsertionPoint = items.InsertAfter(cb.streamInsertionPoint, post)
 		if x.CallID != "" {
 			cb.streamToolCalls[x.CallID] = cb.streamInsertionPoint
 		}
@@ -227,7 +228,7 @@ func (s receivingStreamState) AppendStreamItem(items cbItems, v Item) cbTransiti
 			}
 		}
 	}
-	cb.streamInsertionPoint = items.InsertAfter(cb.streamInsertionPoint, v)
+	cb.streamInsertionPoint = items.InsertAfter(cb.streamInsertionPoint, post)
 	return cbTransition{From: from, To: cb.state, Changed: false}
 }
 
@@ -247,12 +248,12 @@ func (s receivingStreamState) EndStreaming(items cbItems) cbTransition {
 
 type awaitingToolResultsState cbState
 
-func (s awaitingToolResultsState) QueueItem(items cbItems, v Item) cbTransition {
+func (s awaitingToolResultsState) QueueItem(items cbItems, post itemCandidate) cbTransition {
 	cb := s.controlBlock
-	if _, ok := v.(ToolCallResult); ok && cb.queueToolResultBeforeBlockedSend(items, v) {
+	if _, ok := post.Item.(ToolCallResult); ok && cb.queueToolResultBeforeBlockedSend(items, post) {
 		return cbTransition{From: cb.state, To: cb.state, Changed: false}
 	}
-	return queueItemTransition(cb, items, v)
+	return queueItemTransition(cb, items, post)
 }
 
 func (s awaitingToolResultsState) CanAdvance(items cbItems) bool {
@@ -289,7 +290,7 @@ func (s awaitingToolResultsState) AdvanceNext(items cbItems) cbTransition {
 func (s awaitingToolResultsState) BeginStreaming() cbTransition {
 	return noChangeTransition(s.controlBlock)
 }
-func (s awaitingToolResultsState) AppendStreamItem(_ cbItems, _ Item) cbTransition {
+func (s awaitingToolResultsState) AppendStreamItem(_ cbItems, _ itemCandidate) cbTransition {
 	return noChangeTransition(s.controlBlock)
 }
 func (s awaitingToolResultsState) EndStreaming(_ cbItems) cbTransition {
@@ -298,8 +299,8 @@ func (s awaitingToolResultsState) EndStreaming(_ cbItems) cbTransition {
 
 type streamCompleteState cbState
 
-func (s streamCompleteState) QueueItem(items cbItems, v Item) cbTransition {
-	return queueItemTransition(s.controlBlock, items, v)
+func (s streamCompleteState) QueueItem(items cbItems, post itemCandidate) cbTransition {
+	return queueItemTransition(s.controlBlock, items, post)
 }
 
 func (s streamCompleteState) CanAdvance(_ cbItems) bool {
@@ -314,7 +315,7 @@ func (s streamCompleteState) BeginStreaming() cbTransition {
 	return noChangeTransition(s.controlBlock)
 }
 
-func (s streamCompleteState) AppendStreamItem(_ cbItems, _ Item) cbTransition {
+func (s streamCompleteState) AppendStreamItem(_ cbItems, _ itemCandidate) cbTransition {
 	return noChangeTransition(s.controlBlock)
 }
 
@@ -342,8 +343,8 @@ func (cb *controlBlock) emitStateChange(tr cbTransition) error {
 	return cb.observer.OnCBStateChange(tr.From, tr.To)
 }
 
-func (cb *controlBlock) queueItem(items cbItems, v Item) error {
-	tr := cb.cbStateHandler.QueueItem(items, v)
+func (cb *controlBlock) queueItem(items cbItems, post itemCandidate) error {
+	tr := cb.cbStateHandler.QueueItem(items, post)
 	return cb.emitStateChange(tr)
 }
 
@@ -357,8 +358,8 @@ func (cb *controlBlock) beginStreaming() error {
 	return cb.emitStateChange(tr)
 }
 
-func (cb *controlBlock) appendStreamItem(items cbItems, v Item) error {
-	tr := cb.cbStateHandler.AppendStreamItem(items, v)
+func (cb *controlBlock) appendStreamItem(items cbItems, post itemCandidate) error {
+	tr := cb.cbStateHandler.AppendStreamItem(items, post)
 	return cb.emitStateChange(tr)
 }
 
@@ -367,9 +368,9 @@ func (cb *controlBlock) endStreaming(items cbItems) error {
 	return cb.emitStateChange(tr)
 }
 
-func queueItemTransition(cb *controlBlock, items cbItems, v Item) cbTransition {
+func queueItemTransition(cb *controlBlock, items cbItems, post itemCandidate) cbTransition {
 	from := cb.state
-	n := items.Append(v)
+	n := items.Append(post)
 	if cb.queueStartItem == nil {
 		cb.queueStartItem = n
 	}
@@ -394,8 +395,14 @@ func mergeCoalescableItems(left, right Item) (Item, bool) {
 	return nil, false
 }
 
+// tryCoalesceAhead merges the item after IP into IP when possible. Coalescing
+// keeps the left node's Seq and is blocked when either node has metadata, since
+// metadata is an explicit control-block coalescing boundary.
 func (cb *controlBlock) tryCoalesceAhead(items cbItems) bool {
 	if cb.ip == nil || cb.ip.Next == nil {
+		return false
+	}
+	if len(cb.ip.Metadata) > 0 || len(cb.ip.Next.Metadata) > 0 {
 		return false
 	}
 	merged, ok := mergeCoalescableItems(cb.ip.Item, cb.ip.Next.Item)
@@ -433,11 +440,11 @@ func (cb *controlBlock) hasPendingSend(items cbItems) bool {
 	return false
 }
 
-func (cb *controlBlock) queueItemBeforeFirstPendingSend(items cbItems, v Item) bool {
+func (cb *controlBlock) queueItemBeforeFirstPendingSend(items cbItems, post itemCandidate) bool {
 	prev := cb.ip
 	for n := cb.nextItemAfterIP(items); n != nil; n = n.Next {
 		if _, ok := n.Item.(SendItem); ok {
-			inserted := items.InsertAfter(prev, v)
+			inserted := items.InsertAfter(prev, post)
 			if cb.queueStartItem == n {
 				cb.queueStartItem = inserted
 			}
@@ -448,14 +455,14 @@ func (cb *controlBlock) queueItemBeforeFirstPendingSend(items cbItems, v Item) b
 	return false
 }
 
-func (cb *controlBlock) queueToolResultBeforeBlockedSend(items cbItems, v Item) bool {
+func (cb *controlBlock) queueToolResultBeforeBlockedSend(items cbItems, post itemCandidate) bool {
 	prev := cb.ip
 	for n := cb.nextItemAfterIP(items); n != nil; n = n.Next {
 		if _, ok := n.Item.(SendItem); ok {
 			if !cb.hasPendingToolCallsThrough(n, items) {
 				return false
 			}
-			inserted := items.InsertAfter(prev, v)
+			inserted := items.InsertAfter(prev, post)
 			if cb.queueStartItem == n {
 				cb.queueStartItem = inserted
 			}

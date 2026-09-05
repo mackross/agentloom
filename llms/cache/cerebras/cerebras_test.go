@@ -9,9 +9,9 @@ import (
 
 func TestPromptCacheKeyMetadataLatestWins(t *testing.T) {
 	req := threads.Req{ItemMeta: []map[string]any{
-		PromptCacheKey("old"),
-		ClearPromptCacheKey(),
-		PromptCacheKey("new"),
+		PromptCacheKey("old").Metadata,
+		ClearPromptCacheKey().Metadata,
+		PromptCacheKey("new").Metadata,
 	}}
 	got, ok := streamerutil.LastStringMetadata(req, PromptCacheKeyKey)
 	if !ok || got != "new" {
@@ -21,8 +21,8 @@ func TestPromptCacheKeyMetadataLatestWins(t *testing.T) {
 
 func TestPromptCacheKeyMetadataClear(t *testing.T) {
 	req := threads.Req{ItemMeta: []map[string]any{
-		PromptCacheKey("old"),
-		ClearPromptCacheKey(),
+		PromptCacheKey("old").Metadata,
+		ClearPromptCacheKey().Metadata,
 	}}
 	if got, ok := streamerutil.LastStringMetadata(req, PromptCacheKeyKey); ok {
 		t.Fatalf("cleared prompt cache key = %q, true; want false", got)

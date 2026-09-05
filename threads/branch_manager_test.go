@@ -14,8 +14,8 @@ func (branchTargetTestCodec) Parse(ref string) (BranchTarget, error) {
 	switch ref {
 	case "root":
 		return BranchHeadTarget("root"), nil
-	case "root/turn/0":
-		return BranchTurnTarget("root", 0), nil
+	case "root/seq/1":
+		return BranchTurnTarget("root", 1), nil
 	default:
 		return BranchTarget{}, ErrBranchNotFound
 	}
@@ -25,7 +25,7 @@ func (branchTargetTestCodec) Format(target BranchTarget) (string, error) {
 	if target.IsHead() {
 		return string(target.BranchID), nil
 	}
-	return string(target.BranchID) + "/turn/0", nil
+	return string(target.BranchID) + "/seq/" + fmt.Sprint(*target.TurnSeq), nil
 }
 
 func assertPanics(t *testing.T, fn func(), name string) {
@@ -97,11 +97,11 @@ func TestStoredBranchLoadAndBranchManagerOpen(t *testing.T) {
 		t.Fatalf("Close loaded without loop: %v", err)
 	}
 
-	if _, err := manager.Open(ctx, "root/turn/0"); !errors.Is(err, ErrBranchCopyOptionRequired) {
+	if _, err := manager.Open(ctx, "root/seq/1"); !errors.Is(err, ErrBranchCopyOptionRequired) {
 		t.Fatalf("Open turn without copy err = %v, want ErrBranchCopyOptionRequired", err)
 	}
 
-	turnBranch, err := manager.Open(ctx, "root/turn/0", OpenAsEphemeralCopy("try-1"))
+	turnBranch, err := manager.Open(ctx, "root/seq/1", OpenAsEphemeralCopy("try-1"))
 	if err != nil {
 		t.Fatalf("Open turn target: %v", err)
 	}
@@ -177,19 +177,24 @@ func TestDefaultBranchTargetCodec(t *testing.T) {
 		t.Fatalf("head = %#v", head)
 	}
 
-	turn, err := manager.Parse("/branch/root/turn/12")
-	if err != nil {
+	if turn, err := manager.Parse("/branch/root/seq/12"); err != nil {
 		t.Fatalf("Parse turn: %v", err)
-	}
-	if turn.IsHead() || turn.BranchID != "root" || turn.TurnIndex == nil || *turn.TurnIndex != 12 {
+	} else if turn.IsHead() || turn.BranchID != "root" || turn.TurnSeq == nil || *turn.TurnSeq != 12 {
 		t.Fatalf("turn = %#v", turn)
+	}
+
+	if _, err := manager.Parse("/branch/root/turn/3"); err == nil {
+		t.Fatal("old /turn/<index> ref should be rejected")
+	}
+	if _, err := manager.Parse("/branch/root/turn-seq/3"); err == nil {
+		t.Fatal("old /turn-seq/<item-seq> ref should be rejected")
 	}
 
 	ref, err := manager.Format(BranchTurnTarget("root", 3))
 	if err != nil {
 		t.Fatalf("Format turn: %v", err)
 	}
-	if ref != "/branch/root/turn/3" {
+	if ref != "/branch/root/seq/3" {
 		t.Fatalf("ref = %q", ref)
 	}
 }

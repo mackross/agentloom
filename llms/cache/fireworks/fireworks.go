@@ -11,21 +11,21 @@ const (
 )
 
 // SessionAffinity sets x-session-affinity to improve same-session cache hits.
-func SessionAffinity(key string) threads.PreviousItemMetadata {
-	return threads.PreviousItemMetadata{SessionAffinityKey: key}
+func SessionAffinity(key string) threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{SessionAffinityKey: key}}
 }
 
 // ClearSessionAffinity clears a previously set session-affinity value.
-func ClearSessionAffinity() threads.PreviousItemMetadata {
-	return threads.PreviousItemMetadata{SessionAffinityKey: false}
+func ClearSessionAffinity() threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{SessionAffinityKey: false}}
 }
 
 // PromptCacheIsolationKey sets prompt_cache_isolation_key to separate caches.
-func PromptCacheIsolationKey(key string) threads.PreviousItemMetadata {
-	return threads.PreviousItemMetadata{PromptCacheIsolationKeyKey: key}
+func PromptCacheIsolationKey(key string) threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{PromptCacheIsolationKeyKey: key}}
 }
 
 // ClearPromptCacheIsolationKey clears a previously set isolation key.
-func ClearPromptCacheIsolationKey() threads.PreviousItemMetadata {
-	return threads.PreviousItemMetadata{PromptCacheIsolationKeyKey: false}
+func ClearPromptCacheIsolationKey() threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{PromptCacheIsolationKeyKey: false}}
 }

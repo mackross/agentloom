@@ -16,19 +16,19 @@ var (
 var DefaultBranchTargetCodec BranchTargetCodec[string] = StringBranchTargetCodec{}
 
 // BranchTarget identifies either a branch head or a completed turn within a
-// branch. A nil TurnIndex means the branch head.
+// branch. A nil TurnSeq means the branch head.
 type BranchTarget struct {
-	BranchID  BranchID
-	TurnIndex *int
+	BranchID BranchID
+	TurnSeq  *ItemSeq
 }
 
 func BranchHeadTarget(id BranchID) BranchTarget { return BranchTarget{BranchID: id} }
 
-func BranchTurnTarget(id BranchID, turnIndex int) BranchTarget {
-	return BranchTarget{BranchID: id, TurnIndex: &turnIndex}
+func BranchTurnTarget(id BranchID, turnSeq ItemSeq) BranchTarget {
+	return BranchTarget{BranchID: id, TurnSeq: &turnSeq}
 }
 
-func (t BranchTarget) IsHead() bool { return t.TurnIndex == nil }
+func (t BranchTarget) IsHead() bool { return t.TurnSeq == nil }
 
 // BranchTargetCodec adapts application-owned reference forms, such as URLs or
 // route structs, to BranchTarget.
@@ -159,7 +159,7 @@ func (m BranchManager[T]) Open(ctx context.Context, ref T, opts ...BranchOpenOpt
 }
 
 func (m BranchManager[T]) openTurnTarget(ctx context.Context, target BranchTarget, cfg branchOpenConfig) (*Branch, error) {
-	if target.TurnIndex == nil || *target.TurnIndex < 0 {
+	if target.TurnSeq == nil || *target.TurnSeq == 0 {
 		return nil, ErrInvalidTurn
 	}
 	if !cfg.copySet {
@@ -176,24 +176,19 @@ func (m BranchManager[T]) openTurnTarget(ctx context.Context, target BranchTarge
 	}
 	defer parent.Close()
 
-	turns := parent.CompletedTurns()
-	if *target.TurnIndex >= len(turns) {
-		return nil, ErrInvalidTurn
-	}
-	turn := turns[*target.TurnIndex]
-	cp, err := turn.Checkpoint()
+	sourceHead := parent.Seq()
+	cp, turn, err := parent.thread.checkpointAtTurn(*target.TurnSeq)
 	if err != nil {
 		return nil, err
 	}
 	childStored, err := m.Store.BranchFromCheckpoint(ctx, parent.stored, BranchFromCheckpointOptions{
-		ID:              cfg.copyID,
-		Kind:            cfg.copyKind,
-		Owner:           m.Owner,
-		Checkpoint:      cp,
-		SourceTurnIndex: turn.Index(),
-		SourceTurnRole:  turn.Role(),
-		SourceSeq:       turn.Seq(),
-		SourceHeadSeq:   parent.Seq(),
+		ID:             cfg.copyID,
+		Kind:           cfg.copyKind,
+		Owner:          m.Owner,
+		Checkpoint:     cp,
+		SourceTurnSeq:  turn.ID(),
+		SourceTurnRole: turn.Role(),
+		SourceHeadSeq:  sourceHead,
 	})
 	if err != nil {
 		return nil, err
@@ -238,14 +233,14 @@ func (StringBranchTargetCodec) Parse(ref string) (BranchTarget, error) {
 	if len(parts) == 2 {
 		return BranchHeadTarget(BranchID(parts[1])), nil
 	}
-	if parts[2] != "turn" || parts[3] == "" {
+	if parts[2] != "seq" || parts[3] == "" {
 		return BranchTarget{}, fmt.Errorf("invalid branch target %q", ref)
 	}
-	index, err := strconv.Atoi(parts[3])
-	if err != nil || index < 0 {
+	seq, err := strconv.ParseUint(parts[3], 10, 32)
+	if err != nil || seq == 0 {
 		return BranchTarget{}, fmt.Errorf("invalid branch target %q", ref)
 	}
-	return BranchTurnTarget(BranchID(parts[1]), index), nil
+	return BranchTurnTarget(BranchID(parts[1]), ItemSeq(seq)), nil
 }
 
 func (StringBranchTargetCodec) Format(target BranchTarget) (string, error) {
@@ -253,11 +248,11 @@ func (StringBranchTargetCodec) Format(target BranchTarget) (string, error) {
 		return "", fmt.Errorf("invalid branch target: empty branch id")
 	}
 	ref := "/branch/" + string(target.BranchID)
-	if target.TurnIndex != nil {
-		if *target.TurnIndex < 0 {
-			return "", fmt.Errorf("invalid branch target: negative turn index")
+	if target.TurnSeq != nil {
+		if *target.TurnSeq == 0 {
+			return "", fmt.Errorf("invalid branch target: zero turn sequence")
 		}
-		ref += "/turn/" + strconv.Itoa(*target.TurnIndex)
+		ref += "/seq/" + strconv.FormatUint(uint64(*target.TurnSeq), 10)
 	}
 	return ref, nil
 }

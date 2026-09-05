@@ -14,6 +14,13 @@ var DefaultRequestBuilder RequestBuilder = defaultRequestBuilder{}
 type defaultRequestBuilder struct{}
 
 func (defaultRequestBuilder) Build(items []Item, caps StreamerCapabilities) Req {
+	// Validate patch targets before any projection so an invalid explicit
+	// target can never be silently dropped by rollbackable-failure projection.
+	for _, it := range items {
+		if p, ok := it.(PatchItemMetadata); ok && p.Target != 0 {
+			panic("threads request builder: nonzero patch metadata target in raw item projection")
+		}
+	}
 	items = projectRollbackableToolFailures(items, caps)
 	lastUser := -1
 	for i, item := range items {
@@ -44,7 +51,7 @@ func (defaultRequestBuilder) Build(items []Item, caps StreamerCapabilities) Req 
 			req.Tools = cloneToolOfferSnapshot(v.Snapshot)
 			continue
 		}
-		if _, ok := it.(PreviousItemMetadata); ok {
+		if _, ok := it.(PatchItemMetadata); ok {
 			continue
 		}
 		if reasoning, ok := it.(ReasoningItem); ok && (caps.Reasoning[0] == "" || reasoning.Provider != caps.Reasoning[0] || caps.Reasoning[1] != "" && i <= lastUser) {
@@ -57,7 +64,7 @@ func (defaultRequestBuilder) Build(items []Item, caps StreamerCapabilities) Req 
 		// They are consumed here rather than emitted as content.
 		meta := map[string]any(nil)
 		for i+1 < len(items) {
-			m, ok := items[i+1].(PreviousItemMetadata)
+			m, ok := items[i+1].(PatchItemMetadata)
 			if !ok {
 				break
 			}
@@ -183,7 +190,7 @@ func projectRollbackableToolFailures(items []Item, caps StreamerCapabilities) []
 	out := make([]Item, 0, len(items))
 	skipMetadata := false
 	for _, item := range items {
-		if _, ok := item.(PreviousItemMetadata); ok {
+		if _, ok := item.(PatchItemMetadata); ok {
 			if skipMetadata {
 				continue
 			}
@@ -222,13 +229,20 @@ func projectRollbackableToolFailures(items []Item, caps StreamerCapabilities) []
 	return out
 }
 
-func mergeMeta(a map[string]any, b PreviousItemMetadata) map[string]any {
+func mergeMeta(a map[string]any, b PatchItemMetadata) map[string]any {
 	out := cloneData(a)
-	if out == nil {
-		out = map[string]any{}
+	for key, value := range b.Metadata {
+		if isDeleteValue(value) {
+			delete(out, key)
+			continue
+		}
+		if out == nil {
+			out = map[string]any{}
+		}
+		out[key] = value
 	}
-	for k, v := range b {
-		out[k] = v
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

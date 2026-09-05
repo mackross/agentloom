@@ -111,16 +111,15 @@ func (s *MemoryBranchStore) BranchFromCheckpoint(ctx context.Context, parent *St
 	ancestors := append(cloneBranchRefs(parent.Record.Ancestors), parent.Record.Ref())
 	now := time.Now()
 	rec := BranchRecord{
-		ID:              id,
-		Kind:            kind,
-		Ancestors:       ancestors,
-		SourceTurnIndex: opts.SourceTurnIndex,
-		SourceTurnRole:  opts.SourceTurnRole,
-		SourceSeq:       opts.SourceSeq,
-		SourceHeadSeq:   opts.SourceHeadSeq,
-		Label:           opts.Label,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:             id,
+		Kind:           kind,
+		Ancestors:      ancestors,
+		SourceTurnSeq:  opts.SourceTurnSeq,
+		SourceTurnRole: opts.SourceTurnRole,
+		SourceHeadSeq:  opts.SourceHeadSeq,
+		Label:          opts.Label,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	s.records[id] = cloneBranchRecord(rec)
 	s.stores[id] = NewMemoryDurableStore(opts.Checkpoint)

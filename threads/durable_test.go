@@ -3,7 +3,9 @@ package threads
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,11 +14,56 @@ import (
 )
 
 type threadSnapshot struct {
+	HeadSeq           uint32
 	State             State
 	Items             []Item
+	Seqs              []ItemSeq
+	Metadata          []map[string]any
 	IPIndex           int
 	QueueStartIndex   int
 	StreamInsertIndex int
+}
+
+func TestEmptyToolResultDataRoundTrips(t *testing.T) {
+	// Tool-result Data is payload, not item metadata. Preserve the v1 decoder
+	// behavior for all persisted empty forms, including explicit {} and null.
+	cases := []struct {
+		name string
+		raw  string
+		want map[string]any
+	}{
+		{name: "omitted", raw: "", want: nil},
+		{name: "empty object", raw: "{}", want: map[string]any{}},
+		{name: "null", raw: "null", want: nil},
+		{name: "nonempty object", raw: `{"k":"v"}`, want: map[string]any{"k": "v"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := snapshotItemToItem(SnapshotItem{
+				Type: "tool_result",
+				ID:   "c1",
+				Data: tc.raw,
+			})
+			if err != nil {
+				t.Fatalf("decode tool data %q: %v", tc.raw, err)
+			}
+			if data := got.(ToolCallResult).Data; !reflect.DeepEqual(data, tc.want) {
+				t.Fatalf("decoded data = %#v, want %#v", data, tc.want)
+			}
+		})
+	}
+
+	// The normal encoder still canonicalizes nil and empty maps to the omitted
+	// form used by newly written snapshots.
+	for _, data := range []map[string]any{nil, {}} {
+		raw, err := itemToSnapshotItem(ToolCallResult{CallID: "c1", Data: data})
+		if err != nil {
+			t.Fatalf("encode data %#v: %v", data, err)
+		}
+		if raw.Data != "" {
+			t.Fatalf("encoded empty data = %q, want omitted", raw.Data)
+		}
+	}
 }
 
 func TestSnapshotRoundTripPreservesThreadSnapshot(t *testing.T) {
@@ -226,11 +273,12 @@ func TestSnapshotRoundTripRestoresToolResultItemsAsCanonicalThreadBlocks(t *test
 func TestRestoreLegacyIdleSnapshotNormalizesPendingToolCallsToAwaiting(t *testing.T) {
 	snapshot := ThreadSnapshot{
 		Version: serializedThreadVersion,
+		HeadSeq: 3,
 		State:   StateIdle,
 		Items: []SnapshotItem{
-			{Type: "user_text", Text: "hello"},
-			{Type: "send"},
-			{Type: "tool_call", ID: "c1", Name: "calc", Args: `{}`},
+			{Seq: 1, Type: "user_text", Text: "hello"},
+			{Seq: 2, Type: "send"},
+			{Seq: 3, Type: "tool_call", ID: "c1", Name: "calc", Args: `{}`},
 		},
 		IPIndex:         2,
 		QueueStartIndex: -1,
@@ -285,7 +333,7 @@ func TestWALReplayPreservesRollbackableToolResult(t *testing.T) {
 	}
 }
 
-func TestMemoryDurableStoreLoadDoesNotAliasSafeRollbackMetadata(t *testing.T) {
+func TestMemoryDurableStoreLoadDoesNotAliasData(t *testing.T) {
 	t.Run("checkpoint", func(t *testing.T) {
 		store := NewMemoryDurableStore(Checkpoint{Snapshot: ThreadSnapshot{
 			Version:         serializedThreadVersion,
@@ -318,6 +366,7 @@ func TestMemoryDurableStoreLoadDoesNotAliasSafeRollbackMetadata(t *testing.T) {
 			Seq: 1,
 			Op:  walOpQueueItem,
 			Item: SnapshotItem{
+				Seq:  1,
 				Type: "tool_result",
 				ID:   "c1",
 				SafeRollback: &ToolCallSafeRollback{
@@ -335,20 +384,44 @@ func TestMemoryDurableStoreLoadDoesNotAliasSafeRollbackMetadata(t *testing.T) {
 			t.Fatalf("loaded WAL mutated stored rollback metadata: got %q", got)
 		}
 	})
+
+	t.Run("wal delete keys", func(t *testing.T) {
+		store := NewMemoryDurableStore(Checkpoint{})
+		store.AppendWALDiff([]WALEvent{{
+			Seq:        1,
+			Op:         walOpPatchItemMetadata,
+			Target:     1,
+			DeleteKeys: []string{"k"},
+		}})
+
+		_, loaded := store.Load()
+		loaded[0].DeleteKeys[0] = "mutated"
+		_, loadedAgain := store.Load()
+		if got := loadedAgain[0].DeleteKeys; !reflect.DeepEqual(got, []string{"k"}) {
+			t.Fatalf("loaded WAL mutated stored delete keys: %#v", got)
+		}
+	})
 }
 
 func snapshotThread(t *thread) threadSnapshot {
 	index := map[*item[Item]]int{}
 	items := make([]Item, 0)
+	seqs := make([]ItemSeq, 0)
+	meta := make([]map[string]any, 0)
 	i := 0
 	for n := t.items.Head(); n != nil; n = n.Next {
 		index[n] = i
 		items = append(items, n.Item)
+		seqs = append(seqs, n.Seq)
+		meta = append(meta, n.Metadata)
 		i++
 	}
 	return threadSnapshot{
+		HeadSeq:           t.Seq(),
 		State:             t.State(),
 		Items:             items,
+		Seqs:              seqs,
+		Metadata:          meta,
 		IPIndex:           indexOrNil(index, t.cb.ip),
 		QueueStartIndex:   indexOrNil(index, t.cb.queueStartItem),
 		StreamInsertIndex: indexOrNil(index, t.cb.streamInsertionPoint),
@@ -435,4 +508,56 @@ func TestThreadAppendWALPanicsWithContextOnDurabilityFailure(t *testing.T) {
 	}()
 
 	thread.QueueItem(UserText("boom"))
+}
+
+func TestMutationSequenceHelpersGuardOverflow(t *testing.T) {
+	// Normal advancement allocates strictly increasing nonzero sequences.
+	t1 := newThread()
+	if got := t1.advanceMutationSeq(); got != 1 {
+		t.Fatalf("first advance = %d, want 1", got)
+	}
+	if got := t1.advanceMutationSeq(); got != 2 {
+		t.Fatalf("second advance = %d, want 2", got)
+	}
+	if t1.mutationSeq != 2 {
+		t.Fatalf("mutationSeq = %d, want 2", t1.mutationSeq)
+	}
+
+	// A candidate does not commit.
+	t2 := newThread()
+	got, err := t2.candidateMutationSeq()
+	if err != nil || got != 1 {
+		t.Fatalf("candidate = %d, %v; want 1, nil", got, err)
+	}
+	if t2.mutationSeq != 0 {
+		t.Fatalf("candidate committed: mutationSeq = %d, want 0", t2.mutationSeq)
+	}
+
+	// A candidate reports overflow without committing; normal advancement has
+	// no error return and therefore panics on the same exhausted sequence.
+	t3 := newThread()
+	t3.mutationSeq = math.MaxUint32
+	if seq, err := t3.candidateMutationSeq(); !errors.Is(err, errItemSequenceOverflow) || seq != 0 {
+		t.Fatalf("overflow candidate = %d, %v; want 0, overflow", seq, err)
+	}
+	assertPanics(t, func() { t3.advanceMutationSeq() }, "advance sequence overflow")
+	if t3.mutationSeq != math.MaxUint32 {
+		t.Fatalf("overflow mutation mutated sequence: %d", t3.mutationSeq)
+	}
+}
+
+func TestQueueItemOverflowPanicsBeforeMutation(t *testing.T) {
+	thread := newThread()
+	thread.mutationSeq = math.MaxUint32
+
+	assertPanics(t, func() { thread.QueueItem(UserText("never queued")) }, "QueueItem sequence overflow")
+	if thread.mutationSeq != math.MaxUint32 {
+		t.Fatalf("overflow changed mutation sequence: %d", thread.mutationSeq)
+	}
+	if thread.items.Head() != nil {
+		t.Fatalf("overflow queued an item: %#v", thread.items.Slice())
+	}
+	if len(thread.wal) != 0 {
+		t.Fatalf("overflow appended WAL: %#v", thread.wal)
+	}
 }

@@ -45,14 +45,12 @@ type BranchRecord struct {
 	// derived from this slice.
 	Ancestors []BranchRef
 
-	// SourceTurnIndex is the CompletedTurns index selected when this branch was
-	// created. It is caller/UI metadata and is not used to restore the branch.
-	SourceTurnIndex int
+	// SourceTurnSeq is the stable ItemSeq of the selected source turn. It is
+	// caller/UI metadata and is not used to restore the branch.
+	SourceTurnSeq ItemSeq
 	// SourceTurnRole is the role of the selected source turn. It is caller/UI
 	// metadata and is not used to restore the branch.
 	SourceTurnRole TurnRole
-	// SourceSeq is the checkpoint sequence materialized from the selected turn.
-	SourceSeq uint32
 	// SourceHeadSeq is the parent branch head sequence at branch creation time.
 	// It lets callers tell whether the parent later moved on.
 	SourceHeadSeq uint32
@@ -176,10 +174,9 @@ type BranchFromCheckpointOptions struct {
 
 	// Source* fields are caller/UI lineage metadata copied into BranchRecord. The
 	// store records them but must not use them for restoring the child branch.
-	SourceTurnIndex int
-	SourceTurnRole  TurnRole
-	SourceSeq       uint32
-	SourceHeadSeq   uint32
+	SourceTurnSeq  ItemSeq
+	SourceTurnRole TurnRole
+	SourceHeadSeq  uint32
 }
 
 // BranchLease is the writer lease for a durable branch. Implementations should
@@ -384,9 +381,9 @@ func (b *Branch) WALAfter(seq uint32) []WALEvent {
 	return wal
 }
 
-func (b *Branch) QueueItem(v Item) {
+func (b *Branch) QueueItem(v Item, patches ...PatchItemMetadata) {
 	b.mutate("queue item", func(t Thread) error {
-		t.QueueItem(v)
+		t.QueueItem(v, patches...)
 		return nil
 	})
 }

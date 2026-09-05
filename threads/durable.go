@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
+	"math"
 	"time"
 )
 
@@ -25,7 +25,7 @@ type DurableStore interface {
 	Load() (Checkpoint, []WALEvent)
 }
 
-const serializedThreadVersion = 1
+const serializedThreadVersion = 2
 const nilItemIndex = -1
 
 var ErrCheckpointWaitTimeout = errors.New("thread checkpoint wait timed out")
@@ -62,17 +62,26 @@ const (
 	walOpBeginStream         = "begin_stream"
 	walOpAppendStreamItem    = "append_stream_item"
 	walOpEndStream           = "end_stream"
+	walOpPatchItemMetadata   = "patch_item_metadata"
 )
 
 type WALEvent struct {
-	Seq   uint32       `json:"s"`
-	Op    string       `json:"o"`
-	Item  SnapshotItem `json:"i,omitempty"`
-	State State        `json:"state,omitempty"`
+	Seq        uint32       `json:"s"`
+	Op         string       `json:"o"`
+	Item       SnapshotItem `json:"i,omitempty"`
+	State      State        `json:"state,omitempty"`
+	Target     ItemSeq      `json:"target,omitempty"`
+	Metadata   string       `json:"meta,omitempty"`
+	DeleteKeys []string     `json:"delete,omitempty"`
 }
 
+// ThreadSnapshot is the serialized form of a thread. Serialization is schema
+// version 2 and is not compatible with the pre-item-sequence v1 schema: v1
+// snapshots are rejected by RestoreThreadSnapshot/RestoreCheckpoint rather than
+// silently migrated.
 type ThreadSnapshot struct {
 	Version         int            `json:"ver"`
+	HeadSeq         uint32         `json:"seq"`
 	State           State          `json:"state"`
 	Items           []SnapshotItem `json:"items"`
 	IPIndex         int            `json:"ip"`
@@ -81,6 +90,8 @@ type ThreadSnapshot struct {
 }
 
 type SnapshotItem struct {
+	Seq          ItemSeq               `json:"seq"`
+	Metadata     string                `json:"meta,omitempty"` // encoded JSON object
 	Type         string                `json:"kind"`
 	Text         string                `json:"text,omitempty"`
 	Provider     string                `json:"provider,omitempty"`
@@ -104,7 +115,7 @@ func (t *thread) Snapshot() (ThreadSnapshot, error) {
 	items := make([]SnapshotItem, 0)
 	idx := 0
 	for n := t.items.Head(); n != nil; n = n.Next {
-		it, err := itemToSnapshotItem(n.Item)
+		it, err := nodeToSnapshotItem(n)
 		if err != nil {
 			return ThreadSnapshot{}, err
 		}
@@ -115,6 +126,7 @@ func (t *thread) Snapshot() (ThreadSnapshot, error) {
 
 	return ThreadSnapshot{
 		Version:         serializedThreadVersion,
+		HeadSeq:         t.mutationSeq,
 		State:           t.cb.State(),
 		Items:           items,
 		IPIndex:         indexOfNode(nodeIndex, t.cb.ip),
@@ -123,6 +135,9 @@ func (t *thread) Snapshot() (ThreadSnapshot, error) {
 	}, nil
 }
 
+// RestoreThreadSnapshot restores a thread directly from a snapshot. The restored
+// mutation sequence is taken from HeadSeq so a thread restored directly from a
+// snapshot cannot reuse old item IDs.
 func RestoreThreadSnapshot(snapshot ThreadSnapshot) (*thread, error) {
 	if snapshot.Version != serializedThreadVersion {
 		return nil, fmt.Errorf("unsupported thread serialization version: %d", snapshot.Version)
@@ -133,12 +148,23 @@ func RestoreThreadSnapshot(snapshot ThreadSnapshot) (*thread, error) {
 
 	t := newThread()
 	nodes := make([]*item[Item], 0, len(snapshot.Items))
+	seen := make(map[ItemSeq]bool, len(snapshot.Items))
 	for _, raw := range snapshot.Items {
-		v, err := snapshotItemToItem(raw)
+		post, err := snapshotToCandidate(raw)
 		if err != nil {
 			return nil, err
 		}
-		nodes = append(nodes, t.items.Append(v))
+		if post.Seq == 0 {
+			return nil, fmt.Errorf("thread snapshot item has zero sequence")
+		}
+		if post.Seq > ItemSeq(snapshot.HeadSeq) {
+			return nil, fmt.Errorf("thread snapshot item sequence %d exceeds head seq %d", post.Seq, snapshot.HeadSeq)
+		}
+		if seen[post.Seq] {
+			return nil, fmt.Errorf("thread snapshot duplicate item sequence %d", post.Seq)
+		}
+		seen[post.Seq] = true
+		nodes = append(nodes, t.items.Append(post))
 	}
 
 	var err error
@@ -154,6 +180,7 @@ func RestoreThreadSnapshot(snapshot ThreadSnapshot) (*thread, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stream insertion index: %w", err)
 	}
+	t.mutationSeq = snapshot.HeadSeq
 	t.cb.setState(snapshot.State)
 	if snapshot.State == StateIdle && len(t.cb.pendingToolCalls(&t.items)) > 0 {
 		t.cb.setState(StateAwaitingToolResults)
@@ -206,6 +233,9 @@ func RestoreCheckpoint(cp Checkpoint, opts RestoreOptions) (*thread, error) {
 	if cp.Unsafe && !opts.AllowUnsafe {
 		return nil, ErrRestoreUnsafeRequiresExecutor
 	}
+	if cp.Seq != cp.Snapshot.HeadSeq {
+		return nil, fmt.Errorf("checkpoint seq %d does not match snapshot head seq %d", cp.Seq, cp.Snapshot.HeadSeq)
+	}
 	t, err := RestoreThreadSnapshot(cp.Snapshot)
 	if err != nil {
 		return nil, err
@@ -218,6 +248,11 @@ func RestoreCheckpoint(cp Checkpoint, opts RestoreOptions) (*thread, error) {
 	return t, nil
 }
 
+// RestoreFromCheckpointAndWAL replays the WAL and, unless AllowUnsafe is set,
+// trims content requiring recovery. Trimming retains the full WAL sequence
+// high-water mark so discarded item identities cannot be reused. Persist the
+// recovered checkpoint before appending new WAL; SetDurableStore does this
+// when attaching the store to the recovered thread.
 func RestoreFromCheckpointAndWAL(cp Checkpoint, wal []WALEvent, opts RestoreOptions) (*thread, error) {
 	t, err := RestoreCheckpoint(cp, opts)
 	if err != nil {
@@ -248,10 +283,14 @@ func RestoreFromCheckpointAndWAL(cp Checkpoint, wal []WALEvent, opts RestoreOpti
 	if err != nil {
 		return nil, err
 	}
-	if lastSafe == 0 {
-		return safe, nil
+	if err := safe.ReplayWAL(wal[:lastSafe]); err != nil {
+		return nil, err
 	}
-	return safe, safe.ReplayWAL(wal[:lastSafe])
+	// Only content rolls back. The next item must be allocated above every
+	// validated event, including those omitted from the recovered transcript.
+	safe.mutationSeq = t.mutationSeq
+	safe.captureSafeIfIdle()
+	return safe, nil
 }
 
 func (t *thread) WALAfter(seq uint32) []WALEvent {
@@ -260,7 +299,9 @@ func (t *thread) WALAfter(seq uint32) []WALEvent {
 		if ev.Seq <= seq {
 			continue
 		}
-		out = append(out, ev)
+		copy := ev
+		copy.DeleteKeys = append([]string(nil), ev.DeleteKeys...)
+		out = append(out, copy)
 	}
 	return out
 }
@@ -283,6 +324,13 @@ func (t *thread) ReplayWAL(events []WALEvent) error {
 
 	prev := t.mutationSeq
 	for _, ev := range events {
+		// Reject a sequence at the exhausted end of the range before the
+		// arithmetic below can wraparound: prev+1 at MaxUint32 is zero, which
+		// would let a zero-sequence event bypass this check and then panic in
+		// the mutation helpers instead of failing closed as a replay error.
+		if prev == math.MaxUint32 {
+			return fmt.Errorf("%w: thread sequence exhausted at %d", ErrReplayWALSequence, prev)
+		}
 		if ev.Seq != prev+1 {
 			return ErrReplayWALSequence
 		}
@@ -298,6 +346,9 @@ func (t *thread) ReplayWAL(events []WALEvent) error {
 	return nil
 }
 
+// itemToSnapshotItem converts an item payload to snapshot fields. It never
+// includes Seq or Metadata; those live on the node and are added by
+// nodeToSnapshotItem. PatchItemMetadata is not legal as a materialized item.
 func itemToSnapshotItem(v Item) (SnapshotItem, error) {
 	switch x := v.(type) {
 	case UserText:
@@ -306,12 +357,8 @@ func itemToSnapshotItem(v Item) (SnapshotItem, error) {
 		return SnapshotItem{Type: "assistant_text", Text: string(x)}, nil
 	case ReasoningItem:
 		return SnapshotItem{Type: "reasoning", Provider: x.Provider, ID: x.ID, Visibility: x.Visibility, Text: x.Text, Summary: x.Summary, Opaque: append([]byte(nil), x.Opaque...)}, nil
-	case PreviousItemMetadata:
-		data, err := encodeToolData(x)
-		if err != nil {
-			return SnapshotItem{}, err
-		}
-		return SnapshotItem{Type: "item_meta", Data: data}, nil
+	case PatchItemMetadata:
+		return SnapshotItem{}, fmt.Errorf("patch metadata is not a materialized snapshot item")
 	case AssistantInstruction:
 		return SnapshotItem{Type: "assistant_instruction", Text: string(x)}, nil
 	case ToolCallChunk:
@@ -354,6 +401,36 @@ func itemToSnapshotItem(v Item) (SnapshotItem, error) {
 	}
 }
 
+// nodeToSnapshotItem converts a materialized node to snapshot fields, adding
+// the node's Seq and encoded Metadata.
+func nodeToSnapshotItem(n *item[Item]) (SnapshotItem, error) {
+	raw, err := itemToSnapshotItem(n.Item)
+	if err != nil {
+		return SnapshotItem{}, err
+	}
+	raw.Seq = n.Seq
+	meta, err := encodeMetadata(n.Metadata)
+	if err != nil {
+		return SnapshotItem{}, err
+	}
+	raw.Metadata = meta
+	return raw, nil
+}
+
+// snapshotToCandidate converts a snapshot item back to an internal posted value with
+// candidate sequence and decoded metadata.
+func snapshotToCandidate(raw SnapshotItem) (itemCandidate, error) {
+	v, err := snapshotItemToItem(raw)
+	if err != nil {
+		return itemCandidate{}, err
+	}
+	meta, err := decodeMetadata(raw.Metadata)
+	if err != nil {
+		return itemCandidate{}, err
+	}
+	return itemCandidate{Seq: raw.Seq, Item: v, Metadata: meta}, nil
+}
+
 func snapshotItemToItem(raw SnapshotItem) (Item, error) {
 	switch raw.Type {
 	case "user_text":
@@ -362,12 +439,6 @@ func snapshotItemToItem(raw SnapshotItem) (Item, error) {
 		return AssistantText(raw.Text), nil
 	case "reasoning":
 		return ReasoningItem{Provider: raw.Provider, ID: raw.ID, Visibility: raw.Visibility, Text: raw.Text, Summary: raw.Summary, Opaque: append([]byte(nil), raw.Opaque...)}, nil
-	case "item_meta":
-		data, err := decodeToolData(raw.Data)
-		if err != nil {
-			return nil, fmt.Errorf("item meta data: %w", err)
-		}
-		return PreviousItemMetadata(data), nil
 	case "assistant_instruction":
 		return AssistantInstruction(raw.Text), nil
 	case "tool_call_chunk":
@@ -414,6 +485,9 @@ func isKnownState(v State) bool {
 	}
 }
 
+// encodeToolData serializes tool-result Data (the structured payload on
+// ToolCallResult). It is separate from item metadata, which uses
+// encodeMetadata; see metadata.go.
 func encodeToolData(data map[string]any) (string, error) {
 	if len(data) == 0 {
 		return "", nil
@@ -425,6 +499,9 @@ func encodeToolData(data map[string]any) (string, error) {
 	return string(buf), nil
 }
 
+// decodeToolData parses persisted tool-result Data. Item metadata is parsed by
+// decodeMetadata; this path stays separate so a metadata payload can never be
+// mistaken for tool result data or vice versa.
 func decodeToolData(raw string) (map[string]any, error) {
 	if raw == "" {
 		return nil, nil
@@ -434,10 +511,6 @@ func decodeToolData(raw string) (map[string]any, error) {
 		return nil, fmt.Errorf("unmarshal tool result data: %w", err)
 	}
 	return data, nil
-}
-
-func cloneData(data map[string]any) map[string]any {
-	return maps.Clone(data)
 }
 
 func indexOfNode(index map[*item[Item]]int, n *item[Item]) int {
@@ -468,6 +541,7 @@ func cloneSnapshot(s ThreadSnapshot) ThreadSnapshot {
 	}
 	return ThreadSnapshot{
 		Version:         s.Version,
+		HeadSeq:         s.HeadSeq,
 		State:           s.State,
 		Items:           items,
 		IPIndex:         s.IPIndex,
@@ -476,20 +550,57 @@ func cloneSnapshot(s ThreadSnapshot) ThreadSnapshot {
 	}
 }
 
-func (t *thread) appendWAL(op string, item Item) {
+func (t *thread) appendWAL(op string, post itemCandidate) {
 	if t.replayingWAL {
 		return
 	}
 	ev := WALEvent{Seq: t.mutationSeq, Op: op}
-	if op == walOpQueueItem || op == walOpQueueItemBeforeSend || op == walOpAppendStreamItem {
-		raw, err := itemToSnapshotItem(item)
+	if isItemBearingWALOp(op) {
+		raw, err := itemToSnapshotItem(post.Item)
 		if err != nil {
 			panic("threads append wal serialize failed: " + err.Error())
 		}
+		raw.Seq = post.Seq
+		meta, err := encodeMetadata(post.Metadata)
+		if err != nil {
+			panic("threads append wal serialize metadata failed: " + err.Error())
+		}
+		raw.Metadata = meta
 		ev.Item = raw
 	}
-	t.wal = append(t.wal, ev)
+	t.storeWAL(ev)
+}
 
+// appendWALPatch records an explicit-target metadata patch. Zero targets must be
+// resolved before calling; zero is never replayed from the WAL.
+func (t *thread) appendWALPatch(target ItemSeq, patch metadataPatch) {
+	if t.replayingWAL {
+		return
+	}
+	ev := WALEvent{
+		Seq:        t.mutationSeq,
+		Op:         walOpPatchItemMetadata,
+		Target:     target,
+		DeleteKeys: append([]string(nil), patch.DeleteKeys...),
+	}
+	encoded, err := encodeMetadata(patch.Set)
+	if err != nil {
+		panic("threads append wal serialize metadata failed: " + err.Error())
+	}
+	ev.Metadata = encoded
+	t.storeWAL(ev)
+}
+
+func isItemBearingWALOp(op string) bool {
+	switch op {
+	case walOpQueueItem, walOpQueueItemBeforeSend, walOpAppendStreamItem:
+		return true
+	}
+	return false
+}
+
+func (t *thread) storeWAL(ev WALEvent) {
+	t.wal = append(t.wal, ev)
 	if t.store == nil {
 		return
 	}
@@ -504,43 +615,74 @@ func (t *thread) appendWAL(op string, item Item) {
 func (t *thread) applyWALEvent(ev WALEvent) error {
 	switch ev.Op {
 	case walOpQueueItem:
-		if ev.Item.Type == "" {
-			return fmt.Errorf("wal queue_item missing item")
-		}
-		v, err := snapshotItemToItem(ev.Item)
+		post, err := decodeWALCandidate(ev, "queue_item")
 		if err != nil {
 			return err
 		}
-		t.QueueItem(v)
+		t.queueItemWithMeta(post.Seq, post.Item, post.Metadata)
 		return nil
 	case walOpQueueItemBeforeSend:
-		if ev.Item.Type == "" {
-			return fmt.Errorf("wal queue_item_before_send missing item")
-		}
-		v, err := snapshotItemToItem(ev.Item)
+		post, err := decodeWALCandidate(ev, "queue_item_before_send")
 		if err != nil {
 			return err
 		}
-		if !t.queueBeforePendingSend(v) {
-			t.QueueItem(v)
+		if !t.queueBeforePendingSendWithMeta(post.Item, post.Metadata) {
+			t.queueItemWithMeta(post.Seq, post.Item, post.Metadata)
 		}
 		return nil
 	case walOpBeginStream:
 		return t.beginStreaming()
 	case walOpAppendStreamItem:
-		if ev.Item.Type == "" {
-			return fmt.Errorf("wal append_stream_item missing item")
-		}
-		v, err := snapshotItemToItem(ev.Item)
+		post, err := decodeWALCandidate(ev, "append_stream_item")
 		if err != nil {
 			return err
 		}
-		return t.appendStreamItem(v)
+		return t.appendStreamItemReplay(post)
 	case walOpEndStream:
 		return t.endStreaming()
+	case walOpPatchItemMetadata:
+		if ev.Target == 0 {
+			return fmt.Errorf("wal patch_item_metadata requires an explicit nonzero target")
+		}
+		patch, err := decodeMetadataPatch(ev.Metadata, ev.DeleteKeys)
+		if err != nil {
+			return fmt.Errorf("patch metadata: %w", err)
+		}
+		if t.findItemBySeq(ev.Target) == nil {
+			return fmt.Errorf("wal patch_item_metadata target %d not found", ev.Target)
+		}
+		t.advanceMutationSeq()
+		t.patchItem(ev.Target, patch)
+		t.captureSafeIfIdle()
+		return nil
 	default:
 		return fmt.Errorf("unsupported wal op: %q", ev.Op)
 	}
+}
+
+// decodeWALCandidate decodes an item-bearing WAL event and verifies that its
+// item candidate sequence exactly matches the event sequence. This is the
+// fail-closed guard that prevents a reordered or corrupt WAL tail from
+// assigning a different identity than the one durably recorded.
+func decodeWALCandidate(ev WALEvent, op string) (itemCandidate, error) {
+	post, err := snapshotToCandidate(ev.Item)
+	if err != nil {
+		return itemCandidate{}, err
+	}
+	if post.Seq != ItemSeq(ev.Seq) {
+		return itemCandidate{}, fmt.Errorf("wal %s sequence %d does not match event sequence %d", op, post.Seq, ev.Seq)
+	}
+	return post, nil
+}
+
+// appendStreamItemReplay mirrors live appendStreamItem with a preset candidate
+// sequence and no metadata patch path (those events use walOpPatchItemMetadata).
+func (t *thread) appendStreamItemReplay(post itemCandidate) error {
+	t.advanceMutationSeq()
+	if err := t.cb.appendStreamItem(&t.items, post); err != nil {
+		return err
+	}
+	return t.advanceWhilePossible()
 }
 
 func (t *thread) isInflightState() bool {

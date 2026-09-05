@@ -52,6 +52,7 @@ func cloneWALEvents(events []WALEvent) []WALEvent {
 	copy(out, events)
 	for i := range out {
 		out[i].Item = cloneSnapshotItem(out[i].Item)
+		out[i].DeleteKeys = append([]string(nil), out[i].DeleteKeys...)
 	}
 	return out
 }

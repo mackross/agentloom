@@ -268,6 +268,24 @@ func TestSQLiteBranchStoreRejectsUnsupportedSchemaVersion(t *testing.T) {
 	}
 }
 
+func TestSQLiteBranchStoreRejectsSchemaV1(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "threads.sqlite3"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `CREATE TABLE thread_branch_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
+		t.Fatalf("create meta: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO thread_branch_meta(key, value) VALUES('schema_version', '1')`); err != nil {
+		t.Fatalf("seed schema version: %v", err)
+	}
+	if _, err := NewSQLiteBranchStore(db, SQLiteBranchStoreOptions{}); err == nil {
+		t.Fatalf("NewSQLiteBranchStore succeeded with v1 schema")
+	}
+}
+
 func TestSQLiteBranchStoreAcceptsCurrentSchemaVersion(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "threads.sqlite3"))

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -14,6 +15,78 @@ import (
 )
 
 var errInterruptedRecoveryRegressionStream = errors.New("test stream interrupted")
+
+func TestTrimmedWALRecoveryPreservesItemSeqAfterReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "threads.sqlite3")
+	store, err := sqlitebranchstore.OpenSQLiteBranchStore(path, sqlitebranchstore.SQLiteBranchStoreOptions{})
+	if err != nil {
+		t.Fatalf("open SQLite branch store: %v", err)
+	}
+	defer store.Close()
+	branch, err := store.CreateBranch(ctx, threads.BranchCreateOptions{ID: "trimmed-wal"})
+	if err != nil {
+		t.Fatalf("create branch: %v", err)
+	}
+	defer branch.Close()
+	source := threads.New()
+	source.SetDurableStore(branch.Durable)
+	source.QueueItem(threads.UserText("hello"))
+	source.QueueItem(threads.SendItem{})
+	headSeq := source.Seq()
+
+	base, wal := branch.Durable.Load()
+	recovered, err := threads.RestoreFromCheckpointAndWAL(base, wal, threads.RestoreOptions{})
+	if err != nil {
+		t.Fatalf("restore with unsafe-tail trim: %v", err)
+	}
+	recovered.SetDurableStore(branch.Durable)
+	base, wal = branch.Durable.Load()
+	if base.Seq != headSeq || base.Snapshot.HeadSeq != headSeq || len(wal) != 0 {
+		t.Fatalf("recovered durable base = seq %d/%d with %d WAL events, want seq %d and no WAL", base.Seq, base.Snapshot.HeadSeq, len(wal), headSeq)
+	}
+	if len(base.Snapshot.Items) != 1 || base.Snapshot.Items[0].Type != "user_text" {
+		t.Fatalf("recovered durable items = %#v, want only the user item", base.Snapshot.Items)
+	}
+	recovered.QueueItem(threads.AssistantText("different item"))
+	_, wal = branch.Durable.Load()
+	if len(wal) != 1 || wal[0].Seq != headSeq+1 || wal[0].Item.Seq != threads.ItemSeq(headSeq+1) {
+		t.Fatalf("new durable WAL = %#v, want one item at sequence %d", wal, headSeq+1)
+	}
+	want, err := recovered.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot recovered thread: %v", err)
+	}
+	if err := branch.Close(); err != nil {
+		t.Fatalf("close branch: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	reopened, err := sqlitebranchstore.OpenSQLiteBranchStore(path, sqlitebranchstore.SQLiteBranchStoreOptions{})
+	if err != nil {
+		t.Fatalf("reopen SQLite branch store: %v", err)
+	}
+	defer reopened.Close()
+	opened, err := reopened.OpenBranch(ctx, "trimmed-wal", threads.BranchOpenOptions{})
+	if err != nil {
+		t.Fatalf("reopen branch: %v", err)
+	}
+	defer opened.Close()
+	base, wal = opened.Durable.Load()
+	restored, err := threads.RestoreFromCheckpointAndWAL(base, wal, threads.RestoreOptions{})
+	if err != nil {
+		t.Fatalf("restore after reopening store: %v", err)
+	}
+	got, err := restored.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot reloaded thread: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot changed after reopening store\ngot:  %#v\nwant: %#v", got, want)
+	}
+}
 
 type recoveryRegressionToolProvider struct{}
 

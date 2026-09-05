@@ -61,7 +61,7 @@ implemented feature overview.
   - `BranchStore` creates, opens, lists, deletes, and forks branch-local durable
     stores
   - `BranchManager` opens branch refs such as `/branch/<id>` and
-    `/branch/<id>/turn/<n>`
+    `/branch/<id>/seq/<item-seq>`
   - `OpenAsEphemeralCopy` and `OpenAsDurableCopy` create child branches from a
     head or completed-turn checkpoint
   - copy opens read the parent without taking a writer lease, so callers can

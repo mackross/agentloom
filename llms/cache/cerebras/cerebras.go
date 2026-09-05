@@ -7,11 +7,11 @@ import "github.com/mackross/agentloom/threads"
 const PromptCacheKeyKey = "cache/cerebras/prompt_cache_key"
 
 // PromptCacheKey sets prompt_cache_key, improving Cerebras prompt-cache routing locality.
-func PromptCacheKey(key string) threads.PreviousItemMetadata {
-	return threads.PreviousItemMetadata{PromptCacheKeyKey: key}
+func PromptCacheKey(key string) threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{PromptCacheKeyKey: key}}
 }
 
 // ClearPromptCacheKey clears a previously set prompt_cache_key.
-func ClearPromptCacheKey() threads.PreviousItemMetadata {
-	return threads.PreviousItemMetadata{PromptCacheKeyKey: false}
+func ClearPromptCacheKey() threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{PromptCacheKeyKey: false}}
 }

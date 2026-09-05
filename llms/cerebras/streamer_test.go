@@ -93,9 +93,9 @@ func TestChatCompletionsStreamerOptionsAndOptimizedPayload(t *testing.T) {
 	err := streamer.StreamReq(threads.Req{
 		Items: []threads.Item{threads.UserText("hello")},
 		ItemMeta: []map[string]any{
-			cachecerebras.PromptCacheKey("old"),
-			cachecerebras.ClearPromptCacheKey(),
-			cachecerebras.PromptCacheKey("new"),
+			cachecerebras.PromptCacheKey("old").Metadata,
+			cachecerebras.ClearPromptCacheKey().Metadata,
+			cachecerebras.PromptCacheKey("new").Metadata,
 		},
 		Tools: threads.ToolOfferSnapshot{Parallel: &parallel},
 	}, func(threads.Item) error { return nil })

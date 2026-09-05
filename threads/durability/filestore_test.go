@@ -151,8 +151,30 @@ func TestFileStoreHeaderContainsSnapshotLength(t *testing.T) {
 	}
 }
 
+func TestFileStoreV1SnapshotFailsAtThreadRestore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thread.dur")
+	store := NewFileStore(path)
+
+	// A v1 serialized snapshot inside a valid container must be rejected at
+	// thread restore rather than silently downgraded.
+	cp := threads.Checkpoint{
+		Snapshot: threads.ThreadSnapshot{
+			Version: 1,
+			State:   threads.StateIdle,
+			Items:   []threads.SnapshotItem{{Type: "user_text", Text: "old"}},
+			IPIndex: 0,
+		},
+	}
+	store.ReplaceSnapshot(cp)
+	loadedCP, loadedWAL := store.Load()
+
+	if _, err := threads.RestoreFromCheckpointAndWAL(loadedCP, loadedWAL, threads.RestoreOptions{}); err == nil {
+		t.Fatal("expected v1 snapshot restore to fail")
+	}
+}
+
 func TestEncodeWALUsesTinyKeys(t *testing.T) {
-	wal := []threads.WALEvent{{Seq: 1, Op: "append_stream_item", Item: threads.SnapshotItem{Type: "assistant_text", Text: "x"}}}
+	wal := []threads.WALEvent{{Seq: 1, Op: "append_stream_item", Item: threads.SnapshotItem{Seq: 1, Type: "assistant_text", Text: "x"}}}
 	b, err := encodeWAL(wal)
 	if err != nil {
 		t.Fatalf("encode wal: %v", err)
@@ -161,7 +183,7 @@ func TestEncodeWALUsesTinyKeys(t *testing.T) {
 	if !strings.Contains(s, `"s":`) || !strings.Contains(s, `"o":"append_stream_item"`) || !strings.Contains(s, `"i":`) {
 		t.Fatalf("expected tiny wal keys/codes, got %s", s)
 	}
-	if strings.Contains(s, `"seq":`) || strings.Contains(s, `"op":`) || strings.Contains(s, `"item":`) {
+	if strings.Contains(s, `"op":`) || strings.Contains(s, `"item":`) {
 		t.Fatalf("expected compact wal json keys, got %s", s)
 	}
 }
