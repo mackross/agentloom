@@ -66,6 +66,12 @@ type SQLiteBranchStoreOptions struct {
 	// custom transaction begin semantics (for example SQLite BEGIN IMMEDIATE) can
 	// provide a TxRunner and still receive one *sql.Tx for branch writes and hooks.
 	TxRunner SQLiteBranchStoreTxRunner
+
+	// WriteGuardTables extends the store's writer-version fence to application
+	// tables in the main database. Tables must exist by the end of InitTx.
+	// An older process without the required writer function cannot modify these
+	// tables after this store opens. Compatible processes remain able to write.
+	WriteGuardTables []string
 }
 
 // SQLiteBranchStoreLocker runs fn while holding a store-wide lock.
@@ -250,6 +256,13 @@ func (s *SQLiteBranchStore) DurableStore(id threads.BranchID) threads.DurableSto
 }
 
 func (s *SQLiteBranchStore) init(ctx context.Context) error {
+	var writerVersion int
+	if err := s.db.QueryRowContext(ctx, `SELECT agentloom_writer_version()`).Scan(&writerVersion); err != nil {
+		return fmt.Errorf("sqlite branch store requires the registered sqlite driver and a current writer connection: %w", err)
+	}
+	if writerVersion < sqliteWriterVersion {
+		return fmt.Errorf("sqlite branch writer version %d is too old; restart using the updated application", writerVersion)
+	}
 	pragmas := []string{"PRAGMA foreign_keys = ON", "PRAGMA journal_mode = WAL", "PRAGMA synchronous = NORMAL"}
 	if s.opts.BusyTimeout == 0 {
 		pragmas = append(pragmas, fmt.Sprintf("PRAGMA busy_timeout = %d", defaultSQLiteBusyTimeout.Milliseconds()))
@@ -269,16 +282,22 @@ func (s *SQLiteBranchStore) init(ctx context.Context) error {
 		if err := tx.QueryRowContext(ctx, `SELECT value FROM thread_branch_meta WHERE key = 'schema_version'`).Scan(&existingVersion); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if existingVersion != "" && existingVersion != sqliteBranchSchemaVersion {
+		if existingVersion == "1" {
+			if err := migrateSQLiteBranchV1(ctx, tx); err != nil {
+				return fmt.Errorf("migrate sqlite branch schema v1: %w", err)
+			}
+		} else if existingVersion != "" && existingVersion != sqliteBranchSchemaVersion {
 			return fmt.Errorf("unsupported sqlite branch schema version %q; expected %q", existingVersion, sqliteBranchSchemaVersion)
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO thread_branch_meta(key, value) VALUES('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, sqliteBranchSchemaVersion); err != nil {
 			return err
 		}
 		if s.opts.Hooks.InitTx != nil {
-			return s.opts.Hooks.InitTx(ctx, tx)
+			if err := s.opts.Hooks.InitTx(ctx, tx); err != nil {
+				return err
+			}
 		}
-		return nil
+		return installSQLiteWriteGuards(ctx, tx, s.opts.WriteGuardTables)
 	})
 }
 

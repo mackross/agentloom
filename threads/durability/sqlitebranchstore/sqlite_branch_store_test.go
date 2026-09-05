@@ -268,7 +268,7 @@ func TestSQLiteBranchStoreRejectsUnsupportedSchemaVersion(t *testing.T) {
 	}
 }
 
-func TestSQLiteBranchStoreRejectsSchemaV1(t *testing.T) {
+func TestSQLiteBranchStoreRejectsIncompleteSchemaV1(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "threads.sqlite3"))
 	if err != nil {
@@ -282,7 +282,7 @@ func TestSQLiteBranchStoreRejectsSchemaV1(t *testing.T) {
 		t.Fatalf("seed schema version: %v", err)
 	}
 	if _, err := NewSQLiteBranchStore(db, SQLiteBranchStoreOptions{}); err == nil {
-		t.Fatalf("NewSQLiteBranchStore succeeded with v1 schema")
+		t.Fatalf("NewSQLiteBranchStore succeeded with incomplete v1 schema")
 	}
 }
 
