@@ -30,12 +30,12 @@ which aligns with most storage patterns (fast append, slower update).
   to hidden subtools, with Lark/custom-tool and JSON modes.
 - `threads/durability`: local file-backed durable thread storage.
 - `threads/durability/sqlitebranchstore`: SQLite branch, lease, checkpoint, and WAL storage.
-- `llms/openai`: OpenAI Responses API streamer with websocket/SSE transports,
+- `llms/providers/openai`: OpenAI Responses API streamer with websocket/SSE transports,
   previous-response continuation, function tools, and custom grammar tools.
-- `llms/anthropic`: Anthropic Messages API streamer.
-- `llms/fireworks`: Fireworks chat-completions streamer.
-- `llms/googlegenai`: Google Gemini generateContent streamer.
-- `llms/cerebras`: Cerebras chat-completions streamer.
+- `llms/providers/anthropic`: Anthropic Messages API streamer.
+- `llms/providers/fireworks`: Fireworks chat-completions streamer.
+- `llms/providers/googlegenai`: Google Gemini generateContent streamer.
+- `llms/providers/cerebras`: Cerebras chat-completions streamer.
 - `llms/cache/*`: provider-specific prompt-cache metadata helpers.
 
 ## Install
@@ -60,7 +60,7 @@ history, resolves tool calls when configured, and returns the thread to idle.
 
 ## Google Gemini
 
-`llms/googlegenai` defaults an empty model name to the stable
+`llms/providers/googlegenai` defaults an empty model name to the stable
 `gemini-3.8-flash` model. The default client reads `GEMINI_API_KEY` or
 `GOOGLE_API_KEY`:
 
@@ -217,7 +217,7 @@ Most tests are offline. Live tests are behind the `live` build tag and provider 
 variables.
 
 ```sh
-OPENAI_API_KEY=... go test -tags live ./llms/openai ./threads
+OPENAI_API_KEY=... go test -tags live ./llms/providers/openai ./threads
 ```
 
 For the OpenAI multitool repair test:

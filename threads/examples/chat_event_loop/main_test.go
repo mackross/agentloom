@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	googlegenaiwrap "github.com/mackross/agentloom/llms/googlegenai"
+	googlegenaiwrap "github.com/mackross/agentloom/llms/providers/googlegenai"
 )
 
 func TestNewStreamerForModelUsesGoogleForGeminiModels(t *testing.T) {

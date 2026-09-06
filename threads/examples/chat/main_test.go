@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	anthropicwrap "github.com/mackross/agentloom/llms/anthropic"
-	fireworkswrap "github.com/mackross/agentloom/llms/fireworks"
-	googlegenaiwrap "github.com/mackross/agentloom/llms/googlegenai"
-	openaiwrap "github.com/mackross/agentloom/llms/openai"
+	anthropicwrap "github.com/mackross/agentloom/llms/providers/anthropic"
+	fireworkswrap "github.com/mackross/agentloom/llms/providers/fireworks"
+	googlegenaiwrap "github.com/mackross/agentloom/llms/providers/googlegenai"
+	openaiwrap "github.com/mackross/agentloom/llms/providers/openai"
 	"github.com/mackross/agentloom/threads"
 )
 

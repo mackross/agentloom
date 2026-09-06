@@ -12,7 +12,7 @@ import (
 	openaiapi "github.com/mackross/openai-go/v3"
 	"github.com/mackross/openai-go/v3/option"
 
-	openaiadapter "github.com/mackross/agentloom/llms/openai"
+	openaiadapter "github.com/mackross/agentloom/llms/providers/openai"
 	"github.com/mackross/agentloom/threads"
 )
 

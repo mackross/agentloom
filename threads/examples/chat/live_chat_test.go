@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	fireworkswrap "github.com/mackross/agentloom/llms/fireworks"
+	fireworkswrap "github.com/mackross/agentloom/llms/providers/fireworks"
 	"github.com/mackross/agentloom/threads"
 )
 

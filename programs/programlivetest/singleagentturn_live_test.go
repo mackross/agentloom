@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mackross/agentloom/llms/openai"
+	"github.com/mackross/agentloom/llms/providers/openai"
 	"github.com/mackross/agentloom/programs"
 	"github.com/mackross/agentloom/programs/adapters"
 	"github.com/mackross/agentloom/threads"

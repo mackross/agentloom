@@ -10,11 +10,11 @@ import (
 
 	gschema "github.com/google/jsonschema-go/jsonschema"
 
-	"github.com/mackross/agentloom/llms/anthropic"
-	"github.com/mackross/agentloom/llms/cerebras"
-	"github.com/mackross/agentloom/llms/fireworks"
-	openaiwrap "github.com/mackross/agentloom/llms/openai"
-	"github.com/mackross/agentloom/llms/xai"
+	"github.com/mackross/agentloom/llms/providers/anthropic"
+	"github.com/mackross/agentloom/llms/providers/cerebras"
+	"github.com/mackross/agentloom/llms/providers/fireworks"
+	openaiwrap "github.com/mackross/agentloom/llms/providers/openai"
+	"github.com/mackross/agentloom/llms/providers/xai"
 	"github.com/mackross/agentloom/threads"
 )
 

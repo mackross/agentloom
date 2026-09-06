@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	openaiwrap "github.com/mackross/agentloom/llms/openai"
+	openaiwrap "github.com/mackross/agentloom/llms/providers/openai"
 	"github.com/mackross/agentloom/threads"
 	"github.com/mackross/agentloom/threads/tool"
 	"github.com/mackross/agentloom/threads/tool/multitool"
