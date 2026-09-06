@@ -33,6 +33,7 @@ type MessagesStreamer struct {
 	EagerToolStreaming bool
 	ServiceTier        anthropicapi.MessageNewParamsServiceTier
 	Thinking           anthropicapi.ThinkingConfigParamUnion
+	OutputConfig       anthropicapi.OutputConfigParam
 	OnOutputTextDelta  func(string)
 	normalizers        threads.ToolNormalizers
 }
@@ -121,6 +122,9 @@ func (s *MessagesStreamer) StreamReqContext(ctx context.Context, req threads.Req
 		Messages:    messages,
 		ServiceTier: s.ServiceTier,
 		Thinking:    s.Thinking,
+	}
+	if s.OutputConfig.Effort != "" {
+		params.OutputConfig = s.OutputConfig
 	}
 	if req.Instruction != "" {
 		params.System = []anthropicapi.TextBlockParam{{Text: req.Instruction}}

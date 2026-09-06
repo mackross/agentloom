@@ -72,6 +72,8 @@ type ChatStreamer struct {
 	AllowBestEffortToolControls bool
 	OnOutputTextDelta           func(string)
 
+	defaultThink any
+
 	normalizers threads.ToolNormalizers
 }
 

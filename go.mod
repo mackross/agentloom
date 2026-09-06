@@ -11,6 +11,7 @@ require (
 	github.com/google/jsonschema-go v0.4.2
 	github.com/tetratelabs/wazero v1.11.0
 	github.com/vmihailenco/msgpack/v5 v5.4.1
+	golang.org/x/oauth2 v0.36.0
 	golang.org/x/tools v0.44.1-0.20260513175300-635ae9663724
 	google.golang.org/genai v1.71.0
 	modernc.org/sqlite v1.50.0
