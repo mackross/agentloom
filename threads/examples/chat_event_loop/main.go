@@ -12,26 +12,22 @@ import (
 	"sync"
 
 	"github.com/dop251/goja"
-
-	anthropicwrap "github.com/mackross/agentloom/llms/providers/anthropic"
-	fireworkswrap "github.com/mackross/agentloom/llms/providers/fireworks"
-	googlegenaiwrap "github.com/mackross/agentloom/llms/providers/googlegenai"
-	openaiwrap "github.com/mackross/agentloom/llms/providers/openai"
+	"github.com/mackross/agentloom/harness"
 	"github.com/mackross/agentloom/threads"
 )
 
 func main() {
-	model := configuredModel()
-	if !hasProviderAPIKey(model) {
-		fmt.Fprintf(os.Stderr, "set %s\n", requiredAPIKeyLabel(model))
+	session, err := openSession(context.Background(), configuredModel())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
 	ui := newTerminalUI(os.Stdin)
 	defer ui.Close()
 
-	streamer, currentModel := newStreamerForModel(model)
-	executor := threads.NewThreadExecutor(streamer)
+	currentModel := session.Model().Name
+	executor := threads.NewThreadExecutor(session.Streamer())
 	canceler := &streamCanceler{executor: executor}
 	ui.SetCancel(func() {
 		if canceler.Cancel() {
@@ -122,12 +118,12 @@ func main() {
 			}
 			var resolvedModel string
 			if err := loop.Do(context.Background(), func(thread threads.Thread) error {
-				nextExecutor, resolved, err := switchModelIfIdle(thread.(threads.Thread), nextModel)
+				nextExecutor, err := switchModelIfIdle(thread, session, nextModel)
 				if err != nil {
 					return err
 				}
 				canceler.Set(nextExecutor)
-				resolvedModel = resolved
+				resolvedModel = session.Model().Name
 				return nil
 			}); err != nil {
 				ui.Println("model switch error:", err)
@@ -378,95 +374,30 @@ func configuredModel() string {
 	return ""
 }
 
-type exampleProvider string
-
-const (
-	exampleProviderOpenAI    exampleProvider = "openai"
-	exampleProviderAnthropic exampleProvider = "anthropic"
-	exampleProviderFireworks exampleProvider = "fireworks"
-	exampleProviderGoogle    exampleProvider = "google"
-)
-
-func providerForModel(model string) exampleProvider {
-	model = strings.ToLower(strings.TrimSpace(model))
-	if strings.HasPrefix(model, "claude") {
-		return exampleProviderAnthropic
+// openSession opens the shared harness configuration and the named model
+// (or the remembered default when name is empty).
+func openSession(ctx context.Context, name string) (*harness.Session, error) {
+	h, err := harness.Open(ctx, harness.Options{App: "agentloom-chat"})
+	if err != nil {
+		return nil, err
 	}
-	if strings.HasPrefix(model, "accounts/fireworks/models/") {
-		return exampleProviderFireworks
-	}
-	if strings.HasPrefix(strings.TrimPrefix(model, "models/"), "gemini-") {
-		return exampleProviderGoogle
-	}
-	return exampleProviderOpenAI
+	return h.Session(ctx, name)
 }
 
-func requiredAPIKeyLabel(model string) string {
-	switch providerForModel(model) {
-	case exampleProviderAnthropic:
-		return "ANTHROPIC_API_KEY"
-	case exampleProviderFireworks:
-		return "FIREWORKS_API_KEY"
-	case exampleProviderGoogle:
-		return "GEMINI_API_KEY or GOOGLE_API_KEY"
-	default:
-		return "OPENAI_API_KEY"
-	}
-}
-
-func hasProviderAPIKey(model string) bool {
-	switch providerForModel(model) {
-	case exampleProviderAnthropic:
-		return strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) != ""
-	case exampleProviderFireworks:
-		return strings.TrimSpace(os.Getenv("FIREWORKS_API_KEY")) != "" || strings.TrimSpace(os.Getenv("FIREWORKS_AI_API_KEY")) != ""
-	case exampleProviderGoogle:
-		return strings.TrimSpace(os.Getenv("GEMINI_API_KEY")) != "" || strings.TrimSpace(os.Getenv("GOOGLE_API_KEY")) != ""
-	default:
-		return strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != ""
-	}
-}
-
-func newStreamerForModel(model string) (threads.LLMStreamer, string) {
-	model = strings.TrimSpace(model)
-	switch providerForModel(model) {
-	case exampleProviderAnthropic:
-		return anthropicwrap.NewMessagesStreamer(model), modelOrDefault(model)
-	case exampleProviderFireworks:
-		return fireworkswrap.NewChatCompletionsStreamer(model), modelOrDefault(model)
-	case exampleProviderGoogle:
-		return googlegenaiwrap.NewGenerateContentStreamer(model), modelOrDefault(model)
-	default:
-		return openaiwrap.NewResponsesStreamer(model), modelOrDefault(model)
-	}
-}
-
-func switchModelIfIdle(thread threads.Thread, model string) (*threads.ThreadExecutor, string, error) {
+func switchModelIfIdle(thread threads.Thread, session *harness.Session, model string) (*threads.ThreadExecutor, error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
-		return nil, "", fmt.Errorf("usage: /model <name>")
+		return nil, fmt.Errorf("usage: /model <name>")
 	}
 	if thread.State() != threads.StateIdle {
-		return nil, "", fmt.Errorf("thread is %s", thread.State())
+		return nil, fmt.Errorf("thread is %s", thread.State())
 	}
-	if !hasProviderAPIKey(model) {
-		return nil, "", fmt.Errorf("set %s", requiredAPIKeyLabel(model))
+	if err := session.Switch(context.Background(), model); err != nil {
+		return nil, err
 	}
-	streamer, resolvedModel := newStreamerForModel(model)
-	executor := threads.NewThreadExecutor(streamer)
+	executor := threads.NewThreadExecutor(session.Streamer())
 	thread.SetExecutor(executor)
-	return executor, resolvedModel, nil
-}
-
-func modelOrDefault(model string) string {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		if providerForModel(model) == exampleProviderAnthropic {
-			return string(anthropicwrap.DefaultModel)
-		}
-		return openaiwrap.DefaultModel
-	}
-	return model
+	return executor, nil
 }
 
 type jsToolArgs struct {

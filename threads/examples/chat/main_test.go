@@ -1,14 +1,13 @@
 package main
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
 
-	anthropicwrap "github.com/mackross/agentloom/llms/providers/anthropic"
-	fireworkswrap "github.com/mackross/agentloom/llms/providers/fireworks"
+	"github.com/mackross/agentloom/harness"
 	googlegenaiwrap "github.com/mackross/agentloom/llms/providers/googlegenai"
-	openaiwrap "github.com/mackross/agentloom/llms/providers/openai"
 	"github.com/mackross/agentloom/threads"
 )
 
@@ -53,91 +52,34 @@ func TestConfiguredModelReadsGoogleModelEnv(t *testing.T) {
 	}
 }
 
-func TestNewStreamerForModelDefaultsToOpenAI(t *testing.T) {
-	streamer, model := newStreamerForModel("")
-
-	if _, ok := streamer.(*openaiwrap.ResponsesStreamer); !ok {
-		t.Fatalf("expected openai streamer, got %T", streamer)
+func testSession(t *testing.T, name string) *harness.Session {
+	t.Helper()
+	h, err := harness.Open(context.Background(), harness.Options{Store: harness.Memory(harness.Settings{})})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if model != openaiwrap.DefaultModel {
-		t.Fatalf("unexpected default model: %q", model)
+	session, err := h.Session(context.Background(), name)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := requiredAPIKeyLabel(""); got != "OPENAI_API_KEY" {
-		t.Fatalf("unexpected api key env: %q", got)
-	}
-}
-
-func TestNewStreamerForModelUsesAnthropicForClaudeModels(t *testing.T) {
-	const model = "claude-sonnet-4-6"
-
-	streamer, gotModel := newStreamerForModel(model)
-
-	if _, ok := streamer.(*anthropicwrap.MessagesStreamer); !ok {
-		t.Fatalf("expected anthropic streamer, got %T", streamer)
-	}
-	if gotModel != model {
-		t.Fatalf("unexpected resolved model: %q", gotModel)
-	}
-	if got := requiredAPIKeyLabel(model); got != "ANTHROPIC_API_KEY" {
-		t.Fatalf("unexpected api key env: %q", got)
-	}
-}
-
-func TestNewStreamerForModelUsesFireworksForFireworksModels(t *testing.T) {
-	const model = fireworkswrap.Kimi3Model
-
-	streamer, gotModel := newStreamerForModel(model)
-
-	if _, ok := streamer.(*fireworkswrap.ChatCompletionsStreamer); !ok {
-		t.Fatalf("expected fireworks streamer, got %T", streamer)
-	}
-	if gotModel != model {
-		t.Fatalf("unexpected resolved model: %q", gotModel)
-	}
-	if got := requiredAPIKeyLabel(model); got != "FIREWORKS_API_KEY" {
-		t.Fatalf("unexpected api key env: %q", got)
-	}
-}
-
-func TestNewStreamerForModelUsesGoogleForGeminiModels(t *testing.T) {
-	const model = googlegenaiwrap.DefaultModel
-	t.Setenv("GEMINI_API_KEY", "test-key")
-
-	streamer, gotModel := newStreamerForModel(model)
-
-	if _, ok := streamer.(*googlegenaiwrap.GenerateContentStreamer); !ok {
-		t.Fatalf("expected Google GenAI streamer, got %T", streamer)
-	}
-	if gotModel != model {
-		t.Fatalf("unexpected resolved model: %q", gotModel)
-	}
-	if got := requiredAPIKeyLabel(model); got != "GEMINI_API_KEY or GOOGLE_API_KEY" {
-		t.Fatalf("unexpected api key env: %q", got)
-	}
-}
-
-func TestHasProviderAPIKeyAcceptsEitherGoogleEnv(t *testing.T) {
-	t.Setenv("GEMINI_API_KEY", "")
-	t.Setenv("GOOGLE_API_KEY", "test-key")
-
-	if !hasProviderAPIKey(googlegenaiwrap.DefaultModel) {
-		t.Fatal("expected Google API key to be detected")
-	}
+	return session
 }
 
 func TestSwitchModelIfIdleSwapsExecutor(t *testing.T) {
 	thread := threads.New()
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	session := testSession(t, "")
 
-	executor, resolvedModel, err := switchModelIfIdle(thread, "claude-sonnet-4-6")
+	executor, err := switchModelIfIdle(thread, session, "claude-sonnet-4-6")
 	if err != nil {
 		t.Fatalf("switch model: %v", err)
 	}
 	if executor == nil {
 		t.Fatal("expected executor")
 	}
-	if resolvedModel != "claude-sonnet-4-6" {
-		t.Fatalf("unexpected resolved model: %q", resolvedModel)
+	if session.Model().ID != "claude-sonnet-4-6" || session.Credential() != "ANTHROPIC_API_KEY" {
+		t.Fatalf("unexpected session: %+v %s", session.Model(), session.Credential())
 	}
 	if got := thread.State(); got != threads.StateIdle {
 		t.Fatalf("expected idle state after switch, got %q", got)
@@ -147,9 +89,10 @@ func TestSwitchModelIfIdleSwapsExecutor(t *testing.T) {
 func TestSwitchModelIfIdleRejectsNonIdleThread(t *testing.T) {
 	thread := threads.New()
 	thread.QueueItem(threads.SendItem{})
-	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	session := testSession(t, "")
 
-	_, _, err := switchModelIfIdle(thread, "claude-sonnet-4-6")
+	_, err := switchModelIfIdle(thread, session, "claude-sonnet-4-6")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -160,23 +103,15 @@ func TestSwitchModelIfIdleRejectsNonIdleThread(t *testing.T) {
 
 func TestSwitchModelIfIdleRequiresProviderKey(t *testing.T) {
 	thread := threads.New()
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("ANTHROPIC_API_KEY", "")
+	session := testSession(t, "")
 
-	_, _, err := switchModelIfIdle(thread, "claude-sonnet-4-6")
+	_, err := switchModelIfIdle(thread, session, "claude-sonnet-4-6")
 	if err == nil {
 		t.Fatal("expected error")
 	}
 	if !strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
 		t.Fatalf("expected missing key in error, got %v", err)
-	}
-}
-
-func TestHasProviderAPIKeyAcceptsEitherFireworksEnv(t *testing.T) {
-	model := fireworkswrap.Kimi3Model
-	t.Setenv("FIREWORKS_API_KEY", "")
-	t.Setenv("FIREWORKS_AI_API_KEY", "legacy-key")
-
-	if !hasProviderAPIKey(model) {
-		t.Fatal("expected fireworks key to be detected")
 	}
 }

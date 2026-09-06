@@ -1,25 +1,29 @@
 package main
 
 import (
+	"context"
 	"testing"
 
-	googlegenaiwrap "github.com/mackross/agentloom/llms/providers/googlegenai"
+	"github.com/mackross/agentloom/harness"
+	"github.com/mackross/agentloom/threads"
 )
 
-func TestNewStreamerForModelUsesGoogleForGeminiModels(t *testing.T) {
+func TestSwitchModelIfIdleUsesHarnessSession(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
 	t.Setenv("GEMINI_API_KEY", "test-key")
-
-	streamer, model := newStreamerForModel(googlegenaiwrap.DefaultModel)
-	if _, ok := streamer.(*googlegenaiwrap.GenerateContentStreamer); !ok {
-		t.Fatalf("expected Google GenAI streamer, got %T", streamer)
+	h, err := harness.Open(context.Background(), harness.Options{Store: harness.Memory(harness.Settings{})})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if model != googlegenaiwrap.DefaultModel {
-		t.Fatalf("model = %q, want %q", model, googlegenaiwrap.DefaultModel)
+	session, err := h.Session(context.Background(), "gemini")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !hasProviderAPIKey(model) {
-		t.Fatal("expected Gemini API key to be detected")
+	thread := threads.New()
+	if _, err := switchModelIfIdle(thread, session, "sonnet"); err != nil {
+		t.Fatal(err)
 	}
-	if got := requiredAPIKeyLabel(model); got != "GEMINI_API_KEY or GOOGLE_API_KEY" {
-		t.Fatalf("API key label = %q", got)
+	if got := session.Model().ID; got != "claude-sonnet-4-6" {
+		t.Fatalf("model = %q", got)
 	}
 }

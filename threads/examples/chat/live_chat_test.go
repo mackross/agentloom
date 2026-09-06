@@ -3,10 +3,12 @@
 package main
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/mackross/agentloom/harness"
 	fireworkswrap "github.com/mackross/agentloom/llms/providers/fireworks"
 	"github.com/mackross/agentloom/threads"
 )
@@ -28,7 +30,7 @@ func TestLiveThreadsChatExampleWithAnthropicMessages(t *testing.T) {
 }
 
 func TestLiveThreadsChatExampleWithFireworksKimi3(t *testing.T) {
-	if !hasProviderAPIKey(fireworkswrap.Kimi3Model) {
+	if strings.TrimSpace(os.Getenv("FIREWORKS_API_KEY")) == "" && strings.TrimSpace(os.Getenv("FIREWORKS_AI_API_KEY")) == "" {
 		t.Fatal("FIREWORKS_API_KEY is not set")
 	}
 
@@ -38,9 +40,13 @@ func TestLiveThreadsChatExampleWithFireworksKimi3(t *testing.T) {
 func runLiveChatExampleTest(t testing.TB, model, token string) {
 	t.Helper()
 
-	streamer, resolvedModel := newStreamerForModel(model)
-	if resolvedModel != model {
-		t.Fatalf("unexpected resolved model: %q", resolvedModel)
+	h, err := harness.Open(context.Background(), harness.Options{Store: harness.Memory(harness.Settings{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamer, err := h.Streamer(context.Background(), model)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	thread := threads.New()

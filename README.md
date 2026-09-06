@@ -30,13 +30,19 @@ which aligns with most storage patterns (fast append, slower update).
   to hidden subtools, with Lark/custom-tool and JSON modes.
 - `threads/durability`: local file-backed durable thread storage.
 - `threads/durability/sqlitebranchstore`: SQLite branch, lease, checkpoint, and WAL storage.
+- `llms`: provider-neutral model catalog, effort levels, and provider descriptions.
 - `llms/providers/openai`: OpenAI Responses API streamer with websocket/SSE transports,
-  previous-response continuation, function tools, and custom grammar tools.
+  previous-response continuation, function tools, custom grammar tools, and Codex
+  subscription sign-in.
 - `llms/providers/anthropic`: Anthropic Messages API streamer.
-- `llms/providers/fireworks`: Fireworks chat-completions streamer.
+- `llms/providers/xai`: xAI Responses streamer with Grok subscription sign-in.
 - `llms/providers/googlegenai`: Google Gemini generateContent streamer.
-- `llms/providers/cerebras`: Cerebras chat-completions streamer.
+- `llms/providers/{fireworks,cerebras,deepseek,ollama}`: further streamers.
+- `llms/providers/all`: every built-in provider in one call.
+- `llms/subscription`: device sign-in flows and refreshing token sources.
 - `llms/cache/*`: provider-specific prompt-cache metadata helpers.
+- `harness`: shared configuration files, credentials and sign-in, and a live model
+  session for building agent harnesses.
 
 ## Install
 
@@ -201,6 +207,55 @@ streams:
 See [`threads/DURABILITY.md`](./threads/DURABILITY.md) and
 [`threads/EXECUTOR_RECOVERY.md`](./threads/EXECUTOR_RECOVERY.md).
 
+## Choosing models
+
+`llms` describes every provider the same way: an id, credential environment variables,
+an optional subscription sign-in, curated models with the effort levels they accept, a
+prefix matcher for uncurated ids, and an `Open` function. `llms/providers/all` gathers
+the built-in providers into a catalog that resolves names, aliases, and
+`provider/model` references:
+
+```go
+cat := all.Catalog()
+streamer, model, err := cat.Open(ctx, "sonnet", llms.Options{})   // reads ANTHROPIC_API_KEY
+```
+
+Effort is one vocabulary (`default`, `none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, `max`). Each streamer that supports it implements `llms.EffortSetter` and maps
+the level onto its own knob; `Model.Efforts` lists what a model accepts.
+
+## Building a harness
+
+`harness` adds the pieces every interactive harness needs: shared configuration under
+`~/.config/agents` (`models.toml`, a per-app `models.<app>.toml` overlay, and
+`auth.toml`), credential resolution, subscription sign-in, and a live session whose
+model, effort, and fast settings are remembered.
+
+```go
+h, err := harness.Open(ctx, harness.Options{App: "weaver"})
+ses, err := h.Session(ctx, "")            // remembered default
+exec := threads.NewThreadExecutor(ses.Streamer())
+
+ses.Switch(ctx, "sol")                    // /model sol
+ses.SetEffort(llms.EffortHigh)            // /effort high
+h.SignIn(ctx, openai.ID, showPrompt)      // device sign-in
+```
+
+`models.toml` can add models (with provider-specific keys such as an Ollama host) and
+set defaults:
+
+```toml
+default = "sol"
+effort = "high"
+
+[[models]]
+provider = "ollama"
+name = "qwen"
+id = "qwen3.5:9b-mlx"
+host = "http://terminus.local:11434"
+efforts = ["none", "low", "high", "max"]
+```
+
 ## Provider examples
 
 Interactive examples live in:
@@ -208,8 +263,8 @@ Interactive examples live in:
 - `threads/examples/chat`
 - `threads/examples/chat_event_loop`
 
-They select OpenAI, Anthropic, or Fireworks based on the configured model and provider
-environment variables.
+They open a `harness.Session` for the model named by `MODEL` (or the remembered default)
+and switch models with `/model`.
 
 ## Live provider tests
 
