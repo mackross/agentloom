@@ -1,8 +1,8 @@
 package openai
 
 import (
-	"github.com/openai/openai-go/v3/responses"
-	"github.com/openai/openai-go/v3/shared"
+	"github.com/mackross/openai-go/v3/responses"
+	"github.com/mackross/openai-go/v3/shared"
 
 	"github.com/mackross/agentloom/llms"
 )

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/openai/openai-go/v3/option"
+	"github.com/mackross/openai-go/v3/option"
 	"golang.org/x/oauth2"
 
 	"github.com/mackross/agentloom/llms"

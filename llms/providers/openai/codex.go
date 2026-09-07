@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	openaiapi "github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
+	openaiapi "github.com/mackross/openai-go/v3"
+	"github.com/mackross/openai-go/v3/option"
 	"golang.org/x/oauth2"
 
 	"github.com/mackross/agentloom/llms"
