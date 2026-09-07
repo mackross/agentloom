@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	gschema "github.com/google/jsonschema-go/jsonschema"
-	"github.com/openai/openai-go/v3/shared"
+	"github.com/mackross/openai-go/v3/shared"
 
 	"github.com/mackross/agentloom/threads"
 )

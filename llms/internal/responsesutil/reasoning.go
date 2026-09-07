@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/openai/openai-go/v3/responses"
+	"github.com/mackross/openai-go/v3/responses"
 
 	"github.com/mackross/agentloom/threads"
 )

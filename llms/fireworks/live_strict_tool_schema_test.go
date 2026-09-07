@@ -14,9 +14,9 @@ import (
 	"time"
 
 	gschema "github.com/google/jsonschema-go/jsonschema"
-	openaiapi "github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
-	"github.com/openai/openai-go/v3/shared"
+	openaiapi "github.com/mackross/openai-go/v3"
+	"github.com/mackross/openai-go/v3/option"
+	"github.com/mackross/openai-go/v3/shared"
 
 	"github.com/mackross/agentloom/threads"
 )

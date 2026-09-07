@@ -5,7 +5,7 @@ import (
 
 	cacheopenai "github.com/mackross/agentloom/llms/cache/openai"
 	"github.com/mackross/agentloom/threads"
-	"github.com/openai/openai-go/v3/responses"
+	"github.com/mackross/openai-go/v3/responses"
 )
 
 func TestResponseParamsUsesLatestOpenAICacheMetadata(t *testing.T) {

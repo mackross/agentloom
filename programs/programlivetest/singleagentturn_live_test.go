@@ -17,7 +17,7 @@ import (
 	"github.com/mackross/agentloom/programs/adapters"
 	"github.com/mackross/agentloom/threads"
 	threadtool "github.com/mackross/agentloom/threads/tool"
-	"github.com/openai/openai-go/v3/shared"
+	"github.com/mackross/openai-go/v3/shared"
 )
 
 const (

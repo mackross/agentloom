@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	openaiapi "github.com/openai/openai-go/v3"
+	openaiapi "github.com/mackross/openai-go/v3"
 
 	"github.com/mackross/agentloom/threads"
 	"github.com/mackross/agentloom/threads/streamertest"

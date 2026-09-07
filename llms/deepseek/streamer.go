@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	openaiapi "github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
+	openaiapi "github.com/mackross/openai-go/v3"
+	"github.com/mackross/openai-go/v3/option"
 
 	openaiadapter "github.com/mackross/agentloom/llms/openai"
 	"github.com/mackross/agentloom/threads"

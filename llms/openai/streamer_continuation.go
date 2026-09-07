@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"hash"
 
-	openaiapi "github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/packages/param"
-	"github.com/openai/openai-go/v3/responses"
+	openaiapi "github.com/mackross/openai-go/v3"
+	"github.com/mackross/openai-go/v3/packages/param"
+	"github.com/mackross/openai-go/v3/responses"
 )
 
 func (s *ResponsesStreamer) LastUsedPreviousResponseID() bool {

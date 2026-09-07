@@ -11,10 +11,10 @@ import (
 	"time"
 
 	gschema "github.com/google/jsonschema-go/jsonschema"
-	openaiapi "github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/packages/param"
-	"github.com/openai/openai-go/v3/responses"
-	"github.com/openai/openai-go/v3/shared"
+	openaiapi "github.com/mackross/openai-go/v3"
+	"github.com/mackross/openai-go/v3/packages/param"
+	"github.com/mackross/openai-go/v3/responses"
+	"github.com/mackross/openai-go/v3/shared"
 
 	cacheopenai "github.com/mackross/agentloom/llms/cache/openai"
 	"github.com/mackross/agentloom/llms/internal/responsesutil"
