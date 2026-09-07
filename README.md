@@ -227,8 +227,8 @@ the level onto its own knob; `Model.Efforts` lists what a model accepts.
 ## Building a harness
 
 `harness` adds the pieces every interactive harness needs: shared configuration under
-`~/.config/agents` (`models.toml`, a per-app `models.<app>.toml` overlay, and
-`auth.toml`), credential resolution, subscription sign-in, and a live session whose
+`~/.config/agents` (`models.loom.toml`, a per-app `models.<app>.loom.toml` overlay, and
+`auth.loom.toml`), credential resolution, subscription sign-in, and a live session whose
 model, effort, and fast settings are remembered.
 
 ```go
@@ -241,7 +241,7 @@ ses.SetEffort(llms.EffortHigh)            // /effort high
 h.SignIn(ctx, openai.ID, showPrompt)      // device sign-in
 ```
 
-`models.toml` can add models (with provider-specific keys such as an Ollama host) and
+`models.loom.toml` can add models (with provider-specific keys such as an Ollama host) and
 set defaults:
 
 ```toml

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +19,7 @@ func TestFilesLoadLayersAndSaves(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("models.toml", `
+	write("models.loom.toml", `
 default = "sol"
 effort = "high"
 
@@ -43,13 +44,13 @@ prefer_apply_patch = true
 [models.options]
 num_ctx = 65536
 `)
-	write("models.weaver.toml", `
+	write("models.weaver.loom.toml", `
 default = "qwen"
 fast = true
 [providers.ollama]
 model = "qwen"
 `)
-	write("auth.toml", `
+	write("auth.loom.toml", `
 [openai]
 api_key = "sk-1"
 [openai.subscription]
@@ -103,9 +104,9 @@ api_key = "b1"
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, _ := os.ReadFile(filepath.Join(dir, "models.weaver.toml"))
-	shared, _ := os.ReadFile(filepath.Join(dir, "models.toml"))
-	auth, _ := os.ReadFile(filepath.Join(dir, "auth.toml"))
+	app, _ := os.ReadFile(filepath.Join(dir, "models.weaver.loom.toml"))
+	shared, _ := os.ReadFile(filepath.Join(dir, "models.loom.toml"))
+	auth, _ := os.ReadFile(filepath.Join(dir, "auth.loom.toml"))
 	if !strings.Contains(string(app), `default = 'sol'`) || !strings.Contains(string(app), `model = 'gpt-5.6-luna'`) {
 		t.Fatalf("app file:\n%s", app)
 	}
@@ -147,6 +148,12 @@ func TestDefaultDir(t *testing.T) {
 	}
 	t.Setenv("AGENTS_CONFIG_DIR", "/explicit")
 	if d, _ := DefaultDir(); d != "/explicit" {
+		t.Fatal(d)
+	}
+	t.Setenv("AGENTS_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "/home/u")
+	if d, _ := DefaultDir(); runtime.GOOS != "windows" && d != "/home/u/.config/agents" {
 		t.Fatal(d)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -12,9 +13,9 @@ import (
 	"github.com/mackross/agentloom/llms"
 )
 
-// DefaultDir returns the shared configuration directory:
-// $AGENTS_CONFIG_DIR, else $XDG_CONFIG_HOME/agents, else the user config
-// directory plus "agents".
+// DefaultDir returns the shared configuration directory: $AGENTS_CONFIG_DIR,
+// else $XDG_CONFIG_HOME/agents, else ~/.config/agents (the platform config
+// directory plus "agents" on Windows).
 func DefaultDir() (string, error) {
 	if dir := strings.TrimSpace(os.Getenv("AGENTS_CONFIG_DIR")); dir != "" {
 		return dir, nil
@@ -22,24 +23,32 @@ func DefaultDir() (string, error) {
 	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
 		return filepath.Join(xdg, "agents"), nil
 	}
-	base, err := os.UserConfigDir()
+	if runtime.GOOS == "windows" {
+		base, err := os.UserConfigDir()
+		if err != nil {
+			return "", fmt.Errorf("harness: config dir: %w", err)
+		}
+		return filepath.Join(base, "agents"), nil
+	}
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("harness: config dir: %w", err)
 	}
-	return filepath.Join(base, "agents"), nil
+	return filepath.Join(home, ".config", "agents"), nil
 }
 
-// Files returns a Store over TOML files in dir: models.toml holds shared
-// settings and model overlays, models.<app>.toml overrides it key by key and
-// receives writes, and auth.toml holds credentials. With an empty app, writes
-// go to models.toml.
+// Files returns a Store over TOML files in dir. The files carry a ".loom.toml"
+// suffix so the directory can be shared with other tools: models.loom.toml
+// holds shared settings and model overlays, models.<app>.loom.toml overrides
+// it key by key and receives writes, and auth.loom.toml holds credentials.
+// With an empty app, writes go to models.loom.toml.
 func Files(dir, app string) Store {
 	f := &files{
-		models: filepath.Join(dir, "models.toml"),
-		auth:   filepath.Join(dir, "auth.toml"),
+		models: filepath.Join(dir, "models.loom.toml"),
+		auth:   filepath.Join(dir, "auth.loom.toml"),
 	}
 	if app = strings.TrimSpace(app); app != "" {
-		f.app = filepath.Join(dir, "models."+app+".toml")
+		f.app = filepath.Join(dir, "models."+app+".loom.toml")
 	}
 	return f
 }

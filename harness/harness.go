@@ -24,7 +24,7 @@ import (
 // Options configures Open. The zero value uses the shared configuration
 // directory and every built-in provider.
 type Options struct {
-	// App names the harness. It adds a models.<app>.toml overlay that also
+	// App names the harness. It adds a models.<app>.loom.toml overlay that also
 	// receives writes. Empty means shared settings only.
 	App string
 	// Dir is the configuration directory. Empty uses DefaultDir.
