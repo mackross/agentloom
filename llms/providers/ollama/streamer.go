@@ -214,22 +214,18 @@ func (s *ChatStreamer) streamProgressTimeout() (time.Duration, bool) {
 var ErrStreamProgressTimeout = errors.New("ollama stream made no progress")
 
 // classifyStreamFailure converts a context-driven transport failure into an
-// attributable error: the watchdog's ErrStreamProgressTimeout when the stream
-// deadline fired on an otherwise-live parent context, the parent context
+// attributable error: the watchdog's ErrStreamProgressTimeout when the
+// inactivity timer fired on an otherwise-live parent context, the parent context
 // error when the caller canceled, and nil when err is not context-driven.
 func classifyStreamFailure(err error, watchdogCtx, parent context.Context, timeout time.Duration) error {
 	if err == nil {
 		return nil
 	}
-	contextDriven := errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
-	if !contextDriven && watchdogCtx.Err() == nil {
-		return nil
-	}
-	if watchdogCtx.Err() != nil && parent.Err() == nil {
-		return fmt.Errorf("ollama chat: %w (no data within %v)", ErrStreamProgressTimeout, timeout)
-	}
 	if parent.Err() != nil {
 		return parent.Err()
+	}
+	if errors.Is(context.Cause(watchdogCtx), ErrStreamProgressTimeout) {
+		return fmt.Errorf("ollama chat: %w (no data within %v)", ErrStreamProgressTimeout, timeout)
 	}
 	return nil
 }
@@ -246,11 +242,6 @@ func (s *ChatStreamer) StreamReqContext(ctx context.Context, req threads.Req, em
 	}
 	parent := ctx
 	timeout, watchdogEnabled := s.streamProgressTimeout()
-	if watchdogEnabled {
-		var watchdogCancel context.CancelFunc
-		ctx, watchdogCancel = context.WithTimeout(ctx, timeout)
-		defer watchdogCancel()
-	}
 
 	req, err := s.normalizers.NormalizeReq(req)
 	if err != nil {
@@ -284,6 +275,11 @@ func (s *ChatStreamer) StreamReqContext(ctx context.Context, req threads.Req, em
 		return fmt.Errorf("ollama chat request: %w", err)
 	}
 
+	var watchdog *streamProgressWatchdog
+	if watchdogEnabled {
+		ctx, watchdog = newStreamProgressWatchdog(ctx, timeout)
+		defer watchdog.stop()
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.chatURL().String(), bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("ollama chat request: %w", err)
@@ -304,10 +300,15 @@ func (s *ChatStreamer) StreamReqContext(ctx context.Context, req threads.Req, em
 		return fmt.Errorf("ollama chat request: %w", err)
 	}
 	defer resp.Body.Close()
+	var responseBody io.Reader = resp.Body
+	if watchdog != nil {
+		watchdog.progress()
+		responseBody = streamProgressReader{Reader: resp.Body, watchdog: watchdog}
+	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return decodeAPIError(resp)
 	}
-	return s.decodeStream(resp.Body, ctx, parent, timeout, emit)
+	return s.decodeStream(responseBody, ctx, parent, timeout, emit)
 }
 
 func (s *ChatStreamer) validateToolControls(snap threads.ToolOfferSnapshot, hasTools bool) error {
@@ -389,12 +390,12 @@ func (s *ChatStreamer) decodeStream(r io.Reader, watchdogCtx, parent context.Con
 	for {
 		var chunk chatResponse
 		err := decoder.Decode(&chunk)
-		if errors.Is(err, io.EOF) {
-			return io.ErrUnexpectedEOF
-		}
 		if err != nil {
 			if classified := classifyStreamFailure(err, watchdogCtx, parent, timeout); classified != nil {
 				return classified
+			}
+			if errors.Is(err, io.EOF) {
+				return io.ErrUnexpectedEOF
 			}
 			return fmt.Errorf("ollama chat stream: %w", err)
 		}

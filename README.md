@@ -255,8 +255,18 @@ provider = "ollama"
 name = "qwen"
 id = "qwen3.5:9b-mlx"
 host = "http://terminus.local:11434"
+stream_progress_timeout = "30m"
 efforts = ["none", "low", "high", "max"]
 ```
+
+For Ollama, `stream_progress_timeout` is a per-model client-side inactivity
+timeout. Set it directly in the `[[models]]` entry, not in `[models.options]`.
+It accepts a Go duration string: omitted means `"5m"`, `"30m"` allows longer
+silent prompt evaluation, and `"0s"` disables the watchdog. Invalid or negative
+values are rejected when the model is opened. It starts before the request,
+resets on response headers and every body read (including thinking and partial
+JSON), and does not limit the total duration of a stream that keeps making
+progress. Caller deadlines and HTTP-client timeouts remain independent.
 
 ## Provider examples
 

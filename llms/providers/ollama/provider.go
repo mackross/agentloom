@@ -8,6 +8,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/mackross/agentloom/llms"
 	"github.com/mackross/agentloom/threads"
@@ -25,6 +26,7 @@ const ID = "ollama"
 //	options     table passed as Ollama options (num_ctx, temperature, ...)
 //	think       false, true, or "low" | "medium" | "high" | "max"
 //	keep_alive  duration string or seconds
+//	stream_progress_timeout  inactivity duration string (default "5m"; "0s" disables)
 //	truncate, shift, allow_best_effort_tool_controls   booleans
 var Provider = &llms.Provider{
 	ID:   ID,
@@ -69,6 +71,8 @@ func open(_ context.Context, m llms.Model, o llms.Options) (threads.LLMStreamer,
 		case "keep_alive":
 			err = validateKeepAlive(raw)
 			s.KeepAlive = raw
+		case "stream_progress_timeout":
+			s.StreamProgressTimeout, err = progressTimeout(raw)
 		case "truncate":
 			s.Truncate, err = boolPtr(raw)
 		case "shift":
@@ -84,6 +88,21 @@ func open(_ context.Context, m llms.Model, o llms.Options) (threads.LLMStreamer,
 	}
 	s.defaultThink = s.Think
 	return s, nil
+}
+
+func progressTimeout(raw any) (*time.Duration, error) {
+	text, ok := raw.(string)
+	if !ok {
+		return nil, fmt.Errorf("must be a duration string such as \"30m\" or \"0s\" to disable")
+	}
+	d, err := time.ParseDuration(text)
+	if err != nil {
+		return nil, fmt.Errorf("invalid duration: %w", err)
+	}
+	if d < 0 {
+		return nil, fmt.Errorf("must not be negative; use \"0s\" to disable")
+	}
+	return &d, nil
 }
 
 func parseHost(raw string) (*url.URL, error) {
