@@ -204,7 +204,7 @@ func (s *ResponsesStreamer) StreamReqContext(ctx context.Context, req threads.Re
 }
 
 func (s *ResponsesStreamer) responseRequest(req threads.Req) (responses.ResponseNewParams, error) {
-	inputItems, err := conversationInput(req, s.reasoningProvider())
+	inputItems, err := conversationInput(s.model, s.Reasoning.Effort, req, s.reasoningProvider())
 	if err != nil {
 		return responses.ResponseNewParams{}, err
 	}
@@ -243,6 +243,9 @@ func (s *ResponsesStreamer) responseRequest(req threads.Req) (responses.Response
 	}
 	if s, ok := streamerutil.LastStringMetadata(req, cacheopenai.PromptCacheRetentionKey); ok {
 		params.PromptCacheRetention = responses.ResponseNewParamsPromptCacheRetention(s)
+	}
+	if s, ok := streamerutil.LastStringMetadata(req, cacheopenai.PromptCacheTTLKey); ok {
+		applyPromptCacheTTL(&params, s)
 	}
 	return params, nil
 }
@@ -422,6 +425,18 @@ func (s *ResponsesStreamer) streamResponseItems(stream responseStream, emit func
 			if event.Response.ID != "" {
 				responseID = event.Response.ID
 			}
+		case "response.incomplete":
+			// Astra ends a response early with reason "steered" when a mid-turn
+			// steering update takes over, and a steered continuation follows on the
+			// same connection. Reading must continue in that case.
+			if reason := incompleteReason(event); reason != "steered" {
+				return "", nil, fmt.Errorf("openai responses stream incomplete: %s", reason)
+			}
+		case "response.failed":
+			if reason := failedReason(event); reason != "" {
+				return "", nil, fmt.Errorf("openai responses stream failed: %s", reason)
+			}
+			return "", nil, fmt.Errorf("openai responses stream failed")
 		case "response.output_text.delta":
 			if event.Delta == "" {
 				continue
@@ -495,6 +510,31 @@ func (s *ResponsesStreamer) streamResponseItems(stream responseStream, emit func
 	return responseID, outputItems, nil
 }
 
+// incompleteReason reports why a response.incomplete event ended the response.
+// Astra adds "steered" here when a mid-turn steering update replaces the
+// running response with a continuation.
+func incompleteReason(event responses.ResponseStreamEventUnion) string {
+	if reason := event.Response.IncompleteDetails.Reason; reason != "" {
+		return reason
+	}
+	if event.Response.Status == responses.ResponseStatusIncomplete {
+		return "incomplete"
+	}
+	return ""
+}
+
+// failedReason reports the error carried by a response.failed event.
+func failedReason(event responses.ResponseStreamEventUnion) string {
+	if err := event.Response.Error; err.Code != "" {
+		code := string(err.Code)
+		if err.Message != "" {
+			return code + ": " + err.Message
+		}
+		return code
+	}
+	return event.Response.Error.Message
+}
+
 func recordFunctionCall(functionCalls map[string]functionCallMeta, item responses.ResponseOutputItemUnion) {
 	if item.Type != "function_call" || item.ID == "" {
 		return
@@ -536,9 +576,16 @@ func functionCallIdentity(functionCalls map[string]functionCallMeta, itemID, fal
 	return callID, name
 }
 
-func conversationInput(req threads.Req, provider string) (responses.ResponseInputParam, error) {
+// conversationInput renders request items as Responses input items. model and
+// effort are the request-level values, used to skip configuration_update items
+// that would only repeat the request-level reasoning effort.
+func conversationInput(model string, effort shared.ReasoningEffort, req threads.Req, provider string) (responses.ResponseInputParam, error) {
 	inputItems := make(responses.ResponseInputParam, 0, len(req.Items))
-	for _, it := range req.Items {
+	updates := &effortUpdates{enabled: supportsConfigurationUpdate(model), request: string(effort)}
+	for i, it := range req.Items {
+		if update, ok := updates.before(req, i); ok {
+			inputItems = append(inputItems, update)
+		}
 		switch v := it.(type) {
 		case threads.UserText:
 			inputItems = append(inputItems, responses.ResponseInputItemParamOfMessage(string(v), responses.EasyInputMessageRoleUser))

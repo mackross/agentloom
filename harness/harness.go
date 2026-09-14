@@ -80,6 +80,47 @@ func Open(ctx context.Context, o Options) (*Harness, error) {
 // Models lists every model the harness can select.
 func (h *Harness) Models() []llms.Model { return h.cat.Models() }
 
+// ModelOption describes a selectable model and whether the harness has enough
+// locally configured credentials to try opening it. Err reports configuration
+// problems such as a missing required credential; it does not validate keys or
+// contact the provider.
+type ModelOption struct {
+	Model      llms.Model
+	Credential string
+	Err        error
+}
+
+// ModelOptions lists every selectable model with its locally configured
+// credential status. Credential is a non-secret description of the selected
+// source. Credential resolution is performed once per provider.
+func (h *Harness) ModelOptions(ctx context.Context) []ModelOption {
+	type status struct {
+		credential string
+		err        error
+	}
+	statuses := make(map[string]status)
+	models := h.cat.Models()
+	options := make([]ModelOption, 0, len(models))
+	for _, m := range models {
+		s, ok := statuses[m.Provider]
+		if !ok {
+			p, found := h.cat.Provider(m.Provider)
+			if !found {
+				s.err = fmt.Errorf("harness: model %q has unknown provider %q", m.Name, m.Provider)
+			} else {
+				_, s.credential, s.err = h.credentials(ctx, p)
+			}
+			statuses[m.Provider] = s
+		}
+		options = append(options, ModelOption{
+			Model:      m,
+			Credential: s.credential,
+			Err:        s.err,
+		})
+	}
+	return options
+}
+
 // Streamer opens a one-shot streamer for name with the remembered effort and
 // fast settings applied. It writes nothing.
 func (h *Harness) Streamer(ctx context.Context, name string) (threads.LLMStreamer, error) {

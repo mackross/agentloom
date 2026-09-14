@@ -33,7 +33,9 @@ which aligns with most storage patterns (fast append, slower update).
 - `llms`: provider-neutral model catalog, effort levels, and provider descriptions.
 - `llms/providers/openai`: OpenAI Responses API streamer with websocket/SSE transports,
   previous-response continuation, function tools, custom grammar tools, and Codex
-  subscription sign-in.
+  subscription sign-in. GPT-6 Astra (`astra`) uses the GPT-6 effort vocabulary
+  (`low`..`max`, no `none`/`minimal`), `prompt_cache_options.ttl` caching, and
+  mid-conversation `configuration_update` effort changes.
 - `llms/providers/anthropic`: Anthropic Messages API streamer.
 - `llms/providers/xai`: xAI Responses streamer with Grok subscription sign-in.
 - `llms/providers/googlegenai`: Google Gemini generateContent streamer.

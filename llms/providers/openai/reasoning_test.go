@@ -45,7 +45,7 @@ func TestResponsesStreamerPreservesReasoningItems(t *testing.T) {
 		t.Fatalf("second item = %#v, want assistant answer", got[1])
 	}
 
-	input, err := conversationInput(threads.Req{Items: []threads.Item{reasoning}}, reasoningProvider)
+	input, err := conversationInput("", "", threads.Req{Items: []threads.Item{reasoning}}, reasoningProvider)
 	if err != nil {
 		t.Fatalf("request reasoning: %v", err)
 	}

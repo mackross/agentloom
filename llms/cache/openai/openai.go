@@ -8,9 +8,15 @@ import "github.com/mackross/agentloom/threads"
 const (
 	PromptCacheKeyKey       = "cache/openai/prompt_cache_key"
 	PromptCacheRetentionKey = "cache/openai/prompt_cache_retention"
+	PromptCacheTTLKey       = "cache/openai/prompt_cache_ttl"
 
-	RetentionInMemory = "in-memory"
+	RetentionInMemory = "in_memory"
 	Retention24h      = "24h"
+
+	// TTL30m is the only prompt_cache_options.ttl value OpenAI supports, and it
+	// is also the default. GPT-5.6 and later (including gpt-6-astra) control
+	// cache lifetime with ttl; prompt_cache_retention is the pre-5.6 knob.
+	TTL30m = "30m"
 )
 
 // PromptCacheKey sets prompt_cache_key, improving routing/cache locality.
@@ -31,4 +37,15 @@ func PromptCacheRetention(retention string) threads.PatchItemMetadata {
 // ClearPromptCacheRetention clears a previously set prompt_cache_retention.
 func ClearPromptCacheRetention() threads.PatchItemMetadata {
 	return threads.PatchItemMetadata{Metadata: map[string]any{PromptCacheRetentionKey: false}}
+}
+
+// PromptCacheTTL sets prompt_cache_options.ttl, e.g. TTL30m. GPT-5.6 and later
+// models reject prompt_cache_retention and use ttl instead.
+func PromptCacheTTL(ttl string) threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{PromptCacheTTLKey: ttl}}
+}
+
+// ClearPromptCacheTTL clears a previously set prompt_cache_options.ttl.
+func ClearPromptCacheTTL() threads.PatchItemMetadata {
+	return threads.PatchItemMetadata{Metadata: map[string]any{PromptCacheTTLKey: false}}
 }

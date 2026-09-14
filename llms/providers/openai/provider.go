@@ -12,7 +12,17 @@ import (
 // ID is the provider id.
 const ID = "openai"
 
-var reasoningEfforts = []llms.Effort{llms.EffortNone, llms.EffortMinimal, llms.EffortLow, llms.EffortMedium, llms.EffortHigh, llms.EffortXHigh}
+// ModelAstra is the GPT-6 Astra wire id. It differs from the GPT-5.6 family in
+// ways the streamer cannot express through typed SDK params today; see
+// astraEfforts and effort.go.
+const ModelAstra = "gpt-6-astra"
+
+var (
+	reasoningEfforts = []llms.Effort{llms.EffortNone, llms.EffortMinimal, llms.EffortLow, llms.EffortMedium, llms.EffortHigh, llms.EffortXHigh}
+	// astraEfforts is the GPT-6 vocabulary: `none` and `minimal` are removed and
+	// `max` is new. Sending `none` on Astra is a request error.
+	astraEfforts = []llms.Effort{llms.EffortLow, llms.EffortMedium, llms.EffortHigh, llms.EffortXHigh, llms.EffortMax}
+)
 
 // Provider describes OpenAI: API keys from OPENAI_API_KEY or a Codex
 // subscription sign-in.
@@ -22,6 +32,11 @@ var Provider = &llms.Provider{
 	Subscription: Codex{},
 	Models: []llms.Model{
 		{ID: "gpt-5.6-sol", Aliases: []string{"sol", "gpt-5.6"}, Label: "flagship coding", Efforts: reasoningEfforts, Fast: true},
+		// Astra is listed after sol so the provider default is unchanged: it is
+		// gated per project and has no `none`/`minimal` effort to fall back to.
+		// Fast mode works outside EU data residency, where service_tier
+		// fast/priority is rejected.
+		{ID: ModelAstra, Aliases: []string{"astra", "gpt-6"}, Label: "flagship agentic", Efforts: astraEfforts, Fast: true},
 		{ID: "gpt-5.6-terra", Aliases: []string{"terra"}, Label: "balanced", Efforts: reasoningEfforts, Fast: true},
 		{ID: "gpt-5.6-luna", Aliases: []string{"luna"}, Label: "cost-efficient", Efforts: reasoningEfforts, Fast: true},
 		{ID: DefaultModel, Label: "small", Fast: true},
@@ -35,8 +50,13 @@ func match(id string) (llms.Model, bool) {
 	for _, p := range []string{"gpt-", "o1", "o3", "o4", "codex-", "chatgpt-"} {
 		if strings.HasPrefix(lower, p) {
 			m := llms.Model{ID: id, Fast: true}
-			if strings.HasPrefix(lower, "gpt-5") || strings.HasPrefix(lower, "o") {
-				m.Efforts = reasoningEfforts
+			switch {
+			case strings.HasPrefix(lower, "gpt-6"), lower == ModelAstra:
+				m.Efforts = astraEfforts
+			default:
+				if strings.HasPrefix(lower, "gpt-5") || strings.HasPrefix(lower, "o") {
+					m.Efforts = reasoningEfforts
+				}
 			}
 			return m, true
 		}

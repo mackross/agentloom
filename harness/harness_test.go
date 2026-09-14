@@ -148,6 +148,43 @@ func TestCredentialPrecedence(t *testing.T) {
 	}
 }
 
+func TestModelOptionsCredentialStatus(t *testing.T) {
+	t.Setenv("ACME_API_KEY", "")
+	h, err := Open(context.Background(), Options{
+		Providers: providers(),
+		Store: Memory(Settings{Models: []llms.Model{{
+			Provider: "local",
+			Name:     "qwen",
+			ID:       "qwen3:8b",
+		}}}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	options := h.ModelOptions(context.Background())
+	if len(options) != 3 {
+		t.Fatalf("options = %d, want 3", len(options))
+	}
+	for _, option := range options[:2] {
+		if option.Model.Provider != "acme" || !errors.Is(option.Err, llms.ErrNoCredential) || option.Credential != "" {
+			t.Fatalf("missing acme credential status = %+v", option)
+		}
+	}
+	local := options[2]
+	if local.Model.Name != "qwen" || local.Err != nil || local.Credential != "none" {
+		t.Fatalf("local credential status = %+v", local)
+	}
+
+	t.Setenv("ACME_API_KEY", "env-key")
+	options = h.ModelOptions(context.Background())
+	for _, option := range options[:2] {
+		if option.Err != nil || option.Credential != "ACME_API_KEY" {
+			t.Fatalf("configured acme credential status = %+v", option)
+		}
+	}
+}
+
 func TestSessionTuning(t *testing.T) {
 	h, store := openTest(t, Settings{Effort: llms.EffortHigh, Fast: true})
 	ses, err := h.Session(context.Background(), "large")

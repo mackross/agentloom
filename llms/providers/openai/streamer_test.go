@@ -107,7 +107,7 @@ func TestRequestToolsNormalizesStrictSchemaRequiredAndNullableOptional(t *testin
 }
 
 func TestRequestInputItemsMapsToolCallsAndResults(t *testing.T) {
-	items, err := conversationInput(threads.Req{Items: []threads.Item{
+	items, err := conversationInput("", "", threads.Req{Items: []threads.Item{
 		threads.UserText("hello"),
 		threads.AssistantText("thinking"),
 		threads.ToolCallChunk{CallID: "c1", Name: "calculator", PayloadDelta: `{"a":`},
