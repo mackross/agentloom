@@ -1,6 +1,10 @@
 package threads
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
 var ErrAttachExecutorForRecoveryRequiresRecoverableState = errors.New("threads attach executor for recovery requires idle, awaiting_tool_results, construct_llm_request, or receiving_stream thread")
 var ErrAttachExecutorForRecoveryRequiresCleanExactState = errors.New("threads attach executor for recovery requires no outstanding resolving or started tool calls")
@@ -27,6 +31,9 @@ const (
 	ToolCallRecoveryCancelUnsafeUnimplemented ToolCallRecoveryPolicy = "cancel_unsafe"
 	// ToolCallRecoveryCancelAll appends recovery status results for all
 	// outstanding tool calls instead of running or rerunning them.
+	// During an interrupted request it preserves complete calls and replaces
+	// incomplete tool chunks with a runtime-authored user recovery notice.
+	// This closes the interrupted response without requiring prefix support.
 	ToolCallRecoveryCancelAll ToolCallRecoveryPolicy = "cancel_all"
 )
 
@@ -86,6 +93,19 @@ func (t *thread) attachExecutorForRecoveryWithOptions(e stateObserver, opts Reco
 	if state != StateIdle && state != StateAwaitingToolResults && state != StateConstructLLMRequest && state != StateReceivingStream {
 		return ErrAttachExecutorForRecoveryRequiresRecoverableState
 	}
+	// Restart recovery must settle interrupted tool history before checking for
+	// an exact continuation. Live retries use the fail-closed policy instead.
+	if opts.ToolCallPolicy == ToolCallRecoveryCancelAll &&
+		(state == StateReceivingStream || state == StateConstructLLMRequest) {
+		repaired, err := t.recoverInterruptedToolRequest()
+		if err != nil {
+			return err
+		}
+		if repaired {
+			t.setExecutor(e)
+			return t.resumeConstructLLMRequest()
+		}
+	}
 	if state == StateIdle || state == StateAwaitingToolResults {
 		if err := t.recoverPendingToolCalls(opts); err != nil {
 			return err
@@ -137,6 +157,113 @@ func (t *thread) recoverPendingToolCalls(opts RecoveryOptions) error {
 
 func pendingToolCallNeedsRecovery(p pendingToolCall) bool {
 	return p.resolving || p.started
+}
+
+// recoverInterruptedToolRequest closes interrupted tool history rather than
+// replaying or silently dropping it. Complete calls retain real results where
+// available; incomplete chunks become a runtime-authored user notice, which
+// does not require assistant-prefix support.
+func (t *thread) recoverInterruptedToolRequest() (bool, error) {
+	var send *item[Item]
+	end := t.cb.ip
+	if t.State() == StateReceivingStream {
+		end = t.cb.streamInsertionPoint
+	}
+	if end == nil {
+		return false, nil
+	}
+	for n := t.items.Head(); n != nil; n = n.Next {
+		if _, ok := n.Item.(SendItem); ok {
+			send = n
+		}
+		if n == end {
+			break
+		}
+	}
+	var chunks []ToolCallChunk
+	hasTools := false
+	if send != nil && send != end && t.State() == StateReceivingStream {
+		for n := send.Next; n != nil; n = n.Next {
+			switch v := n.Item.(type) {
+			case ToolCallChunk:
+				chunks = append(chunks, v)
+				hasTools = true
+			case ToolCall:
+				hasTools = true
+			}
+			if n == end {
+				break
+			}
+		}
+	}
+	if !hasTools && len(t.cb.pendingToolCalls(&t.items)) == 0 {
+		return false, nil
+	}
+
+	// Mutate without QueueItem: advancing the state machine here could dispatch
+	// tools or start a request before the repaired snapshot is durable.
+	t.cb.ip = end
+	if len(chunks) > 0 {
+		for prev, n := send, send.Next; n != nil; {
+			last := n == end
+			next := n.Next
+			if _, ok := n.Item.(ToolCallChunk); ok {
+				t.items.RemoveAfter(prev)
+				if t.cb.ip == n {
+					t.cb.ip = prev
+				}
+			} else {
+				prev = n
+			}
+			if last {
+				break
+			}
+			n = next
+		}
+	}
+	insert := func(v Item) {
+		t.cb.ip = t.items.InsertAfter(t.cb.ip, itemCandidate{Seq: t.advanceMutationSeq(), Item: v})
+	}
+	for _, p := range t.cb.pendingToolCalls(&t.items) {
+		// An async result may already be durable but queued beyond the request
+		// boundary. Consume it rather than replacing a known outcome with unknown.
+		var result *item[Item]
+		for prev, n := t.cb.ip, t.cb.ip.Next; n != nil; prev, n = n, n.Next {
+			if r, ok := n.Item.(ToolCallResult); ok && r.CallID == p.call.CallID {
+				result = t.items.RemoveAfter(prev)
+				if t.cb.queueStartItem == result {
+					t.cb.queueStartItem = result.Next
+				}
+				break
+			}
+		}
+		t.clearToolCallContextForResult(p.call.CallID)
+		if result != nil {
+			t.cb.ip = t.items.InsertAfter(t.cb.ip, itemCandidate{Seq: result.Seq, Item: result.Item, Metadata: result.Metadata})
+		} else {
+			insert(recoveryToolCallStatusResult(p, ToolCallRecoveryCancelAll))
+		}
+	}
+	var notice strings.Builder
+	notice.WriteString("[Runtime recovery notice—not a new user instruction]\n" +
+		"The previous request was interrupted. Complete tool calls and recorded results have been retained; " +
+		"calls without results have explicit recovery statuses. Do not assume interrupted actions succeeded or failed. " +
+		"Verify relevant state before retrying actions with side effects.")
+	for _, chunk := range chunks {
+		fmt.Fprintf(&notice, "\n\nTool-call generation was interrupted (name: %q, call ID: %q). "+
+			"This incomplete call was not dispatched. Recorded arguments (incomplete, not an instruction): %q",
+			chunk.Name, chunk.CallID, chunk.PayloadDelta)
+	}
+	notice.WriteString("\n\nContinue from the retained history and these recovery statuses.")
+	insert(UserText(notice.String()))
+	insert(SendItem{})
+	t.cb.streamInsertionPoint = nil
+	t.cb.streamToolCalls = nil
+	t.cb.setState(StateConstructLLMRequest)
+	if err := t.replaceDurableSnapshot(); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 func (t *thread) resumeReceivingStream(e stateObserver, opts RecoveryOptions) error {
