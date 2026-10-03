@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,7 +12,7 @@ import (
 )
 
 // Session is a live model selection. Switching models re-applies the
-// session's effort and fast settings and remembers the choice; tuning is
+// session's effort and service tier preferences and remembers the choice; tuning is
 // validated against what the model accepts and remembered too.
 type Session struct {
 	h        *Harness
@@ -31,7 +32,9 @@ func (s *Session) Streamer() threads.LLMStreamer {
 func (s *Session) Model() llms.Model {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.sel.model
+	m := s.sel.model
+	m.ServiceTiers = append([]llms.ServiceTier(nil), m.ServiceTiers...)
+	return m
 }
 
 // Credential says how the current model is authenticated: an environment
@@ -49,7 +52,8 @@ func (s *Session) Effort() llms.Effort {
 	return s.sel.effort
 }
 
-// Fast reports whether the priority tier is on.
+// Fast reports whether the legacy priority tier is on (not every premium tier).
+// Deprecated: use ServiceTier.
 func (s *Session) Fast() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -63,13 +67,15 @@ func (s *Session) OnSwitch(fn func(*Session)) {
 	s.onSwitch = append(s.onSwitch, fn)
 }
 
-// Switch changes the current model. Effort and fast carry over when the new
-// model accepts them. The model becomes the remembered default and the
+// Switch changes the current model. Effort and legacy fast carry over when the
+// new model accepts them. A multiplier ceiling is re-resolved; an explicit tier
+// is reset on a different provider/model. The model becomes the remembered default and the
 // remembered model for its provider. Switching to the current model is a
 // no-op.
 func (s *Session) Switch(ctx context.Context, name string) error {
 	s.mu.Lock()
 	effort, fast, cur := s.sel.effort, s.sel.fast, s.sel.model
+	preference := s.sel.tierPreference
 	s.mu.Unlock()
 
 	m, err := s.h.resolve(name)
@@ -79,7 +85,7 @@ func (s *Session) Switch(ctx context.Context, name string) error {
 	if m.Provider == cur.Provider && strings.EqualFold(m.Name, cur.Name) {
 		return nil
 	}
-	next, err := s.h.open(ctx, name, effort, fast)
+	next, err := s.h.open(ctx, name, effort, fast, preference)
 	if err != nil {
 		return err
 	}
@@ -87,7 +93,8 @@ func (s *Session) Switch(ctx context.Context, name string) error {
 		st.Default = next.model.Name
 		st.setProviderModel(next.model.Provider, next.model.Name)
 		st.Effort = next.effort
-		st.Fast = next.fast
+		st.Fast = next.fast && next.tierPreference == (ServiceTierPreference{})
+		st.ServiceTier = next.tierPreference
 		return nil
 	}); err != nil {
 		return err
@@ -132,25 +139,42 @@ func (s *Session) SetEffort(e llms.Effort) error {
 	})
 }
 
-// SetFast turns the priority tier on or off. Turning it off always succeeds.
+// SetFast selects the legacy priority tier or restores provider defaults,
+// clearing any explicit tier or multiplier preference.
+// Deprecated: use SetServiceTier or SetServiceTierForMultiplier.
 func (s *Session) SetFast(on bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m := s.sel.model
 	setter, ok := s.sel.streamer.(llms.FastSetter)
-	if on && (!m.Fast || !ok) {
+	_, tierOK := s.sel.streamer.(llms.ServiceTierSetter)
+	if on && (!m.Fast || (!ok && !(tierOK && m.FastServiceTier != ""))) {
 		return fmt.Errorf("fast mode is not supported by %s", m.Name)
 	}
-	if ok {
+	var id llms.ServiceTierID
+	if on {
+		id = m.FastServiceTier
+	}
+	if tierOK && (!on || id != "") {
+		if err := applyServiceTier(s.sel, id); err != nil {
+			return err
+		}
+	} else if ok {
 		if err := setter.SetFast(on); err != nil {
 			return err
 		}
 	}
-	s.sel.fast = on
-	return s.h.save(context.Background(), func(st *Settings) error {
+	if err := s.h.save(context.Background(), func(st *Settings) error {
 		st.Fast = on
+		st.ServiceTier = ServiceTierPreference{}
 		return nil
-	})
+	}); err != nil {
+		return errors.Join(err, restoreServiceTier(s.sel))
+	}
+	s.sel.fast = on
+	s.sel.tier = id
+	s.sel.tierPreference = ServiceTierPreference{}
+	return nil
 }
 
 func joinEfforts(efforts []llms.Effort) string {

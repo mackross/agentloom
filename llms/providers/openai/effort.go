@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"github.com/mackross/openai-go/v3/responses"
 	"github.com/mackross/openai-go/v3/shared"
 
 	"github.com/mackross/agentloom/llms"
@@ -19,13 +18,12 @@ func (s *ResponsesStreamer) SetEffort(e llms.Effort) error {
 	return nil
 }
 
-// SetFast toggles the priority service tier. GPT-6 Astra supports Fast mode
-// except with EU data residency, where the API rejects the tier; callers in a
-// EU-resident project should leave Fast off.
+// SetFast toggles the priority service tier (also called Fast mode). GPT-6
+// Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna do not support this tier with
+// EU data residency; callers in an EU-resident project should leave Fast off.
 func (s *ResponsesStreamer) SetFast(on bool) error {
-	s.ServiceTier = ""
 	if on {
-		s.ServiceTier = responses.ResponseNewParamsServiceTierPriority
+		return s.SetServiceTier(ServiceTierFast)
 	}
-	return nil
+	return s.SetServiceTier("")
 }

@@ -30,7 +30,8 @@ which aligns with most storage patterns (fast append, slower update).
   to hidden subtools, with Lark/custom-tool and JSON modes.
 - `threads/durability`: local file-backed durable thread storage.
 - `threads/durability/sqlitebranchstore`: SQLite branch, lease, checkpoint, and WAL storage.
-- `llms`: provider-neutral model catalog, effort levels, and provider descriptions.
+- `llms`: provider-neutral model catalog, effort levels, provider-defined service
+  tiers, and provider descriptions.
 - `llms/providers/openai`: OpenAI Responses API streamer with websocket/SSE transports,
   previous-response continuation, function tools, custom grammar tools, and Codex
   subscription sign-in. GPT-6 Astra (`astra`) uses the GPT-6 effort vocabulary
@@ -65,6 +66,100 @@ thread.QueueItem(threads.SendItem{})
 
 The executor builds a provider request from the thread, streams model output back into
 history, resolves tool calls when configured, and returns the thread to idle.
+
+## Service tiers
+
+Tier IDs belong to providers; there is no global Standard/Fast/Ultrafast enum.
+Every model's `ServiceTiers` lists known tiers in provider preference order
+(fastest first), including `ID`, `Label`, `MaxMultiplier`, and availability
+`Notes`. The same metadata is available through `h.Models()`, `h.ModelOptions(ctx)`,
+and `session.Model()` for UI menus.
+
+```go
+// Render each entry's Label, MaxMultiplier, and Notes in your UI.
+tiers := session.Model().ServiceTiers
+
+// Select the preferred known tier whose token-rate premium is at most 2×.
+// The ceiling is remembered and re-resolved when switching models.
+err := session.SetServiceTierForMultiplier(2)
+
+// Or explicitly select a provider-defined ID from the current model's menu.
+if len(tiers) > 0 {
+    err = session.SetServiceTier(tiers[0].ID)
+}
+
+// Reset to provider/project defaults, which may differ from standard pricing.
+err = session.SetServiceTier("")
+```
+
+For standalone catalog use, `model.ServiceTierForMultiplier(ceiling)` returns an
+ID that can be passed to a streamer's `llms.ServiceTierSetter`. Unknown pricing
+(`MaxMultiplier == 0`) is never selected automatically. Invalid ceilings and
+models with no qualifying known tier return errors rather than silently using
+project defaults. A multiplier is a conservative token-rate ratio, not a
+total-spend limit.
+
+OpenAI Astra lists Ultrafast (6×), Fast (2×), Standard (1×), and Flex (0.5×).
+Other models have their own lists and prices. xAI Priority is 2×, the curated
+Google text models list Priority at 1.8×, and Fireworks Priority is model-specific
+(1.2×, 1.25×, or 1.5×). Cerebras Shared Inference does not support service tiers,
+so its curated models do not advertise dedicated-only Priority.
+Catalog capabilities do not guarantee API-key, subscription, regional, or
+preview access. Check `Notes` and filter tiers for your deployment as needed.
+
+Preferences are persisted in the shared/app model TOML files:
+
+```toml
+[service_tier]
+max_multiplier = 2.0
+```
+
+An explicit preference instead contains `provider`, `model` (the wire ID), and
+`id`. It resets when switching to a different provider/model; a multiplier
+preference carries over and is resolved again. An app-level empty
+`[service_tier]` table clears an inherited preference. Legacy `fast` settings and
+`SetFast(bool)` remain supported; they do not select Ultrafast.
+
+Configured model entries can supply `service_tiers` as an array of tables in
+preference order, for example:
+
+```toml
+[[models]]
+provider = "openai"
+name = "astra-eu"
+id = "gpt-6-astra"
+service_tiers = [
+  { id = "default", label = "Standard", max_multiplier = 1.0 },
+  { id = "flex", label = "Flex", max_multiplier = 0.5 },
+]
+```
+
+## Current model catalogs
+
+The catalogs are curated for the adapters we implement, not every modality
+advertised by a provider. See [catalog sources and availability](llms/MODEL_CATALOG.md).
+
+- **xAI:** `grok` now selects Grok 4.7, including `xhigh` reasoning. The explicit
+  Grok 4.6 ID and `grok-4.6-latest` alias still select 4.6.
+- **Google:** Gemini 3.8 Flash remains the default. Pro, Flash-Lite, and other
+  current Gemini 3 text models are listed with model-specific thinking levels.
+  Live, TTS, image-output, and video models are not added to this text adapter.
+- **Cerebras:** Shared Inference lists GPT-OSS 120B (default) and Qwen 3.8 27B
+  (`cerebras-qwen`). Gemma 4 is dedicated-only; old Llama 3.1 and Qwen 3 235B entries
+  are no longer curated. Qwen does not receive the unsupported `hidden`
+  reasoning format.
+- **Fireworks:** serverless only. Kimi K3 remains the default; the catalog also
+  includes Ember 1, DeepSeek V4.1 Flash, GLM 5.3/Flash, Qwen 3.8 Max, MiniMax M3,
+  GPT-OSS 120B, and Nemotron models. Kimi K3 Fast and GLM 5.3 Fast are separate
+  router IDs, not `service_tier` values. Known dedicated-only former catalog
+  entries are rejected when opened through the provider.
+
+Hosted open-weight model aliases include their provider: `cerebras-qwen`,
+`fireworks-qwen`, `fireworks-glm`, `fireworks-kimi`, and `fireworks-minimax`.
+Fast variants use `fireworks-kimi-fast` and `fireworks-glm-fast`. Bare aliases
+such as `qwen` and `glm` are not claimed by those providers, leaving them
+available for configured models (for example, on Ollama). Full model IDs are
+unchanged.
 
 ## Google Gemini
 

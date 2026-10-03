@@ -13,16 +13,17 @@ import (
 const ID = "cerebras"
 
 var reasoningEfforts = []llms.Effort{llms.EffortLow, llms.EffortMedium, llms.EffortHigh}
+var qwenEfforts = []llms.Effort{llms.EffortNone, llms.EffortLow, llms.EffortMedium, llms.EffortHigh}
 
-// Provider describes Cerebras. Reasoning models stream hidden reasoning.
+// Provider lists Cerebras Shared Inference models. Service tiers are dedicated-
+// only and are intentionally not advertised for these models.
+// https://inference-docs.cerebras.ai/models/overview
 var Provider = &llms.Provider{
 	ID:  ID,
 	Env: []string{"CEREBRAS_API_KEY"},
 	Models: []llms.Model{
-		{ID: Gemma4_31BModel, Aliases: []string{"gemma", "gemma-4"}, Label: "Gemma 4 31B", Fast: true},
-		{ID: GPTOSS120BModel, Label: "GPT-OSS 120B", Efforts: reasoningEfforts, Fast: true},
-		{ID: Qwen3235BModel, Label: "Qwen 3 235B", Fast: true},
-		{ID: Llama31_8BModel, Label: "Llama 3.1 8B", Fast: true},
+		{ID: GPTOSS120BModel, Label: "GPT-OSS 120B", Efforts: reasoningEfforts},
+		{ID: Qwen38_27BModel, Aliases: []string{"cerebras-qwen"}, Label: "Qwen 3.8 27B", Efforts: qwenEfforts},
 	},
 	Open: func(_ context.Context, m llms.Model, o llms.Options) (threads.LLMStreamer, error) {
 		if o.APIKey == "" {

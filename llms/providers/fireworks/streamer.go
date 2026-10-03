@@ -27,6 +27,16 @@ const (
 	Kimi3Model                           = "accounts/fireworks/models/kimi-k3"
 	MiniMaxM27Model                      = "accounts/fireworks/models/minimax-m2p7"
 	GPTOSS120BModel                      = "accounts/fireworks/models/gpt-oss-120b"
+	Ember1Model                          = "accounts/fireworks/models/ember-1"
+	DeepSeekV41FlashModel                = "accounts/fireworks/models/deepseek-v4p1-flash"
+	GLM53Model                           = "accounts/fireworks/models/glm-5p3"
+	GLM53FlashModel                      = "accounts/fireworks/models/glm-5p3-flash"
+	Qwen38MaxModel                       = "accounts/fireworks/models/qwen3p8-max"
+	MiniMaxM3Model                       = "accounts/fireworks/models/minimax-m3"
+	Nemotron35LightningModel             = "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b"
+	Nemotron3UltraModel                  = "accounts/fireworks/models/nemotron-3-ultra-nvfp4"
+	Kimi3FastModel                       = "accounts/fireworks/routers/kimi-k3-fast"
+	GLM53FastModel                       = "accounts/fireworks/routers/glm-5p3-fast"
 	DefaultModel                         = Kimi3Model
 	DefaultContextLengthExceededBehavior = "error"
 	reasoningProvider                    = "fireworks.chat"
@@ -36,6 +46,7 @@ type ChatCompletionsStreamer struct {
 	client                        openaiapi.Client
 	model                         string
 	ContextLengthExceededBehavior string
+	ServiceTier                   string
 	OnOutputTextDelta             func(string)
 	normalizers                   threads.ToolNormalizers
 }
@@ -138,6 +149,9 @@ func (s *ChatCompletionsStreamer) StreamReqContext(ctx context.Context, req thre
 	}
 
 	opts := []option.RequestOption{}
+	if s.ServiceTier != "" {
+		opts = append(opts, option.WithJSONSet("service_tier", s.ServiceTier))
+	}
 	if behavior := strings.TrimSpace(s.ContextLengthExceededBehavior); behavior != "" {
 		opts = append(opts, option.WithJSONSet("context_length_exceeded_behavior", behavior))
 	}

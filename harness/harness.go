@@ -1,6 +1,6 @@
 // Package harness gives agent harnesses the pieces they otherwise rebuild:
 // shared configuration files, provider credentials and subscription sign-in,
-// and a live model selection whose effort and fast settings are remembered.
+// and a live model selection whose effort and service tier settings are remembered.
 //
 //	h, err := harness.Open(ctx, harness.Options{App: "weaver"})
 //	ses, err := h.Session(ctx, "")
@@ -66,6 +66,9 @@ func Open(ctx context.Context, o Options) (*Harness, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := settings.ServiceTier.validate(); err != nil {
+		return nil, fmt.Errorf("harness: %w", err)
+	}
 	providers := o.Providers
 	if providers == nil {
 		providers = all.Providers()
@@ -122,10 +125,10 @@ func (h *Harness) ModelOptions(ctx context.Context) []ModelOption {
 }
 
 // Streamer opens a one-shot streamer for name with the remembered effort and
-// fast settings applied. It writes nothing.
+// service tier preference applied. It writes nothing.
 func (h *Harness) Streamer(ctx context.Context, name string) (threads.LLMStreamer, error) {
 	s := h.current()
-	sel, err := h.open(ctx, name, s.Effort, s.Fast)
+	sel, err := h.open(ctx, name, s.Effort, s.Fast, s.ServiceTier)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +139,7 @@ func (h *Harness) Streamer(ctx context.Context, name string) (threads.LLMStreame
 // returns a live selection that can be switched and tuned.
 func (h *Harness) Session(ctx context.Context, name string) (*Session, error) {
 	s := h.current()
-	sel, err := h.open(ctx, name, s.Effort, s.Fast)
+	sel, err := h.open(ctx, name, s.Effort, s.Fast, s.ServiceTier)
 	if err != nil {
 		return nil, err
 	}
@@ -188,11 +191,13 @@ func (h *Harness) Secret(name string) string {
 }
 
 type selection struct {
-	model      llms.Model
-	streamer   threads.LLMStreamer
-	credential string
-	effort     llms.Effort
-	fast       bool
+	model          llms.Model
+	streamer       threads.LLMStreamer
+	credential     string
+	effort         llms.Effort
+	fast           bool
+	tier           llms.ServiceTierID
+	tierPreference ServiceTierPreference
 }
 
 func (h *Harness) current() Settings {
@@ -243,8 +248,17 @@ func (h *Harness) resolve(name string) (llms.Model, error) {
 	return h.cat.Resolve(name)
 }
 
-func (h *Harness) open(ctx context.Context, name string, effort llms.Effort, fast bool) (*selection, error) {
+func (h *Harness) open(ctx context.Context, name string, effort llms.Effort, fast bool, preference ServiceTierPreference) (*selection, error) {
 	m, err := h.resolve(name)
+	if err != nil {
+		return nil, err
+	}
+	// Resolve before opening a streamer; an unsatisfied budget is an error,
+	// not permission to inherit the new model's project defaults.
+	if preference != (ServiceTierPreference{}) {
+		fast = false
+	}
+	tier, preference, err := preference.resolve(m)
 	if err != nil {
 		return nil, err
 	}
@@ -273,13 +287,27 @@ func (h *Harness) open(ctx context.Context, name string, effort llms.Effort, fas
 		}
 	}
 	if fast && m.Fast {
-		if fs, ok := streamer.(llms.FastSetter); ok {
+		if m.FastServiceTier != "" {
+			if err := applyServiceTier(sel, m.FastServiceTier); err != nil {
+				return nil, err
+			}
+			sel.tier = m.FastServiceTier
+			sel.fast = true
+		} else if fs, ok := streamer.(llms.FastSetter); ok {
 			if err := fs.SetFast(true); err != nil {
 				return nil, err
 			}
 			sel.fast = true
 		}
 	}
+	if tier != "" {
+		if err := applyServiceTier(sel, tier); err != nil {
+			return nil, err
+		}
+		sel.tier = tier
+		sel.fast = tier == m.FastServiceTier
+	}
+	sel.tierPreference = preference
 	return sel, nil
 }
 

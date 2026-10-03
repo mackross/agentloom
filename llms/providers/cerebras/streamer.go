@@ -30,6 +30,7 @@ const (
 
 	Gemma4_31BModel   = "gemma-4-31b"
 	GPTOSS120BModel   = "gpt-oss-120b"
+	Qwen38_27BModel   = "qwen-3.8-27b"
 	Llama31_8BModel   = "llama3.1-8b"
 	Qwen3235BModel    = "qwen-3-235b-a22b-instruct-2507"
 	reasoningProvider = "cerebras.chat"

@@ -105,6 +105,20 @@ func (f *files) Save(ctx context.Context, fn func(*Settings) error) error {
 				return err
 			}
 		}
+		if after.ServiceTier != before.ServiceTier {
+			if err := after.ServiceTier.validate(); err != nil {
+				return err
+			}
+			// Write the entire preference, including an explicit empty one,
+			// so clearing an app preference masks the shared file's value.
+			p := after.ServiceTier
+			if err := h.Set("service_tier", map[string]any{
+				"provider": p.Provider, "model": p.Model,
+				"id": string(p.ID), "max_multiplier": p.MaxMultiplier,
+			}); err != nil {
+				return err
+			}
+		}
 		for id, ps := range after.Providers {
 			if ps.Model != before.provider(id).Model {
 				if err := setOrDelete(h, "providers."+id+".model", ps.Model, ps.Model == ""); err != nil {
@@ -188,6 +202,13 @@ func readModels(ctx context.Context, path string, s *Settings) error {
 		if v, ok := h.Get("fast"); ok {
 			s.Fast, _ = v.(bool)
 		}
+		if v, ok := h.Get("service_tier"); ok {
+			p, err := decodeServiceTierPreference(v)
+			if err != nil {
+				return fmt.Errorf("service_tier: %w", err)
+			}
+			s.ServiceTier = p
+		}
 		if providers, ok := h.Get("providers"); ok {
 			table, _ := providers.(map[string]any)
 			for id, raw := range table {
@@ -231,6 +252,15 @@ func decodeModel(table map[string]any) (llms.Model, error) {
 			m.Aliases = strings2(v)
 		case "fast":
 			m.Fast, _ = v.(bool)
+		case "fast_service_tier":
+			raw, _ := v.(string)
+			m.FastServiceTier = llms.ServiceTierID(raw)
+		case "service_tiers":
+			tiers, err := decodeServiceTiers(v)
+			if err != nil {
+				return m, err
+			}
+			m.ServiceTiers = tiers
 		case "efforts":
 			for _, raw := range strings2(v) {
 				e, err := llms.ParseEffort(raw)
@@ -252,7 +282,97 @@ func decodeModel(table map[string]any) (llms.Model, error) {
 	if m.Name == "" && m.ID == "" {
 		return m, fmt.Errorf("missing name")
 	}
-	return m, nil
+	return m, m.ValidateServiceTiers()
+}
+
+func decodeServiceTierPreference(v any) (ServiceTierPreference, error) {
+	table, ok := v.(map[string]any)
+	if !ok {
+		return ServiceTierPreference{}, fmt.Errorf("expected a table")
+	}
+	var p ServiceTierPreference
+	for key, v := range table {
+		if key == "max_multiplier" {
+			n, err := tierMultiplier(v)
+			if err != nil {
+				return p, err
+			}
+			p.MaxMultiplier = n
+			continue
+		}
+		raw, ok := v.(string)
+		if !ok {
+			return p, fmt.Errorf("%s must be a string", key)
+		}
+		switch key {
+		case "id":
+			p.ID = llms.ServiceTierID(raw)
+		case "provider":
+			p.Provider = raw
+		case "model":
+			p.Model = raw
+		default:
+			return p, fmt.Errorf("unknown key %q", key)
+		}
+	}
+	return p, p.validate()
+}
+
+func decodeServiceTiers(v any) ([]llms.ServiceTier, error) {
+	list, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("service_tiers must be an array of tables")
+	}
+	tiers := make([]llms.ServiceTier, 0, len(list))
+	for i, item := range list {
+		table, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("service_tiers[%d] must be a table", i)
+		}
+		var tier llms.ServiceTier
+		for key, value := range table {
+			if key == "max_multiplier" {
+				n, err := tierMultiplier(value)
+				if err != nil {
+					return nil, fmt.Errorf("service_tiers[%d]: %w", i, err)
+				}
+				tier.MaxMultiplier = n
+				continue
+			}
+			raw, ok := value.(string)
+			if !ok {
+				return nil, fmt.Errorf("service_tiers[%d].%s must be a string", i, key)
+			}
+			switch key {
+			case "id":
+				tier.ID = llms.ServiceTierID(raw)
+			case "label":
+				tier.Label = raw
+			case "notes":
+				tier.Notes = raw
+			default:
+				return nil, fmt.Errorf("service_tiers[%d]: unknown key %q", i, key)
+			}
+		}
+		if tier.Label == "" {
+			tier.Label = string(tier.ID)
+		}
+		tiers = append(tiers, tier)
+	}
+	return tiers, nil
+}
+
+func tierMultiplier(v any) (float64, error) {
+	switch n := v.(type) {
+	case float64:
+		return n, nil
+	case int64:
+		return float64(n), nil
+	case int:
+		return float64(n), nil
+	default:
+		return 0, fmt.Errorf("max_multiplier must be a number")
+	}
 }
 
 func strings2(v any) []string {

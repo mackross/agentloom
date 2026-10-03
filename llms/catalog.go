@@ -48,6 +48,12 @@ func NewCatalog(providers ...*Provider) *Catalog {
 func (c *Catalog) Add(models ...Model) error {
 	for _, m := range models {
 		m = stamp(m)
+		if err := m.ValidateServiceTiers(); err != nil {
+			return err
+		}
+		if !m.AcceptsServiceTier(m.FastServiceTier) {
+			return fmt.Errorf("llms: model %q legacy fast tier %q is not listed", m.ID, m.FastServiceTier)
+		}
 		if m.Provider == "" {
 			return fmt.Errorf("llms: model %q has no provider", m.Name)
 		}
@@ -92,7 +98,7 @@ func (c *Catalog) Resolve(name string) (Model, error) {
 	if pid, id, ok := strings.Cut(name, "/"); ok && id != "" {
 		if p, found := c.byID[key(pid)]; found {
 			if i, ok := c.index[key(id)]; ok && c.models[i].Provider == p.ID {
-				return c.models[i], nil
+				return cloneModel(c.models[i]), nil
 			}
 			if p.Match != nil {
 				if m, ok := p.Match(id); ok {
@@ -103,7 +109,7 @@ func (c *Catalog) Resolve(name string) (Model, error) {
 		}
 	}
 	if i, ok := c.index[key(name)]; ok {
-		return c.models[i], nil
+		return cloneModel(c.models[i]), nil
 	}
 	for _, p := range c.providers {
 		if p.Match == nil {
@@ -136,7 +142,9 @@ func (c *Catalog) Open(ctx context.Context, name string, o Options) (threads.LLM
 // Models lists every curated and added model in order.
 func (c *Catalog) Models() []Model {
 	out := make([]Model, len(c.models))
-	copy(out, c.models)
+	for i, m := range c.models {
+		out[i] = cloneModel(m)
+	}
 	return out
 }
 
@@ -159,13 +167,14 @@ func (c *Catalog) Default(provider string) (Model, bool) {
 	provider = key(provider)
 	for _, m := range c.models {
 		if m.Provider == provider {
-			return m, true
+			return cloneModel(m), true
 		}
 	}
 	return Model{}, false
 }
 
 func stamp(m Model) Model {
+	m = cloneModel(m)
 	m.Provider = key(m.Provider)
 	m.Name = strings.TrimSpace(m.Name)
 	m.ID = strings.TrimSpace(m.ID)
@@ -175,6 +184,13 @@ func stamp(m Model) Model {
 	if m.ID == "" {
 		m.ID = m.Name
 	}
+	return m
+}
+
+func cloneModel(m Model) Model {
+	m.Aliases = append([]string(nil), m.Aliases...)
+	m.Efforts = append([]Effort(nil), m.Efforts...)
+	m.ServiceTiers = append([]ServiceTier(nil), m.ServiceTiers...)
 	return m
 }
 

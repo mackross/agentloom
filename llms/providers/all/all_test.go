@@ -13,8 +13,8 @@ import (
 func TestCatalogAliases(t *testing.T) {
 	cat := all.Catalog()
 	for alias, want := range map[string]string{
-		"sol": "openai", "grok": "xai", "gemma": "cerebras", "gemini": "google",
-		"sonnet": "anthropic", "opus": "anthropic", "kimi": "fireworks", "deepseek": "deepseek",
+		"sol": "openai", "grok": "xai", "cerebras-qwen": "cerebras", "gemini": "google",
+		"sonnet": "anthropic", "opus": "anthropic", "fireworks-kimi": "fireworks", "deepseek": "deepseek",
 	} {
 		m, err := cat.Resolve(alias)
 		if err != nil || m.Provider != want {

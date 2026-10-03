@@ -15,6 +15,8 @@ func (s *GenerateContentStreamer) SetEffort(e llms.Effort) error {
 	}
 	level := genai.ThinkingLevelLow
 	switch e {
+	case llms.EffortMinimal:
+		level = genai.ThinkingLevelMinimal
 	case llms.EffortMedium:
 		level = genai.ThinkingLevelMedium
 	case llms.EffortHigh, llms.EffortXHigh, llms.EffortMax:

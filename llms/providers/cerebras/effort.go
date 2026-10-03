@@ -11,9 +11,8 @@ func (s *ChatCompletionsStreamer) SetEffort(e llms.Effort) error {
 
 // SetFast toggles the priority service tier.
 func (s *ChatCompletionsStreamer) SetFast(on bool) error {
-	s.ServiceTier = ""
 	if on {
-		s.ServiceTier = "priority"
+		return s.SetServiceTier(ServiceTierPriority)
 	}
-	return nil
+	return s.SetServiceTier("")
 }

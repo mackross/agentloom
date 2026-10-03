@@ -24,8 +24,17 @@ type Model struct {
 	// Efforts lists the explicit levels this model accepts. nil means the model
 	// has no effort control. EffortDefault is always accepted.
 	Efforts []Effort
-	// Fast reports whether the model has a priority tier.
+	// ServiceTiers lists provider-defined tiers in preference order (fastest
+	// first), with labels and pricing metadata for UI display and selection.
+	// nil means no known tier metadata, not free or standard processing.
+	ServiceTiers []ServiceTier
+	// Fast reports whether the model has a legacy priority toggle.
+	// Deprecated: use ServiceTiers.
 	Fast bool
+	// FastServiceTier maps the legacy Fast toggle to a provider-defined tier.
+	// Empty preserves support for older FastSetter-only providers.
+	// Deprecated: use ServiceTiers.
+	FastServiceTier ServiceTierID
 	// Options carries provider-specific settings (ollama: host, headers,
 	// options, think, keep_alive). Unknown configuration keys land here.
 	Options map[string]any
@@ -116,6 +125,7 @@ type EffortSetter interface {
 }
 
 // FastSetter is implemented by streamers with a priority tier.
+// Deprecated: use ServiceTierSetter.
 type FastSetter interface {
 	SetFast(bool) error
 }

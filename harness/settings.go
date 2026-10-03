@@ -13,7 +13,12 @@ type Settings struct {
 	// provider id.
 	Default string
 	Effort  llms.Effort
-	Fast    bool
+	// Fast is the legacy priority preference. ServiceTier takes precedence.
+	// Deprecated: use ServiceTier.
+	Fast bool
+	// ServiceTier is either a portable multiplier ceiling or a model-scoped
+	// explicit tier. Its zero value leaves provider/project defaults unchanged.
+	ServiceTier ServiceTierPreference
 	// Providers holds per-provider settings keyed by provider id.
 	Providers map[string]ProviderSettings
 	// Models are configured overlays added to the catalog.
@@ -86,6 +91,7 @@ func (s Settings) clone() Settings {
 	for i, m := range s.Models {
 		m.Aliases = append([]string(nil), m.Aliases...)
 		m.Efforts = append([]llms.Effort(nil), m.Efforts...)
+		m.ServiceTiers = append([]llms.ServiceTier(nil), m.ServiceTiers...)
 		if m.Options != nil {
 			opts := make(map[string]any, len(m.Options))
 			for k, v := range m.Options {

@@ -1,7 +1,6 @@
 package xai
 
 import (
-	"github.com/mackross/openai-go/v3/responses"
 	"github.com/mackross/openai-go/v3/shared"
 
 	"github.com/mackross/agentloom/llms"
@@ -20,9 +19,8 @@ func (s *ResponsesStreamer) SetEffort(e llms.Effort) error {
 
 // SetFast toggles the priority service tier.
 func (s *ResponsesStreamer) SetFast(on bool) error {
-	s.ServiceTier = ""
 	if on {
-		s.ServiceTier = responses.ResponseNewParamsServiceTierPriority
+		return s.SetServiceTier(ServiceTierPriority)
 	}
-	return nil
+	return s.SetServiceTier("")
 }

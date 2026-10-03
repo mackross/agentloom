@@ -18,6 +18,7 @@ import (
 const ID = "xai"
 
 var reasoningEfforts = []llms.Effort{llms.EffortLow, llms.EffortMedium, llms.EffortHigh}
+var grok47Efforts = []llms.Effort{llms.EffortLow, llms.EffortMedium, llms.EffortHigh, llms.EffortXHigh}
 
 // Provider describes xAI: API keys from XAI_API_KEY or a Grok subscription
 // sign-in.
@@ -26,8 +27,9 @@ var Provider = &llms.Provider{
 	Env:          []string{"XAI_API_KEY"},
 	Subscription: subscription.DeviceFlow("xAI", oauthConfig()),
 	Models: []llms.Model{
-		{ID: DefaultModel, Aliases: []string{"grok", "grok-4.6-latest"}, Label: "flagship", Efforts: reasoningEfforts, Fast: true},
-		{ID: "grok-code-fast-1", Aliases: []string{"code-fast", "grok-build-0.1"}, Label: "fast coding", Fast: true},
+		{ID: DefaultModel, Aliases: []string{"grok", "grok-4.7-latest"}, Label: "flagship", Efforts: grok47Efforts, Fast: true, FastServiceTier: ServiceTierPriority, ServiceTiers: serviceTiers},
+		{ID: "grok-4.6", Aliases: []string{"grok-4.6-latest"}, Label: "previous flagship", Efforts: reasoningEfforts, Fast: true, FastServiceTier: ServiceTierPriority, ServiceTiers: serviceTiers},
+		{ID: "grok-code-fast-1", Aliases: []string{"code-fast", "grok-build-0.1"}, Label: "fast coding", Fast: true, FastServiceTier: ServiceTierPriority, ServiceTiers: serviceTiers},
 	},
 	Match: match,
 	Open:  open,
@@ -38,7 +40,11 @@ func match(id string) (llms.Model, bool) {
 	if !strings.HasPrefix(lower, "grok") {
 		return llms.Model{}, false
 	}
-	m := llms.Model{ID: id, Fast: true}
+	m := llms.Model{ID: id, Fast: true, FastServiceTier: ServiceTierPriority, ServiceTiers: serviceTiers}
+	if lower == "grok-4.7" || strings.HasPrefix(lower, "grok-4.7-") {
+		m.Efforts = grok47Efforts
+		return m, true
+	}
 	for _, p := range []string{"grok-4.5", "grok-4.6", "grok-4.20-multi-agent"} {
 		if strings.HasPrefix(lower, p) {
 			m.Efforts = reasoningEfforts
