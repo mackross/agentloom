@@ -45,6 +45,34 @@ func TestRequestToolsMapsFunctionAndCustomPayloads(t *testing.T) {
 	}
 }
 
+func TestRequestToolsRewritesClosedObjectsForStrictMode(t *testing.T) {
+	type payload struct {
+		Name string `json:"name"`
+	}
+	schema, err := gschema.For[payload](nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := requestTools(threads.ToolOfferSnapshot{Offered: []threads.ToolSpec{{
+		Name:    "named",
+		Payload: threads.ToolPayloadJSONSchema(*schema),
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := tools[0].OfFunction.Parameters
+	if params["additionalProperties"] != false {
+		t.Fatalf("additionalProperties = %#v, want false", params["additionalProperties"])
+	}
+	props, ok := params["properties"].(map[string]any)
+	if !ok || props["name"] == nil {
+		t.Fatalf("properties = %#v", params["properties"])
+	}
+	if _, ok := params["properties"].(map[string]any)["name"].(map[string]any)["not"]; ok {
+		t.Fatal("closed-object not schema survived normalization")
+	}
+}
+
 func TestRequestToolsAddsAdditionalPropertiesFalseWhenMissing(t *testing.T) {
 	snap := threads.ToolOfferSnapshot{Offered: []threads.ToolSpec{{
 		Name: "sum",

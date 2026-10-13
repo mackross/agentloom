@@ -546,6 +546,9 @@ func normalizeCerebrasToolSchema(v any) {
 	switch x := v.(type) {
 	case map[string]any:
 		if schemaAllowsType(x, "object") {
+			if isJSONSchemaFalse(x["additionalProperties"]) {
+				x["additionalProperties"] = false
+			}
 			if props, ok := x["properties"].(map[string]any); (!ok || len(props) == 0) && x["anyOf"] == nil {
 				if additional, ok := x["additionalProperties"].(map[string]any); ok {
 					x["properties"] = map[string]any{
@@ -566,6 +569,15 @@ func normalizeCerebrasToolSchema(v any) {
 			normalizeCerebrasToolSchema(child)
 		}
 	}
+}
+
+func isJSONSchemaFalse(v any) bool {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) != 1 {
+		return false
+	}
+	not, ok := m["not"].(map[string]any)
+	return ok && len(not) == 0
 }
 
 func schemaAllowsType(schema map[string]any, want string) bool {

@@ -98,8 +98,9 @@ func (s *Session) SetServiceTier(id llms.ServiceTierID) error {
 }
 
 // SetServiceTierForMultiplier selects a tier at or below ceiling and remembers
-// the ceiling across model switches. It errors if no known tier qualifies;
-// it never silently falls back to a potentially paid project default.
+// the ceiling across model switches. Models without tiers use normal service
+// at 1x. It errors if a model advertises tiers but no known tier qualifies;
+// it never silently falls back to that model's potentially paid project default.
 // Use SetServiceTier("") to clear the preference.
 func (s *Session) SetServiceTierForMultiplier(ceiling float64) error {
 	s.mu.Lock()

@@ -467,8 +467,14 @@ func normalizeStrictToolSchemas(v any) {
 	switch x := v.(type) {
 	case map[string]any:
 		if schemaAllowsType(x, "object") {
+			if isJSONSchemaFalse(x["additionalProperties"]) {
+				x["additionalProperties"] = false
+			}
 			if _, ok := x["additionalProperties"]; !ok {
 				x["additionalProperties"] = false
+			}
+			if _, ok := x["properties"]; !ok {
+				x["properties"] = map[string]any{}
 			}
 			if props, ok := x["properties"].(map[string]any); ok && len(props) > 0 {
 				originalRequired := requiredFields(x["required"])
@@ -491,6 +497,15 @@ func normalizeStrictToolSchemas(v any) {
 			normalizeStrictToolSchemas(child)
 		}
 	}
+}
+
+func isJSONSchemaFalse(v any) bool {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) != 1 {
+		return false
+	}
+	not, ok := m["not"].(map[string]any)
+	return ok && len(not) == 0
 }
 
 func schemaAllowsType(schema map[string]any, want string) bool {

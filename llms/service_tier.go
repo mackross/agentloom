@@ -44,11 +44,10 @@ func (m Model) AcceptsServiceTier(id ServiceTierID) bool {
 	return false
 }
 
-// ServiceTierForMultiplier chooses the first tier in preference order with a
-// known multiplier at or below ceiling. It never rounds up or selects implicit
-// project defaults. Providers order tiers fastest/preferred first; price alone
-// does not imply speed. No matching tier is an error, including for models
-// without tier metadata.
+// ServiceTierForMultiplier chooses the nearest known multiplier at or below
+// ceiling, breaking ties in provider preference order. Models without tiers use
+// their normal service (an empty ID) at 1x. It never rounds up or falls back to
+// project defaults when a model advertises tiers but none qualify.
 func (m Model) ServiceTierForMultiplier(ceiling float64) (ServiceTierID, error) {
 	if ceiling <= 0 || math.IsNaN(ceiling) || math.IsInf(ceiling, 0) {
 		return "", fmt.Errorf("llms: service tier multiplier must be positive and finite")
@@ -56,10 +55,17 @@ func (m Model) ServiceTierForMultiplier(ceiling float64) (ServiceTierID, error) 
 	if err := m.ValidateServiceTiers(); err != nil {
 		return "", err
 	}
+	if len(m.ServiceTiers) == 0 && ceiling >= 1 {
+		return "", nil
+	}
+	var selected ServiceTier
 	for _, tier := range m.ServiceTiers {
-		if tier.MaxMultiplier > 0 && tier.MaxMultiplier <= ceiling {
-			return tier.ID, nil
+		if tier.MaxMultiplier > selected.MaxMultiplier && tier.MaxMultiplier <= ceiling {
+			selected = tier
 		}
+	}
+	if selected.ID != "" {
+		return selected.ID, nil
 	}
 	return "", fmt.Errorf("llms: model %q has no known service tier within %gx", m.ID, ceiling)
 }

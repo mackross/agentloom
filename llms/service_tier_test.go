@@ -33,13 +33,22 @@ func TestServiceTierForMultiplier(t *testing.T) {
 	if !m.AcceptsServiceTier("") || !m.AcceptsServiceTier("preview") || m.AcceptsServiceTier("other") {
 		t.Fatal("incorrect tier acceptance")
 	}
-	if _, err := (Model{}).ServiceTierForMultiplier(1); err == nil {
-		t.Fatal("missing metadata must not imply standard pricing")
+	for _, ceiling := range []float64{1, 2, 6} {
+		if id, err := (Model{}).ServiceTierForMultiplier(ceiling); err != nil || id != "" {
+			t.Fatalf("tierless model at %gx: %q, %v", ceiling, id, err)
+		}
 	}
-	// Provider preference order, not the most expensive tier, wins.
+	if _, err := (Model{}).ServiceTierForMultiplier(0.5); err == nil {
+		t.Fatal("tierless model must not round up from a sub-standard ceiling")
+	}
+	// Select the nearest multiplier below the ceiling even in an unsorted catalog.
 	m.ServiceTiers = []ServiceTier{{ID: "preferred", MaxMultiplier: 1}, {ID: "other", MaxMultiplier: 2}}
-	if id, _ := m.ServiceTierForMultiplier(2); id != "preferred" {
-		t.Fatal("ignored provider preference order")
+	if id, _ := m.ServiceTierForMultiplier(3); id != "other" {
+		t.Fatal("did not select the nearest multiplier below the ceiling")
+	}
+	m.ServiceTiers = append(m.ServiceTiers, ServiceTier{ID: "tie", MaxMultiplier: 2})
+	if id, _ := m.ServiceTierForMultiplier(2); id != "other" {
+		t.Fatal("equal multipliers must preserve provider preference order")
 	}
 	// A caller may filter unavailable tiers without rewriting legacy metadata.
 	m.FastServiceTier = "priority"

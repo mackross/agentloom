@@ -79,7 +79,7 @@ and `session.Model()` for UI menus.
 // Render each entry's Label, MaxMultiplier, and Notes in your UI.
 tiers := session.Model().ServiceTiers
 
-// Select the preferred known tier whose token-rate premium is at most 2×.
+// Select the nearest known tier at or below a 2× token-rate multiplier.
 // The ceiling is remembered and re-resolved when switching models.
 err := session.SetServiceTierForMultiplier(2)
 
@@ -94,10 +94,12 @@ err = session.SetServiceTier("")
 
 For standalone catalog use, `model.ServiceTierForMultiplier(ceiling)` returns an
 ID that can be passed to a streamer's `llms.ServiceTierSetter`. Unknown pricing
-(`MaxMultiplier == 0`) is never selected automatically. Invalid ceilings and
-models with no qualifying known tier return errors rather than silently using
-project defaults. A multiplier is a conservative token-rate ratio, not a
-total-spend limit.
+(`MaxMultiplier == 0`) is never selected automatically. Models without tiers
+use normal service (an empty ID) at 1× while retaining the budget across model
+switches. Invalid ceilings, ceilings below 1× for tierless models, and models
+advertising tiers with no qualifying known tier return errors rather than
+silently exceeding the ceiling. A multiplier is a conservative token-rate
+ratio, not a total-spend limit.
 
 OpenAI Astra lists Ultrafast (6×), Fast (2×), Standard (1×), and Flex (0.5×).
 Other models have their own lists and prices. xAI Priority is 2×, the curated

@@ -81,8 +81,18 @@ func TestSessionTierBudgetSwitchAndReopen(t *testing.T) {
 	if err != nil || reopened.ServiceTier() != "normal" || reopened.ServiceTierMultiplier() != 2 {
 		t.Fatalf("preference not persisted: %v", err)
 	}
-	if err := s.Switch(ctx, "unknown"); err == nil || s.Model().ID != "two" {
-		t.Fatal("unknown pricing must fail without replacing the active model")
+	if err := s.Switch(ctx, "unknown"); err != nil {
+		t.Fatalf("switch to tierless model: %v", err)
+	}
+	if s.Model().ID != "unknown" || s.ServiceTier() != "" || s.ServiceTierMultiplier() != 2 || s.Fast() {
+		t.Fatal("tierless model must use normal service and retain the ceiling")
+	}
+	reopened, err = tierHarness(t, store).Session(ctx, "")
+	if err != nil || reopened.Model().ID != "unknown" || reopened.ServiceTier() != "" || reopened.ServiceTierMultiplier() != 2 {
+		t.Fatalf("tierless preference not persisted: %v", err)
+	}
+	if err := s.Switch(ctx, "one"); err != nil || s.ServiceTier() != "priority" {
+		t.Fatalf("ceiling lost after switching through a tierless model: %v", err)
 	}
 	if err := s.SetServiceTierForMultiplier(6); err != nil {
 		t.Fatal(err)

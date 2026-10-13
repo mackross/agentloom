@@ -405,9 +405,15 @@ func fireworksToolInputSchema(name string, schema threads.ToolPayloadJSONSchema)
 func normalizeFireworksToolSchema(v any) {
 	switch x := v.(type) {
 	case map[string]any:
-		if x["type"] == "object" {
+		if schemaAllowsType(x, "object") {
+			if isJSONSchemaFalse(x["additionalProperties"]) {
+				x["additionalProperties"] = false
+			}
 			if _, ok := x["additionalProperties"]; !ok {
 				x["additionalProperties"] = false
+			}
+			if _, ok := x["properties"]; !ok {
+				x["properties"] = map[string]any{}
 			}
 		}
 		for _, child := range x {
@@ -418,6 +424,29 @@ func normalizeFireworksToolSchema(v any) {
 			normalizeFireworksToolSchema(child)
 		}
 	}
+}
+
+func isJSONSchemaFalse(v any) bool {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) != 1 {
+		return false
+	}
+	not, ok := m["not"].(map[string]any)
+	return ok && len(not) == 0
+}
+
+func schemaAllowsType(schema map[string]any, want string) bool {
+	switch typ := schema["type"].(type) {
+	case string:
+		return typ == want
+	case []any:
+		for _, v := range typ {
+			if s, ok := v.(string); ok && s == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func fireworksToolSelection(snap threads.ToolOfferSnapshot) (*openaiapi.ChatCompletionToolChoiceOptionUnionParam, error) {
