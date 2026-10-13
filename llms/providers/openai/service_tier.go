@@ -34,13 +34,17 @@ func serviceTiers(model string) []llms.ServiceTier {
 	if is(DefaultModel) {
 		fast.MaxMultiplier = 1.75
 	}
-	if strings.HasPrefix(model, "gpt-6") {
+	if strings.HasPrefix(model, "gpt-6") && !is("gpt-6.1-sol") {
 		fast.Notes = "Unavailable with EU data residency."
 	}
-	if is(ModelAstra) {
+	if is(ModelAstra) || is("gpt-6.1-sol") {
+		notes := "Global processing and US data residency only; account rate limits apply."
+		if is("gpt-6.1-sol") {
+			notes = "Global processing and US or EU data residency; separate Ultrafast rate limits apply."
+		}
 		tiers = append(tiers, llms.ServiceTier{
 			ID: ServiceTierUltrafast, Label: "Ultrafast", MaxMultiplier: 6,
-			Notes: "Global processing and US data residency only; account rate limits apply.",
+			Notes: notes,
 		})
 	}
 	if is("gpt-5.6-sol") {

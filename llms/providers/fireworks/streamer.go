@@ -162,6 +162,7 @@ func (s *ChatCompletionsStreamer) StreamReqContext(ctx context.Context, req thre
 		opts = append(opts, option.WithJSONSet("prompt_cache_isolation_key", key))
 	}
 
+	opts = append(opts, option.WithMiddleware(streamerutil.SSEKeepaliveMiddleware))
 	stream := s.client.Chat.Completions.NewStreaming(ctx, params, opts...)
 	defer stream.Close()
 

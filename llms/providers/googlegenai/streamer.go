@@ -21,8 +21,9 @@ const DefaultModel = "gemini-3.8-flash"
 // GenerateContentStreamer adapts google.golang.org/genai streaming generate-content
 // calls to threads.Streamer.
 type GenerateContentStreamer struct {
-	client *genai.Client
-	model  string
+	client    *genai.Client
+	clientErr error
+	model     string
 
 	Config genai.GenerateContentConfig
 
@@ -45,7 +46,15 @@ func NewGenerateContentStreamerWithClient(client *genai.Client, model string) *G
 	if model == "" {
 		model = DefaultModel
 	}
-	return &GenerateContentStreamer{client: client, model: model}
+	s := &GenerateContentStreamer{client: client, model: model}
+	if client != nil {
+		// Rebuild from the SDK's resolved config so supplied clients get the
+		// same filtering as default clients, without mutating shared transports.
+		cfg := client.ClientConfig()
+		cfg.HTTPClient = streamerutil.SSEKeepaliveHTTPClient(cfg.HTTPClient)
+		s.client, s.clientErr = genai.NewClient(context.Background(), &cfg)
+	}
+	return s
 }
 
 func (s *GenerateContentStreamer) Capabilities() threads.StreamerCapabilities {
@@ -72,6 +81,9 @@ func (s *GenerateContentStreamer) StreamReq(req threads.Req, emit func(threads.I
 }
 
 func (s *GenerateContentStreamer) StreamReqContext(ctx context.Context, req threads.Req, emit func(threads.Item) error) error {
+	if s.clientErr != nil {
+		return fmt.Errorf("googlegenai stream client: %w", s.clientErr)
+	}
 	req, err := s.normalizers.NormalizeReq(req)
 	if err != nil {
 		return err

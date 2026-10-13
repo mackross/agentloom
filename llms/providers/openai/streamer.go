@@ -12,6 +12,7 @@ import (
 
 	gschema "github.com/google/jsonschema-go/jsonschema"
 	openaiapi "github.com/mackross/openai-go/v3"
+	"github.com/mackross/openai-go/v3/option"
 	"github.com/mackross/openai-go/v3/packages/param"
 	"github.com/mackross/openai-go/v3/responses"
 	"github.com/mackross/openai-go/v3/shared"
@@ -282,7 +283,7 @@ func (s *ResponsesStreamer) startResponse(ctx context.Context, params responses.
 		sr.conn = conn
 		return sr, nil
 	case ResponsesTransportSSE:
-		sr.stream = s.client.Responses.NewStreaming(ctx, sendParams)
+		sr.stream = s.client.Responses.NewStreaming(ctx, sendParams, option.WithMiddleware(streamerutil.SSEKeepaliveMiddleware))
 		return sr, nil
 	default:
 		return responseStreamRequest{}, fmt.Errorf("openai responses transport %q not supported", s.Transport)

@@ -274,7 +274,7 @@ func (s *ResponsesStreamer) startResponse(ctx context.Context, params responses.
 	s.mu.Unlock()
 
 	sr := responseStreamRequest{
-		stream:           s.client.Responses.NewStreaming(ctx, sendParams),
+		stream:           s.client.Responses.NewStreaming(ctx, sendParams, option.WithMiddleware(streamerutil.SSEKeepaliveMiddleware)),
 		inputItems:       fullInputItems,
 		paramsHash:       paramsHash,
 		usedContinuation: usedContinuation,
@@ -326,7 +326,7 @@ func (s *ResponsesStreamer) streamResponseItems(stream responseStream, emit func
 			call := threads.ToolCall{CallID: callID, Name: name, Payload: event.Arguments}
 			call, err := s.normalizers.NormalizeResponseToolCall(call)
 			if err != nil {
-				return "", nil, err
+				return "", nil, fmt.Errorf("xai normalize response tool %q (argument_bytes=%d): %w", name, len(event.Arguments), err)
 			}
 			if err := emit(call); err != nil {
 				return "", nil, err
@@ -352,7 +352,7 @@ func (s *ResponsesStreamer) streamResponseItems(stream responseStream, emit func
 	}
 
 	if err := stream.Err(); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("xai Responses stream: %w", err)
 	}
 	return responseID, outputItems, nil
 }
