@@ -327,7 +327,17 @@ func (t *thread) resumeReceivingStream(e stateObserver, opts RecoveryOptions) er
 		}
 	}
 	t.setExecutor(e)
-	return t.resumeConstructLLMRequest()
+	if err := t.resumeConstructLLMRequest(); err != nil {
+		return err
+	}
+	// A resumed stream has no outer QueueItem loop to advance input queued
+	// during the interruption. Preserve its boundary during the request,
+	// then process that input once the resumed stream completes.
+	if err := t.advanceWhilePossible(); err != nil {
+		t.onExecutorError(err)
+		return err
+	}
+	return nil
 }
 
 func (t *thread) replaceDurableSnapshot() error {
@@ -363,6 +373,11 @@ func (t *thread) resumeConstructLLMRequest() error {
 	}
 	if t.executor != nil {
 		if err := t.executor.OnControlBlockStateChange(t, StateConstructLLMRequest, StateConstructLLMRequest); err != nil {
+			// Recovery invokes the executor directly rather than advancing via
+			// QueueItem. Notify the delegate just as a normal request failure
+			// would, so harnesses can pause/retry instead of leaving a stale
+			// receiving_stream presentation with no active request.
+			t.onExecutorError(err)
 			return err
 		}
 	}
